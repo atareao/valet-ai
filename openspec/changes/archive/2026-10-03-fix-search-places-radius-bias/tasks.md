@@ -23,7 +23,7 @@
 
 - [x] 4.1 `cargo fmt --check` y `cargo clippy --all-targets -- -D warnings` limpios.
 - [x] 4.2 Revisión con `rust-reviewer`.
-- [ ] 4.3 PR a `development`; tras el merge, PR de archivado (`openspec archive fix-search-places-radius-bias`).
+- [x] 4.3 PR a `development`; tras el merge, PR de archivado (`openspec archive fix-search-places-radius-bias`).
 
 ## 5. Verificación de integración
 
