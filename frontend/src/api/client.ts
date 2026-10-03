@@ -16,6 +16,7 @@ import type {
   Task,
   UpdateProfile,
   PersistentMemoryState,
+  Tool,
 } from "../types";
 
 export const BASE_URL = "/api";
@@ -150,4 +151,9 @@ export const api = {
 
   clearPersistentMemory: () =>
     request<void>("/persistent-memory", { method: "DELETE" }),
+
+  getTools: () => request<Tool[]>("/tools"),
+
+  toggleTool: (id: string) =>
+    request<Tool>(`/tools/${id}/toggle`, { method: "PUT" }),
 };
