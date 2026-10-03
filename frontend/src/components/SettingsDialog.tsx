@@ -15,6 +15,7 @@ import {
 import { useSettings } from "../hooks/useSettings";
 import { useProfileContext } from "../contexts/ProfileContext";
 import { PersistentMemoryPanel } from "./PersistentMemoryPanel";
+import { ToolsTab } from "./ToolsTab";
 
 const { TextArea } = Input;
 
@@ -364,7 +365,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       onCancel={onClose}
       closable={false}
       footer={null}
-      width={900}
+      width={1000}
     >
       <Tabs
         items={[
@@ -702,6 +703,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 </Button>
               </Form>
             ),
+          },
+          {
+            key: "tools",
+            label: "Herramientas",
+            children: <ToolsTab />,
           },
         ]}
       />

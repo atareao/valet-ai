@@ -107,6 +107,38 @@ vi.mock("../hooks/usePersistentMemory", () => ({
   })),
 }));
 
+// La pestaña "Herramientas" consume el hook `useTools` (aún no existe). Se
+// mockea con un estado mutable —igual que `mockSettings`— para que cada test
+// configure tools/loading/error sin redefinir el módulo. No se importa el hook
+// de forma estática: el fichero no existe todavía y Vite abortaría la
+// resolución de todo el suite.
+const mockToggleTool = vi.fn();
+
+interface MockTool {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+interface MockToolsState {
+  tools: MockTool[];
+  loading: boolean;
+  error: string | null;
+  toggle: (id: string) => Promise<void>;
+}
+
+let mockToolsState: MockToolsState = {
+  tools: [],
+  loading: false,
+  error: null,
+  toggle: mockToggleTool,
+};
+
+vi.mock("../hooks/useTools", () => ({
+  useTools: vi.fn(() => mockToolsState),
+}));
+
 import { SettingsDialog } from "../components/SettingsDialog";
 import { ProfileProvider } from "../contexts/ProfileProvider";
 
@@ -124,6 +156,12 @@ describe("SettingsDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSettings = { ...defaultSettings };
+    mockToolsState = {
+      tools: [],
+      loading: false,
+      error: null,
+      toggle: mockToggleTool,
+    };
   });
 
   it("is not visible when visible=false", () => {
@@ -756,15 +794,213 @@ describe("SettingsDialog", () => {
   });
 
   // ════════════════════════════════════════════════════════════════
+  // RED phase tests — pestaña "Herramientas"
+  // change `settings-tools-tab`: nueva pestaña superior que lista las
+  // tools registradas y permite activarlas/desactivarlas.
+  // ════════════════════════════════════════════════════════════════
+
+  it("muestra la pestaña superior Herramientas", () => {
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    expect(
+      screen.getByRole("tab", { name: "Herramientas" }),
+    ).toBeInTheDocument();
+  });
+
+  it("lista las tools con nombre, descripción y un Switch con su estado enabled", async () => {
+    const user = userEvent.setup();
+    mockToolsState = {
+      tools: [
+        {
+          id: "weather",
+          name: "Weather",
+          description: "Consulta el tiempo",
+          enabled: true,
+        },
+      ],
+      loading: false,
+      error: null,
+      toggle: mockToggleTool,
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    expect(await screen.findByText("Weather")).toBeInTheDocument();
+    expect(screen.getByText("Consulta el tiempo")).toBeInTheDocument();
+    expect(screen.getByRole("switch")).toBeChecked();
+  });
+
+  it("muestra un indicador de carga y no la lista mientras loading es true", async () => {
+    const user = userEvent.setup();
+    mockToolsState = {
+      tools: [],
+      loading: true,
+      error: null,
+      toggle: mockToggleTool,
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    expect(document.querySelector(".ant-spin")).not.toBeNull();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+  });
+
+  it("apagar el Switch de una tool llama a toggle(id)", async () => {
+    const user = userEvent.setup();
+    mockToolsState = {
+      tools: [
+        {
+          id: "weather",
+          name: "Weather",
+          description: "Consulta el tiempo",
+          enabled: true,
+        },
+      ],
+      loading: false,
+      error: null,
+      toggle: mockToggleTool,
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+    await user.click(await screen.findByRole("switch"));
+
+    await waitFor(() => {
+      expect(mockToggleTool).toHaveBeenCalledWith("weather");
+    });
+  });
+
+  it("muestra un aviso de error si toggle falla", async () => {
+    const user = userEvent.setup();
+    mockToggleTool.mockRejectedValue(new Error("boom"));
+    mockToolsState = {
+      tools: [
+        {
+          id: "weather",
+          name: "Weather",
+          description: "Consulta el tiempo",
+          enabled: true,
+        },
+      ],
+      loading: false,
+      error: null,
+      toggle: mockToggleTool,
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+    await user.click(await screen.findByRole("switch"));
+
+    expect(
+      await screen.findByText("Error al cambiar la herramienta"),
+    ).toBeInTheDocument();
+  });
+
+  it("el Switch de una tool expone el nombre de la tool como nombre accesible", async () => {
+    const user = userEvent.setup();
+    mockToolsState = {
+      tools: [
+        {
+          id: "weather",
+          name: "Weather",
+          description: "Consulta el tiempo",
+          enabled: true,
+        },
+      ],
+      loading: false,
+      error: null,
+      toggle: mockToggleTool,
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    expect(
+      await screen.findByRole("switch", { name: "Weather" }),
+    ).toBeChecked();
+  });
+
+  it("muestra el estado vacío cuando no hay herramientas", async () => {
+    const user = userEvent.setup();
+    mockToolsState = {
+      tools: [],
+      loading: false,
+      error: null,
+      toggle: mockToggleTool,
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    expect(await screen.findByText("No hay herramientas")).toBeInTheDocument();
+  });
+
+  it("muestra el aviso de error cuando el hook real deja error fijado", async () => {
+    const user = userEvent.setup();
+    // El hook real no re-lanza: `toggle` deja `error` fijado y el panel lo
+    // anuncia vía el `useEffect`. Aquí el mock devuelve ese estado de error.
+    mockToolsState = {
+      tools: [
+        {
+          id: "weather",
+          name: "Weather",
+          description: "Consulta el tiempo",
+          enabled: true,
+        },
+      ],
+      loading: false,
+      error: "boom",
+      toggle: mockToggleTool,
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    expect(
+      await screen.findByText("Error al cambiar la herramienta"),
+    ).toBeInTheDocument();
+  });
+
+  it("encender el Switch de una tool deshabilitada llama a toggle(id)", async () => {
+    const user = userEvent.setup();
+    mockToolsState = {
+      tools: [
+        {
+          id: "weather",
+          name: "Weather",
+          description: "Consulta el tiempo",
+          enabled: false,
+        },
+      ],
+      loading: false,
+      error: null,
+      toggle: mockToggleTool,
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+    const switchEl = await screen.findByRole("switch");
+    expect(switchEl).not.toBeChecked();
+
+    await user.click(switchEl);
+
+    await waitFor(() => {
+      expect(mockToggleTool).toHaveBeenCalledWith("weather");
+    });
+  });
+
+  // ════════════════════════════════════════════════════════════════
   // RED phase tests — change `settings-memory-tabs`: pestañas superiores
   // ════════════════════════════════════════════════════════════════
 
-  it("shows exactly six top-level tabs and no Memoria persistente tab", () => {
+  it("shows exactly seven top-level tabs and no Memoria persistente tab", () => {
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     const topTabs = screen.getAllByRole("tab");
 
-    expect(topTabs).toHaveLength(6);
+    expect(topTabs).toHaveLength(7);
     for (const name of [
       "Perfil",
       "Interfaz",
@@ -772,6 +1008,7 @@ describe("SettingsDialog", () => {
       "API Keys",
       "Memoria",
       "Generación",
+      "Herramientas",
     ]) {
       expect(screen.getByRole("tab", { name })).toBeInTheDocument();
     }
@@ -1088,13 +1325,13 @@ describe("SettingsDialog", () => {
     expectInactive("GENERATION_CHAT_TEMPERATURE");
   });
 
-  it("renders the settings modal with a width of at least 860px", () => {
+  it("renders the settings modal with a width of at least 960px", () => {
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     // antd v5 aplica el `width` como `style` inline del elemento `.ant-modal`,
     // que además es el que lleva role="dialog". Se lee el style inline para no
     // depender de getComputedStyle con pseudo-elementos (jsdom no lo implementa).
     const dialog = screen.getByRole("dialog") as HTMLElement;
-    expect(parseFloat(dialog.style.width)).toBeGreaterThanOrEqual(860);
+    expect(parseFloat(dialog.style.width)).toBeGreaterThanOrEqual(960);
   });
 });

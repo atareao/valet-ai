@@ -207,3 +207,10 @@ export interface CalendarEvent {
   created_at: string;
   updated_at: string;
 }
+
+export interface Tool {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+}
