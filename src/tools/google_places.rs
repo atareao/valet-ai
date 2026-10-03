@@ -104,8 +104,8 @@ pub const FIELD_MASK: &str = concat!(
 
 /// Low-level HTTP client for the Google Places New API.
 ///
-/// Wraps `reqwest::Client` and provides `search_text` and `search_nearby`
-/// methods that return parsed `Place` structs.
+/// Wraps `reqwest::Client` and provides a `search_text` method that returns
+/// parsed `Place` structs.
 pub struct GooglePlacesClient {
     http: reqwest::Client,
     api_key: String,
@@ -142,6 +142,7 @@ impl GooglePlacesClient {
         query: &str,
         max_results: u32,
         included_type: Option<&str>,
+        location_bias: Option<(f64, f64, u32)>,
     ) -> Result<Vec<Place>, ToolError> {
         if self.api_key.is_empty() {
             return Err(ToolError::ExecutionError(
@@ -159,66 +160,8 @@ impl GooglePlacesClient {
             body["includedType"] = serde_json::json!(typ);
         }
 
-        let url = format!("{}/places:searchText", self.base_url);
-
-        let resp = self
-            .http
-            .post(url)
-            .header("X-Goog-Api-Key", &self.api_key)
-            .header("X-Goog-FieldMask", FIELD_MASK)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| {
-                ToolError::ExecutionError(format!("Google Places API request failed: {}", e))
-            })?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await.unwrap_or_default();
-            return Err(ToolError::ExecutionError(format!(
-                "Google Places API returned {}: {}",
-                status.as_u16(),
-                body_text
-            )));
-        }
-
-        let places_response: PlacesResponse = resp.json().await.map_err(|e| {
-            ToolError::ExecutionError(format!("Failed to parse Google Places response: {}", e))
-        })?;
-
-        if let Some(ref error) = places_response.error {
-            if let Some(ref msg) = error.message {
-                return Err(ToolError::ExecutionError(format!(
-                    "Google Places API error: {}",
-                    msg
-                )));
-            }
-        }
-
-        Ok(places_response.places.unwrap_or_default())
-    }
-
-    /// Search for places of a given type near a geographic location.
-    pub async fn search_nearby(
-        &self,
-        lat: f64,
-        lon: f64,
-        radius: u32,
-        types: &[&str],
-    ) -> Result<Vec<Place>, ToolError> {
-        if self.api_key.is_empty() {
-            return Err(ToolError::ExecutionError(
-                "Google Places API key is not configured".into(),
-            ));
-        }
-
-        let body = serde_json::json!({
-            "includedTypes": types,
-            "maxResultCount": 10,
-            "languageCode": "es",
-            "locationRestriction": {
+        if let Some((lat, lon, radius)) = location_bias {
+            body["locationBias"] = serde_json::json!({
                 "circle": {
                     "center": {
                         "latitude": lat,
@@ -226,10 +169,10 @@ impl GooglePlacesClient {
                     },
                     "radius": radius
                 }
-            }
-        });
+            });
+        }
 
-        let url = format!("{}/places:searchNearby", self.base_url);
+        let url = format!("{}/places:searchText", self.base_url);
 
         let resp = self
             .http
@@ -398,21 +341,14 @@ impl Tool for SearchPlacesTool {
 
         let client = GooglePlacesClient::with_base_url(api_key, self.base_url.clone());
 
-        // Dispatch on the presence of `radius`:
-        //   - present → proximity search (`places:searchNearby`), query as type filter
-        //   - absent  → free-text search (`places:searchText`), query as `textQuery`
-        let places = match args.get("radius") {
-            Some(radius_value) => {
-                let radius = radius_value.as_u64().unwrap_or(1000) as u32;
-                let types: Vec<&str> = if query.is_empty() {
-                    vec![]
-                } else {
-                    vec![query]
-                };
-                client.search_nearby(lat, lon, radius, &types).await?
-            }
-            None => client.search_text(query, 10, None).await?,
-        };
+        // Always use `places:searchText` with the free-text query. When a
+        // `radius` is supplied, bias the search around the given coordinates
+        // with a `locationBias.circle` instead of switching to `searchNearby`.
+        let location_bias = args
+            .get("radius")
+            .map(|radius_value| (lat, lon, radius_value.as_u64().unwrap_or(1000) as u32));
+
+        let places = client.search_text(query, 10, None, location_bias).await?;
 
         let maps_link = client.maps_link(&places);
 
@@ -659,20 +595,7 @@ mod tests {
     #[tokio::test]
     async fn test_search_text_missing_api_key() {
         let client = GooglePlacesClient::new(String::new());
-        let result = client.search_text("cafe", 5, None).await;
-        assert!(
-            matches!(result, Err(ToolError::ExecutionError(ref msg)) if msg.contains("API key")),
-            "Expected ExecutionError with 'API key' message, got {:?}",
-            result
-        );
-    }
-
-    #[tokio::test]
-    async fn test_search_nearby_missing_api_key() {
-        let client = GooglePlacesClient::new(String::new());
-        let result = client
-            .search_nearby(40.41, -3.70, 1000, &["restaurant"])
-            .await;
+        let result = client.search_text("cafe", 5, None, None).await;
         assert!(
             matches!(result, Err(ToolError::ExecutionError(ref msg)) if msg.contains("API key")),
             "Expected ExecutionError with 'API key' message, got {:?}",
@@ -780,14 +703,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Endpoint routing — searchText vs searchNearby (wiremock)
+    // Endpoint usage — always searchText, optional locationBias (wiremock)
     // -----------------------------------------------------------------------
 
     /// Scenario: Búsqueda por texto (searchText)
     ///
-    /// RED test — without the dispatch fix, `execute` always calls
-    /// `places:searchNearby`, so the `places:searchText` mock never receives a
-    /// request and this assertion fires.
+    /// Without `radius`, `execute` must call `places:searchText` and the body
+    /// must not carry `locationBias` nor `includedTypes`.
     #[tokio::test]
     async fn test_execute_without_radius_uses_search_text() {
         use wiremock::matchers::{method, path};
@@ -863,16 +785,211 @@ mod tests {
         );
     }
 
-    /// Scenario: Búsqueda por cercanía (searchNearby)
+    /// Scenario: Nombre de negocio con radius
     ///
-    /// Guard test — when `radius` is present, routing must stay on
-    /// `places:searchNearby` with a `locationRestriction.circle`.
+    /// Regression guard for the 400 `Unsupported types` bug: a business-name
+    /// query with `radius` must go to `places:searchText` with a
+    /// `locationBias.circle` and must NOT send `includedTypes`.
     #[tokio::test]
-    async fn test_execute_with_radius_uses_search_nearby() {
+    async fn test_execute_name_with_radius_uses_search_text_bias() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchText"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchNearby"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let (pool, _) = setup_tool().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "google_places_api_key", "test-key")
+            .await
+            .expect("failed to seed google_places_api_key");
+        let tool = SearchPlacesTool::new_with_base_url(pool, server.uri());
+
+        let result = tool
+            .execute(serde_json::json!({
+                "query": "Querida Jacinta restaurante",
+                "latitude": 39.4676,
+                "longitude": -0.3771,
+                "radius": 5000
+            }))
+            .await;
+        assert!(result.is_ok(), "execute failed: {:?}", result.err());
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("received_requests should be available");
+        let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
+        let search_text_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/places:searchText")
+            .collect();
+        let nearby_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/places:searchNearby")
+            .collect();
+
+        assert_eq!(
+            search_text_requests.len(),
+            1,
+            "expected exactly one POST /places:searchText, got request paths: {paths:?}"
+        );
+        assert_eq!(
+            nearby_requests.len(),
+            0,
+            "must NOT call /places:searchNearby, got request paths: {paths:?}"
+        );
+
+        let body: Value =
+            serde_json::from_slice(&search_text_requests[0].body).expect("valid JSON body");
+        assert_eq!(
+            body["textQuery"], "Querida Jacinta restaurante",
+            "textQuery must carry the query, got body: {body}"
+        );
+        assert_eq!(
+            body["locationBias"]["circle"]["center"]["latitude"],
+            serde_json::json!(39.4676),
+            "locationBias.circle.center.latitude must be 39.4676, got body: {body}"
+        );
+        assert_eq!(
+            body["locationBias"]["circle"]["center"]["longitude"],
+            serde_json::json!(-0.3771),
+            "locationBias.circle.center.longitude must be -0.3771, got body: {body}"
+        );
+        assert_eq!(
+            body["locationBias"]["circle"]["radius"],
+            serde_json::json!(5000),
+            "locationBias.circle.radius must be 5000, got body: {body}"
+        );
+        assert!(
+            body.get("includedTypes").is_none(),
+            "searchText body must NOT contain includedTypes, got body: {body}"
+        );
+        assert!(
+            body.get("includedType").is_none(),
+            "searchText body must NOT contain includedType (singular), got body: {body}"
+        );
+    }
+
+    /// Scenario: Búsqueda por texto (searchText) — sin radius no hay locationBias
+    ///
+    /// Guard test — without `radius` the body must not carry `locationBias`
+    /// nor any `includedTypes`.
+    #[tokio::test]
+    async fn test_execute_without_radius_uses_search_text_without_bias() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchText"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchNearby"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let (pool, _) = setup_tool().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "google_places_api_key", "test-key")
+            .await
+            .expect("failed to seed google_places_api_key");
+        let tool = SearchPlacesTool::new_with_base_url(pool, server.uri());
+
+        let result = tool
+            .execute(serde_json::json!({
+                "query": "restaurantes en Madrid",
+                "latitude": 40.4168,
+                "longitude": -3.7038
+            }))
+            .await;
+        assert!(result.is_ok(), "execute failed: {:?}", result.err());
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("received_requests should be available");
+        let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
+        let search_text_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/places:searchText")
+            .collect();
+        let nearby_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/places:searchNearby")
+            .collect();
+
+        assert_eq!(
+            search_text_requests.len(),
+            1,
+            "expected exactly one POST /places:searchText, got request paths: {paths:?}"
+        );
+        assert_eq!(
+            nearby_requests.len(),
+            0,
+            "must NOT call /places:searchNearby, got request paths: {paths:?}"
+        );
+
+        let body: Value =
+            serde_json::from_slice(&search_text_requests[0].body).expect("valid JSON body");
+        assert_eq!(
+            body["textQuery"], "restaurantes en Madrid",
+            "textQuery must carry the query, got body: {body}"
+        );
+        assert!(
+            body.get("locationBias").is_none(),
+            "body must NOT contain locationBias when radius is absent, got body: {body}"
+        );
+        assert!(
+            body.get("includedTypes").is_none(),
+            "searchText body must NOT contain includedTypes, got body: {body}"
+        );
+        assert!(
+            body.get("includedType").is_none(),
+            "searchText body must NOT contain includedType (singular), got body: {body}"
+        );
+    }
+
+    /// Scenario: Búsqueda por cercanía (searchNearby) — tipo con radius
+    ///
+    /// A type query with `radius` must also route to `places:searchText` with a
+    /// `locationBias.circle` (radius 500) and no `includedTypes`.
+    #[tokio::test]
+    async fn test_execute_type_with_radius_uses_search_text_bias() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchText"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
 
         Mock::given(method("POST"))
             .and(path("/places:searchNearby"))
@@ -902,35 +1019,55 @@ mod tests {
             .received_requests()
             .await
             .expect("received_requests should be available");
+        let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
+        let search_text_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/places:searchText")
+            .collect();
         let nearby_requests: Vec<_> = requests
             .iter()
             .filter(|r| r.url.path() == "/places:searchNearby")
             .collect();
-        let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
 
         assert_eq!(
-            nearby_requests.len(),
+            search_text_requests.len(),
             1,
-            "expected exactly one POST /places:searchNearby, got request paths: {:?}",
-            paths
+            "expected exactly one POST /places:searchText, got request paths: {paths:?}"
+        );
+        assert_eq!(
+            nearby_requests.len(),
+            0,
+            "must NOT call /places:searchNearby, got request paths: {paths:?}"
         );
 
         let body: Value =
-            serde_json::from_slice(&nearby_requests[0].body).expect("valid JSON body");
+            serde_json::from_slice(&search_text_requests[0].body).expect("valid JSON body");
         assert_eq!(
-            body["locationRestriction"]["circle"]["center"]["latitude"],
+            body["textQuery"], "cafe",
+            "textQuery must carry the query, got body: {body}"
+        );
+        assert_eq!(
+            body["locationBias"]["circle"]["center"]["latitude"],
             serde_json::json!(40.4168),
-            "locationRestriction.circle.center.latitude must be 40.4168, got body: {body}"
+            "locationBias.circle.center.latitude must be 40.4168, got body: {body}"
         );
         assert_eq!(
-            body["locationRestriction"]["circle"]["center"]["longitude"],
+            body["locationBias"]["circle"]["center"]["longitude"],
             serde_json::json!(-3.7038),
-            "locationRestriction.circle.center.longitude must be -3.7038, got body: {body}"
+            "locationBias.circle.center.longitude must be -3.7038, got body: {body}"
         );
         assert_eq!(
-            body["locationRestriction"]["circle"]["radius"],
+            body["locationBias"]["circle"]["radius"],
             serde_json::json!(500),
-            "locationRestriction.circle.radius must be 500, got body: {body}"
+            "locationBias.circle.radius must be 500, got body: {body}"
+        );
+        assert!(
+            body.get("includedTypes").is_none(),
+            "searchText body must NOT contain includedTypes, got body: {body}"
+        );
+        assert!(
+            body.get("includedType").is_none(),
+            "searchText body must NOT contain includedType (singular), got body: {body}"
         );
     }
 }
