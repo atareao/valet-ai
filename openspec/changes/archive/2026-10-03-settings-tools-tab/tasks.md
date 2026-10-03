@@ -25,7 +25,7 @@
 
 - [x] 4.1 `npm run lint` sin errores ni warnings nuevos; `npm run build` limpio.
 - [x] 4.2 Revisión con `react-reviewer`.
-- [ ] 4.3 PR a `development`; tras el merge, PR de archivado (`openspec archive settings-tools-tab`).
+- [x] 4.3 PR a `development`; tras el merge, PR de archivado (`openspec archive settings-tools-tab`).
 
 ## 5. Verificación de integración
 
