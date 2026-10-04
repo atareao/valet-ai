@@ -9,8 +9,8 @@
 ## 2. Cierre
 
 - [x] 2.1 Validación `openspec validate characterize-legacy-tools --strict`.
-- [ ] 2.2 Revisión de la documentación (que no invente comportamiento: solo el actual).
-- [ ] 2.3 PR a `development`; tras el merge, PR de archivado (`openspec archive characterize-legacy-tools`).
+- [x] 2.2 Revisión de la documentación (que no invente comportamiento: solo el actual).
+- [x] 2.3 PR a `development`; tras el merge, PR de archivado (`openspec archive characterize-legacy-tools`).
 
 ## 3. Follow-up (fuera de este change)
 
