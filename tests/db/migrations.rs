@@ -172,6 +172,14 @@ fn prompts_migration_sql() -> String {
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
+/// Reads the widget-prompt-guidance migration SQL from disk.
+fn widget_guidance_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261004000001_widget_prompt_guidance.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
 /// Reads the consolidator-reliability migration SQL from disk.
 fn consolidator_reliability_migration_sql() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -277,6 +285,91 @@ async fn test_migration_respects_custom_system_prompt() {
     assert_eq!(
         value, "Mi prompt personalizado",
         "A non-empty custom system_prompt must be preserved"
+    );
+}
+
+// ── Widget prompt guidance (20261004000001_widget_prompt_guidance.sql) ─────
+
+/// The migration appends the widget-guidance section to the `system_prompt`.
+#[tokio::test]
+async fn test_migration_appends_widget_guidance_section() {
+    let pool = setup().await;
+
+    let value = setting_value(&pool, "system_prompt").await;
+    assert!(
+        value.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "system_prompt must contain the widget-guidance header"
+    );
+    assert!(
+        value.contains("render_widget"),
+        "system_prompt must mention the render_widget tool"
+    );
+    assert!(
+        value.contains("DEBES invocar"),
+        "system_prompt must contain the imperative 'DEBES invocar'"
+    );
+    assert!(
+        value.contains("NO invoques la herramienta"),
+        "system_prompt must contain the 'NO invoques la herramienta' rule"
+    );
+}
+
+/// A custom `system_prompt` is preserved and the section is appended after it.
+#[tokio::test]
+async fn test_migration_preserves_custom_system_prompt_and_appends_section() {
+    let pool = setup().await;
+
+    sqlx::query(
+        "UPDATE settings SET value = 'Mi prompt personalizado' WHERE key = 'system_prompt'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let sql = widget_guidance_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = setting_value(&pool, "system_prompt").await;
+    assert!(
+        value.contains("Mi prompt personalizado"),
+        "the custom system_prompt must be preserved"
+    );
+    assert!(
+        value.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "system_prompt must contain the widget-guidance header"
+    );
+    assert!(
+        value.find("Mi prompt personalizado")
+            < value.find("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "the user's custom prompt must appear before the appended section"
+    );
+}
+
+/// Running the widget-guidance migration twice appends the section only once.
+#[tokio::test]
+async fn test_widget_guidance_migration_is_idempotent() {
+    let pool = setup().await;
+
+    let sql = widget_guidance_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = setting_value(&pool, "system_prompt").await;
+    assert_eq!(
+        value
+            .matches("# Instrucciones de Interfaz y Widgets Interactivos")
+            .count(),
+        1,
+        "the widget-guidance header must appear exactly once after two runs"
     );
 }
 
