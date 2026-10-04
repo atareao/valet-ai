@@ -61,7 +61,7 @@ async fn test_toggle_tool_not_found() {
 async fn test_list_tools_includes_all_registered_tools() {
     // Given the tools table is reconciled from the production registry
     // When GET /api/tools is called
-    // Then the response lists the 12 real tool names and no legacy ones
+    // Then the response lists the 13 real tool names and no legacy ones
     let app = TestApp::new().await;
 
     let resp = app.get("/api/tools").await;
@@ -87,6 +87,7 @@ async fn test_list_tools_includes_all_registered_tools() {
         "get_current_location",
         "notes",
         "unified_search",
+        "render_widget",
     ] {
         assert!(names.contains(&expected), "Expected tool {expected}");
     }
@@ -198,4 +199,56 @@ async fn test_toggle_nonexistent_tool_returns_error() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let body = resp.json::<serde_json::Value>().await;
     assert!(body["error"].is_string(), "Expected an error message");
+}
+
+#[tokio::test]
+async fn test_list_tools_includes_render_widget() {
+    // Given the tools table is reconciled from the production registry
+    // When GET /api/tools is called
+    // Then the response contains the render_widget tool, enabled by default
+    let app = TestApp::new().await;
+
+    let resp = app.get("/api/tools").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tools = resp.json::<serde_json::Value>().await;
+    let render = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "render_widget")
+        .expect("GET /api/tools must include the render_widget tool");
+    assert!(
+        render["enabled"].as_bool().unwrap(),
+        "render_widget must be enabled by default"
+    );
+}
+
+#[tokio::test]
+async fn test_toggle_render_widget() {
+    // Given render_widget is listed by the API
+    // When PUT /api/tools/{id}/toggle is called on it
+    // Then the response returns the tool with the enabled flag flipped
+    let app = TestApp::new().await;
+
+    let resp = app.get("/api/tools").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tools = resp.json::<serde_json::Value>().await;
+    let render = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "render_widget")
+        .expect("GET /api/tools must include the render_widget tool");
+    let tool_id = render["id"].as_str().unwrap().to_string();
+    let was_enabled = render["enabled"].as_bool().unwrap();
+
+    let resp = app
+        .put(&format!("/api/tools/{}/toggle", tool_id))
+        .json(&serde_json::json!({}))
+        .send()
+        .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let toggled = resp.json::<serde_json::Value>().await;
+    assert_eq!(toggled["enabled"].as_bool().unwrap(), !was_enabled);
 }

@@ -47,7 +47,7 @@ pub struct AppState {
     pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
 }
 
-/// Build the production tool registry with all 12 built-in tools.
+/// Build the production tool registry with all 13 built-in tools.
 fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(crate::tools::weather::WeatherTool::new(
@@ -79,6 +79,7 @@ fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     registry.register(Box::new(
         crate::tools::unified_search::UnifiedSearchTool::new(pool.clone()),
     ));
+    registry.register(Box::new(crate::tools::widget::RenderWidgetTool::new()));
     registry
 }
 
@@ -549,5 +550,51 @@ mod tests {
 
         env::remove_var("EMBEDDING_PROVIDER");
         env::remove_var("EMBEDDING_MODEL");
+    }
+
+    // -----------------------------------------------------------------------
+    // `render_widget` must be registered in the production registry.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_build_tool_registry_includes_render_widget() {
+        use crate::tools::permission::Permission;
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("in-memory pool");
+
+        let registry = build_tool_registry(&pool);
+
+        assert!(
+            registry.get("render_widget").is_some(),
+            "build_tool_registry must register `render_widget`"
+        );
+
+        let defs = registry.definitions();
+        let render = defs
+            .iter()
+            .find(|d| d.name == "render_widget")
+            .expect("`render_widget` must be advertised in definitions()");
+        assert_eq!(
+            render.parameters["properties"]["widget_name"]["type"], "string",
+            "widget_name must be declared as a string"
+        );
+        assert_eq!(
+            render.parameters["properties"]["data"]["type"], "object",
+            "data must be declared as an object"
+        );
+        assert_eq!(
+            registry.permission("render_widget", &serde_json::json!({})),
+            Some(Permission::NoConfirm),
+            "render_widget must not require confirmation"
+        );
     }
 }
