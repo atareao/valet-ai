@@ -70,6 +70,7 @@ export type SSEEventType =
   | "chunk"
   | "tool_call"
   | "tool_result"
+  | "widget"
   | "done"
   | "error"
   | "approval_required"
@@ -78,8 +79,10 @@ export type SSEEventType =
 export interface SSEStreamEvent {
   type: SSEEventType;
   content?: string;
+  id?: string;
   name?: string;
   args?: unknown;
+  data?: unknown;
   success?: boolean;
   message_id?: string;
   user_message_id?: string;
