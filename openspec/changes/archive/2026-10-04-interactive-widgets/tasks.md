@@ -21,7 +21,7 @@
 
 - [x] 3.1 `cargo clippy --all-targets -- -D warnings` y `cargo fmt`.
 - [x] 3.2 Revisión (`rust-reviewer`).
-- [ ] 3.3 PR a `development` (backend).
+- [x] 3.3 PR a `development` (backend).
 
 ## 4. Frontend — RED
 
@@ -48,5 +48,5 @@
 
 ## 7. Cierre
 
-- [ ] 7.1 Verificación de extremo a extremo, incluida la presencia de `render_widget` en `GET /api/tools` y su toggle desde la UI.
-- [ ] 7.2 `openspec archive interactive-widgets` y PR de archivado.
+- [x] 7.1 Verificación de extremo a extremo, incluida la presencia de `render_widget` en `GET /api/tools` y su toggle desde la UI.
+- [x] 7.2 `openspec archive interactive-widgets` y PR de archivado.
