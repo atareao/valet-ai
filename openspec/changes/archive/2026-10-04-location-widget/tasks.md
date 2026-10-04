@@ -26,6 +26,6 @@
 ## 5. Revisión y cierre
 
 - [x] 5.1 Revisión `rust-reviewer` y `react-reviewer`.
-- [ ] 5.2 PR único (backend + frontend) a `development`.
-- [ ] 5.3 Prueba real: redesplegar y pedir una ubicación («¿dónde está…?») comprobando que llega `widget: LocationWidget` con coordenadas.
-- [ ] 5.4 `openspec archive location-widget` y PR de archivado.
+- [x] 5.2 PR único (backend + frontend) a `development`.
+- [x] 5.3 Prueba real: redesplegar y pedir una ubicación («¿dónde está…?») comprobando que llega `widget: LocationWidget` con coordenadas.
+- [x] 5.4 `openspec archive location-widget` y PR de archivado.
