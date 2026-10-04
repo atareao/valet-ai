@@ -991,6 +991,49 @@ describe("SettingsDialog", () => {
     });
   });
 
+  it("la lista de tools tiene un contenedor con altura limitada y scroll", async () => {
+    const user = userEvent.setup();
+    mockToolsState = {
+      tools: [
+        {
+          id: "weather",
+          name: "Weather",
+          description: "Consulta el tiempo",
+          enabled: true,
+        },
+        {
+          id: "calendar",
+          name: "Calendar",
+          description: "Gestiona eventos",
+          enabled: false,
+        },
+        {
+          id: "notes",
+          name: "Notes",
+          description: "Toma notas",
+          enabled: true,
+        },
+      ],
+      loading: false,
+      error: null,
+      toggle: mockToggleTool,
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    const region = screen.getByRole("region", { name: "Lista de herramientas" });
+    expect(region).toBeInTheDocument();
+    expect(region).toHaveStyle({ overflowY: "auto" });
+    // `toHaveStyle` compara el estilo computado y jsdom resuelve `60vh` a px,
+    // así que la unidad relativa se verifica sobre el estilo inline.
+    expect(region.style.maxHeight).toBe("60vh");
+
+    expect(within(region).getByText("Weather")).toBeInTheDocument();
+    expect(within(region).getByText("Calendar")).toBeInTheDocument();
+    expect(within(region).getByText("Notes")).toBeInTheDocument();
+  });
+
   // ════════════════════════════════════════════════════════════════
   // RED phase tests — change `settings-memory-tabs`: pestañas superiores
   // ════════════════════════════════════════════════════════════════
