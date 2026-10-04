@@ -15,6 +15,6 @@
 
 ## 3. Cierre
 
-- [ ] 3.0 PR de la migración a `development`.
-- [ ] 3.1 Prueba real: reconstruir/redesplegar, confirmar que `settings.system_prompt` contiene la sección y repetir los prompts de checklist/formulario.
-- [ ] 3.2 `openspec archive widget-prompt-guidance` y PR de archivado.
+- [x] 3.0 PR de la migración a `development`.
+- [x] 3.1 Prueba real: reconstruir/redesplegar, confirmar que `settings.system_prompt` contiene la sección y repetir los prompts de checklist/formulario.
+- [x] 3.2 `openspec archive widget-prompt-guidance` y PR de archivado.
