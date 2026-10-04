@@ -7,16 +7,12 @@ import {
   Popup,
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
+import "./LocationWidget.css";
 import type { LocationData, WidgetProps } from "./types";
+import { TILE_URL, TILE_ATTRIBUTION } from "./locationTiles";
 
 const { Text } = Typography;
 
-const TILE_URL =
-  "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
-const TILE_ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
-
-/** Estrecha a `number` solo si es un número finito (descarta NaN/±Infinity). */
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
@@ -94,6 +90,7 @@ export const LocationWidget: FC<WidgetProps<LocationData>> = ({
       )}
       <div
         role="img"
+        className="valet-map-dark"
         aria-label={`Mapa de la ubicación: ${title ?? address ?? `${lat}, ${lon}`}`}
         style={{
           height: 192,
