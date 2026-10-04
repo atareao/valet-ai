@@ -1,8 +1,20 @@
 import { useMemo, useState, type FC } from "react";
 import { Button, Checkbox, Typography } from "antd";
-import type { ChecklistData, WidgetProps } from "./types";
+import type { ChecklistData, ChecklistItem, WidgetProps } from "./types";
 
 const { Text } = Typography;
+
+interface NormalizedItem {
+  id: string;
+  label: string;
+}
+
+function normalizeItems(items: ChecklistItem[]): NormalizedItem[] {
+  return items.map((item, index) => ({
+    id: item.id ?? `item-${index}`,
+    label: item.label ?? item.text ?? "",
+  }));
+}
 
 /**
  * Lista de comprobación generada a partir de `ChecklistData`. Presenta un título,
@@ -15,7 +27,8 @@ export const ChecklistWidget: FC<WidgetProps<ChecklistData>> = ({
   disabled,
 }) => {
   const items = useMemo(
-    () => (Array.isArray(data?.items) ? data.items : []),
+    () =>
+      Array.isArray(data?.items) ? normalizeItems(data.items) : [],
     [data],
   );
   const [checked, setChecked] = useState<Record<string, boolean>>({});

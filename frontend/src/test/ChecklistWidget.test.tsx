@@ -79,6 +79,22 @@ describe("ChecklistWidget", () => {
     expect(onAction).toHaveBeenCalledWith("submit", { checkedIds: [] });
   });
 
+  it("acepta ítems sin `id` con `text` y sintetiza el id por posición", async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    const sinId: ChecklistData = {
+      title: "Mudanza",
+      items: [{ text: "Paso uno" }, { text: "Paso dos" }],
+    };
+
+    render(<ChecklistWidget data={sinId} onAction={onAction} />);
+
+    await user.click(screen.getByLabelText("Paso uno"));
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    expect(onAction).toHaveBeenCalledWith("submit", { checkedIds: ["item-0"] });
+  });
+
   it("deshabilita el botón de envío cuando `disabled` es true", () => {
     render(<ChecklistWidget data={data} onAction={vi.fn()} disabled />);
 

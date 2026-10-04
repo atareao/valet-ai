@@ -7,6 +7,10 @@ use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 /// Widget names the backend is willing to ask the client to render.
 const ALLOWED_WIDGETS: &[&str] = &["QuickForm", "Checklist"];
 
+/// Schema of the `data` argument, documented in the tool definition so the model
+/// emits the keys each widget actually reads.
+const DATA_SCHEMA_DESCRIPTION: &str = "Datos del widget según widget_name. QuickForm: {\"title\": str, \"fields\": [{\"name\": str, \"label\": str, \"type\": text|textarea|number|select|checkbox|slider, \"options\": [str] (solo cuando type es select), \"min\": num, \"max\": num (solo cuando type es slider)}], \"submit_label\": str}. Checklist: {\"title\": str, \"items\": [{\"id\": str, \"label\": str}]}.";
+
 /// Name under which this tool is registered and intercepted by the orchestrator.
 pub const RENDER_WIDGET_TOOL_NAME: &str = "render_widget";
 
@@ -58,7 +62,7 @@ impl Tool for RenderWidgetTool {
                 },
                 "data": {
                     "type": "object",
-                    "description": "Datos que el widget necesita para renderizarse."
+                    "description": DATA_SCHEMA_DESCRIPTION
                 }
             },
             "required": ["widget_name"]
@@ -198,5 +202,55 @@ mod tests {
             result.is_ok(),
             "a permitted widget name must execute successfully"
         );
+    }
+
+    /// The tool must document the shape of `data` for each allowed widget so the
+    /// model emits the correct keys instead of inventing its own.
+    #[test]
+    fn test_render_widget_parameters_document_data_schema() {
+        let params = RenderWidgetTool::new().parameters();
+
+        // `data` is a generic object; no provider-specific `oneOf` is used.
+        assert_eq!(
+            params["properties"]["data"]["type"],
+            serde_json::json!("object"),
+            "`data` must remain a plain object"
+        );
+
+        // `widget_name` keeps its allowlist unchanged.
+        assert_eq!(
+            params["properties"]["widget_name"]["enum"],
+            serde_json::json!(["QuickForm", "Checklist"]),
+            "`widget_name` enum must remain [\"QuickForm\", \"Checklist\"]"
+        );
+
+        // `data` must carry a description documenting its schema.
+        let desc = params["properties"]["data"]["description"]
+            .as_str()
+            .expect("`data` must carry a description documenting its schema");
+
+        for token in [
+            "QuickForm",
+            "Checklist",
+            "fields",
+            "name",
+            "label",
+            "type",
+            "options",
+            "submit_label",
+            "items",
+            "id",
+            "text",
+            "textarea",
+            "number",
+            "select",
+            "checkbox",
+            "slider",
+        ] {
+            assert!(
+                desc.contains(token),
+                "the `data` description must mention `{token}`; got: {desc}"
+            );
+        }
     }
 }
