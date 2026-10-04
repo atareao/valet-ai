@@ -17,6 +17,7 @@ use crate::tools::geo_utils::reverse_geocode;
 use crate::tools::r#trait::ToolResult;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::time_format::format_browser_timestamp;
+use crate::tools::widget::RENDER_WIDGET_TOOL_NAME;
 use futures::StreamExt;
 use uuid::Uuid;
 
@@ -181,6 +182,14 @@ pub enum SSEEvent {
     /// The result of an approval resolution (approved or denied).
     #[serde(rename = "approval_result")]
     ApprovalResult { request_id: String, approved: bool },
+
+    /// The orchestrator asks the client to render an interactive widget.
+    #[serde(rename = "widget")]
+    Widget {
+        id: String,
+        name: String,
+        data: Value,
+    },
 }
 
 impl SSEEvent {
@@ -1013,6 +1022,35 @@ impl Orchestrator {
                                                 })
                                                 .await
                                                 .ok();
+
+                                            // A successful `render_widget` call is surfaced
+                                            // as a dedicated event so the client can render
+                                            // the widget live, before the turn finishes.
+                                            if tc.name == RENDER_WIDGET_TOOL_NAME {
+                                                // The tool reports the validated widget
+                                                // name and the normalised data; without a
+                                                // name there is nothing to render.
+                                                if let Some(widget_name) = tool_result
+                                                    .data
+                                                    .get("widget_name")
+                                                    .and_then(|v| v.as_str())
+                                                {
+                                                    let widget_data = tool_result
+                                                        .data
+                                                        .get("data")
+                                                        .filter(|v| v.is_object())
+                                                        .cloned()
+                                                        .unwrap_or_else(|| serde_json::json!({}));
+                                                    let _ = tx
+                                                        .send(SSEEvent::Widget {
+                                                            id: Uuid::new_v4().to_string(),
+                                                            name: widget_name.to_string(),
+                                                            data: widget_data,
+                                                        })
+                                                        .await
+                                                        .ok();
+                                                }
+                                            }
 
                                             messages.push(ChatMessage {
                                                 role: "tool".into(),
@@ -2793,6 +2831,293 @@ mod tests {
                 .contains("The weather in Madrid is 22°C and sunny."),
             "Assistant message should contain the original content, got: {}",
             last_msg.content
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // A successful `render_widget` call must emit an SSE `widget` event
+    // -----------------------------------------------------------------------
+
+    /// Mock LLM that asks to render a widget on its first call, then answers.
+    struct MockLLMWithWidgetThenAnswer {
+        call_count: Arc<Mutex<usize>>,
+        widget_name: String,
+        widget_data: Value,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for MockLLMWithWidgetThenAnswer {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "Voy a pedir un widget.".into(),
+                        tool_calls: Some(vec![ToolCall {
+                            id: "call-widget-1".into(),
+                            name: "render_widget".into(),
+                            arguments: serde_json::json!({
+                                "widget_name": self.widget_name.clone(),
+                                "data": self.widget_data.clone(),
+                            }),
+                        }]),
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            } else {
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "Aquí tienes.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            }
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let result = self.chat(request).await?;
+            let content = result.message.content.clone();
+            let tool_calls = result.message.tool_calls.clone();
+
+            let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
+            if let Some(tcs) = tool_calls {
+                for tc in tcs {
+                    events.push(Ok(StreamEvent::ToolCall(tc)));
+                }
+                events.push(Ok(StreamEvent::Done(result)));
+            } else {
+                for chunk in content
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(10)
+                    .map(|c| c.iter().collect::<String>())
+                {
+                    events.push(Ok(StreamEvent::Chunk(chunk)));
+                }
+                events.push(Ok(StreamEvent::Done(result)));
+            }
+
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// Configurable stand-in for `RenderWidgetTool` used to drive the orchestrator.
+    struct MockRenderWidgetTool {
+        allow: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for MockRenderWidgetTool {
+        fn name(&self) -> &'static str {
+            RENDER_WIDGET_TOOL_NAME
+        }
+
+        fn description(&self) -> &'static str {
+            "mock render_widget"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn permission(&self, _args: &serde_json::Value) -> Permission {
+            Permission::NoConfirm
+        }
+
+        async fn execute(&self, args: serde_json::Value) -> Result<ToolResult, ToolError> {
+            if self.allow {
+                let widget_name = args
+                    .get("widget_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                // Mirror the production tool: normalise `data` and report it back.
+                let normalized_data = args
+                    .get("data")
+                    .filter(|v| v.is_object())
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                Ok(ToolResult {
+                    success: true,
+                    data: serde_json::json!({
+                        "rendered": true,
+                        "widget_name": widget_name,
+                        "data": normalized_data,
+                    }),
+                    message: Some("Widget requested".into()),
+                })
+            } else {
+                Err(ToolError::InvalidArguments(
+                    "widget_name not allowed".into(),
+                ))
+            }
+        }
+    }
+
+    /// Run one streaming turn against the mock widget tool and collect every event.
+    async fn run_widget_turn(
+        widget_name: &str,
+        widget_data: Value,
+        allow: bool,
+    ) -> Result<Vec<SSEEvent>, Box<dyn std::error::Error>> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await?;
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MockRenderWidgetTool { allow }));
+        let registry = Arc::new(registry);
+
+        let llm = Arc::new(MockLLMWithWidgetThenAnswer {
+            call_count: Arc::new(Mutex::new(0)),
+            widget_name: widget_name.to_string(),
+            widget_data,
+        });
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            OrchestratorConfig::default(),
+            pool.clone(),
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        );
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-id", "Quiero un widget", None, tx)
+            .await?;
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        Ok(events)
+    }
+
+    fn is_widget_event(event: &SSEEvent) -> bool {
+        matches!(event, SSEEvent::Widget { .. })
+    }
+
+    fn is_done_event(event: &SSEEvent) -> bool {
+        matches!(event, SSEEvent::Done { .. })
+    }
+
+    #[tokio::test]
+    async fn test_render_widget_success_emits_widget_event(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let data = serde_json::json!({"title": "Elige ciudad", "fields": []});
+        let events = run_widget_turn("QuickForm", data.clone(), true).await?;
+
+        let widget = events
+            .iter()
+            .find(|e| is_widget_event(e))
+            .expect("a successful render_widget call must emit a `widget` event");
+
+        match widget {
+            SSEEvent::Widget {
+                id,
+                name,
+                data: emitted,
+            } => {
+                assert!(!id.is_empty(), "the widget id must not be empty");
+                assert_eq!(name, "QuickForm");
+                assert_eq!(
+                    emitted, &data,
+                    "the widget data must be passed through intact"
+                );
+                assert!(
+                    widget.to_json_string().contains(r#""type":"widget""#),
+                    "the event must serialize with type=widget"
+                );
+            }
+            other => panic!("expected a widget event, got {other:?}"),
+        }
+
+        assert!(
+            events.iter().any(is_done_event),
+            "the turn must still end with a `done` event"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_render_widget_invalid_name_does_not_emit_widget_event(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Positive control: the same harness with a permitted widget must emit a
+        // `widget` event, proving the negative case below is meaningful.
+        let control = run_widget_turn("QuickForm", serde_json::json!({}), true).await?;
+        assert!(
+            control.iter().any(is_widget_event),
+            "control: a permitted widget must emit a `widget` event"
+        );
+
+        // Negative case: an invalid widget name must not emit a `widget` event.
+        let events = run_widget_turn("SystemMonitor", serde_json::json!({}), false).await?;
+        assert!(
+            !events.iter().any(is_widget_event),
+            "an invalid widget name must not emit a `widget` event"
+        );
+        assert!(
+            events.iter().any(is_done_event),
+            "the turn must continue and end with `done` even when the widget is invalid"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_render_widget_non_object_data_emits_empty_object(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Non-object `data` must be normalised to `{}` before it reaches the client.
+        let events = run_widget_turn("QuickForm", serde_json::json!("not-an-object"), true).await?;
+
+        let widget = events
+            .iter()
+            .find(|e| is_widget_event(e))
+            .expect("a successful render_widget call must emit a `widget` event");
+
+        match widget {
+            SSEEvent::Widget { data, .. } => {
+                assert_eq!(
+                    data,
+                    &serde_json::json!({}),
+                    "non-object data must reach the client as an empty object"
+                );
+            }
+            other => panic!("expected a widget event, got {other:?}"),
+        }
+
+        assert!(
+            events.iter().any(is_done_event),
+            "the turn must still end with a `done` event"
         );
         Ok(())
     }

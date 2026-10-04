@@ -118,7 +118,7 @@ mod tests {
     use super::*;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    /// Test-side copy of the production tool catalog. Must mirror the 12 tools
+    /// Test-side copy of the production tool catalog. Must mirror the 13 tools
     /// returned by `build_tool_registry` in `src/lib.rs`; keep both in sync.
     const REGISTRY_NAMES: &[&str] = &[
         "weather",
@@ -133,6 +133,7 @@ mod tests {
         "get_current_location",
         "notes",
         "unified_search",
+        "render_widget",
     ];
 
     async fn setup() -> Result<SqlitePool, sqlx::Error> {
@@ -169,7 +170,7 @@ mod tests {
         let pool = setup().await?;
         ToolsRepo::sync_from_registry(&pool, &defs(REGISTRY_NAMES)).await?;
         let tools = ToolsRepo::list(&pool).await?;
-        assert_eq!(tools.len(), 12);
+        assert_eq!(tools.len(), 13);
         assert!(tools.iter().any(|t| t.name == "weather"));
         assert!(tools.iter().any(|t| t.name == "unified_search"));
         Ok(())
@@ -207,7 +208,7 @@ mod tests {
             !tools.iter().any(|t| t.name == "geo"),
             "geo must be removed"
         );
-        assert_eq!(tools.len(), 12);
+        assert_eq!(tools.len(), 13);
         Ok(())
     }
 
@@ -254,7 +255,7 @@ mod tests {
         ToolsRepo::sync_from_registry(&pool, &defs).await?;
         ToolsRepo::sync_from_registry(&pool, &defs).await?;
         let tools = ToolsRepo::list(&pool).await?;
-        assert_eq!(tools.len(), 12);
+        assert_eq!(tools.len(), 13);
         Ok(())
     }
 
@@ -301,6 +302,47 @@ mod tests {
         let pool = setup().await?;
         let result = ToolsRepo::toggle_enabled(&pool, "nonexistent").await?;
         assert!(result.is_none());
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // The production registry must sync `render_widget` into the table.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_sync_from_production_registry_includes_render_widget(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let state = crate::AppState::new_in_memory_empty().await;
+        let tools = ToolsRepo::list(&state.db).await?;
+
+        let render = tools
+            .iter()
+            .find(|t| t.name == "render_widget")
+            .expect("the production registry must sync `render_widget` into the tools table");
+        assert!(render.enabled, "render_widget must be enabled by default");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_toggle_render_widget_marks_it_disabled() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let state = crate::AppState::new_in_memory_empty().await;
+        let render = ToolsRepo::list(&state.db)
+            .await?
+            .into_iter()
+            .find(|t| t.name == "render_widget")
+            .expect("render_widget must have been synced from the production registry");
+
+        let toggled = ToolsRepo::toggle_enabled(&state.db, &render.id)
+            .await?
+            .expect("toggle must return the updated tool");
+        assert!(!toggled.enabled);
+
+        let disabled = ToolsRepo::disabled_names(&state.db).await?;
+        assert!(
+            disabled.contains(&"render_widget".to_string()),
+            "disabled_names must include render_widget, got {disabled:?}"
+        );
         Ok(())
     }
 }
