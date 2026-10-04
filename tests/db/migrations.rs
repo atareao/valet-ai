@@ -94,6 +94,55 @@ async fn test_migration_is_idempotent() {
     valet::db::schema::run_migrations(&pool).await.unwrap();
 }
 
+/// The `messages` table gains a nullable `widgets` TEXT column.
+#[tokio::test]
+async fn test_messages_table_has_widgets_column() {
+    let pool = setup().await;
+
+    let columns: Vec<(i64, String, String, i64, Option<String>, i64)> = sqlx::query_as(
+        "SELECT cid, name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('messages')",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    let widgets = columns
+        .iter()
+        .find(|(_cid, name, _ty, _notnull, _dflt, _pk)| name == "widgets")
+        .expect("Column 'widgets' should exist in messages table");
+
+    assert_eq!(widgets.2.to_uppercase(), "TEXT", "'widgets' should be TEXT");
+    assert_eq!(widgets.3, 0, "'widgets' should be nullable");
+}
+
+/// Running the migrations twice keeps the `widgets` column and does not fail.
+#[tokio::test]
+async fn test_message_widgets_migration_is_idempotent() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+
+    valet::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
+
+    let column_names: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('messages')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+    assert!(
+        column_names.contains(&"widgets".to_string()),
+        "Column 'widgets' must exist after running migrations twice"
+    );
+}
+
 // ── F5c: Tools de Valor — Schema tests ─────────────────────────────────────
 
 /// Asserts that `run_migrations` does NOT leave the tables of the removed tools.

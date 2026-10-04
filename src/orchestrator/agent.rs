@@ -517,6 +517,7 @@ impl Orchestrator {
         let mut iterations = 0usize;
         let mut messages: Vec<ChatMessage> = Vec::new();
         let mut used_tools: Vec<String> = Vec::new();
+        let mut rendered_widgets: Vec<Value> = Vec::new();
         let mut tool_call_counts: std::collections::HashMap<String, usize> =
             std::collections::HashMap::new();
 
@@ -1041,14 +1042,24 @@ impl Orchestrator {
                                                         .filter(|v| v.is_object())
                                                         .cloned()
                                                         .unwrap_or_else(|| serde_json::json!({}));
+                                                    // Generate the widget id once and reuse it
+                                                    // both for the SSE event and the persisted
+                                                    // record, so the reloaded widget keeps the
+                                                    // same `[widget:Name#id]` identity.
+                                                    let widget_id = Uuid::new_v4().to_string();
                                                     let _ = tx
                                                         .send(SSEEvent::Widget {
-                                                            id: Uuid::new_v4().to_string(),
+                                                            id: widget_id.clone(),
                                                             name: widget_name.to_string(),
-                                                            data: widget_data,
+                                                            data: widget_data.clone(),
                                                         })
                                                         .await
                                                         .ok();
+                                                    rendered_widgets.push(serde_json::json!({
+                                                        "id": widget_id,
+                                                        "name": widget_name,
+                                                        "data": widget_data,
+                                                    }));
                                                 }
                                             }
 
@@ -1158,6 +1169,17 @@ impl Orchestrator {
                                 .await?;
                                 msg.id
                             };
+
+                            // Persist the widgets emitted during this turn, if any,
+                            // so the frontend can rebuild them on reload.
+                            if !rendered_widgets.is_empty() {
+                                crate::db::repos::messages::MessagesRepo::set_widgets(
+                                    &self.db,
+                                    &assistant_message_id,
+                                    &serde_json::json!(rendered_widgets.clone()),
+                                )
+                                .await?;
+                            }
 
                             // Notify the episodic memory worker about the new assistant message
                             if let Some(ref tx) = self.memory_tx {
@@ -2967,12 +2989,13 @@ mod tests {
         }
     }
 
-    /// Run one streaming turn against the mock widget tool and collect every event.
+    /// Run one streaming turn against the mock widget tool and collect every
+    /// event together with the pool the turn was persisted into.
     async fn run_widget_turn(
         widget_name: &str,
         widget_data: Value,
         allow: bool,
-    ) -> Result<Vec<SSEEvent>, Box<dyn std::error::Error>> {
+    ) -> Result<(SqlitePool, Vec<SSEEvent>), Box<dyn std::error::Error>> {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -3020,7 +3043,7 @@ mod tests {
         while let Some(event) = rx.recv().await {
             events.push(event);
         }
-        Ok(events)
+        Ok((pool, events))
     }
 
     fn is_widget_event(event: &SSEEvent) -> bool {
@@ -3035,7 +3058,7 @@ mod tests {
     async fn test_render_widget_success_emits_widget_event(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let data = serde_json::json!({"title": "Elige ciudad", "fields": []});
-        let events = run_widget_turn("QuickForm", data.clone(), true).await?;
+        let (_pool, events) = run_widget_turn("QuickForm", data.clone(), true).await?;
 
         let widget = events
             .iter()
@@ -3074,14 +3097,15 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Positive control: the same harness with a permitted widget must emit a
         // `widget` event, proving the negative case below is meaningful.
-        let control = run_widget_turn("QuickForm", serde_json::json!({}), true).await?;
+        let (_pool, control) = run_widget_turn("QuickForm", serde_json::json!({}), true).await?;
         assert!(
             control.iter().any(is_widget_event),
             "control: a permitted widget must emit a `widget` event"
         );
 
         // Negative case: an invalid widget name must not emit a `widget` event.
-        let events = run_widget_turn("SystemMonitor", serde_json::json!({}), false).await?;
+        let (_pool, events) =
+            run_widget_turn("SystemMonitor", serde_json::json!({}), false).await?;
         assert!(
             !events.iter().any(is_widget_event),
             "an invalid widget name must not emit a `widget` event"
@@ -3097,7 +3121,8 @@ mod tests {
     async fn test_render_widget_non_object_data_emits_empty_object(
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Non-object `data` must be normalised to `{}` before it reaches the client.
-        let events = run_widget_turn("QuickForm", serde_json::json!("not-an-object"), true).await?;
+        let (_pool, events) =
+            run_widget_turn("QuickForm", serde_json::json!("not-an-object"), true).await?;
 
         let widget = events
             .iter()
@@ -3119,6 +3144,72 @@ mod tests {
             events.iter().any(is_done_event),
             "the turn must still end with a `done` event"
         );
+        Ok(())
+    }
+
+    /// A turn that succeeds in `render_widget` persists the widget list on the
+    /// assistant message, reusing the id, name and data of the emitted event.
+    #[tokio::test]
+    async fn test_render_widget_persists_widgets_on_assistant_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::db::repos::messages::MessagesRepo;
+
+        let data = serde_json::json!({"title": "Elige ciudad", "fields": []});
+        let (pool, events) = run_widget_turn("QuickForm", data.clone(), true).await?;
+
+        let (event_id, event_name, event_data) = events
+            .iter()
+            .find_map(|e| match e {
+                SSEEvent::Widget { id, name, data } => {
+                    Some((id.clone(), name.clone(), data.clone()))
+                }
+                _ => None,
+            })
+            .expect("a successful render_widget call must emit a `widget` event");
+
+        let (messages, _) = MessagesRepo::list_all(&pool, 100, None).await?;
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("the turn must persist an assistant message");
+
+        let widgets = assistant
+            .widgets
+            .as_ref()
+            .expect("the assistant message must have widgets persisted");
+        let widgets = widgets
+            .as_array()
+            .expect("the persisted widgets must be a JSON array");
+        assert_eq!(widgets.len(), 1, "exactly one widget must be persisted");
+        assert_eq!(widgets[0]["id"], event_id, "the widget id must be reused");
+        assert_eq!(widgets[0]["name"], event_name);
+        assert_eq!(widgets[0]["data"], event_data);
+
+        Ok(())
+    }
+
+    /// A turn without a successful `render_widget` leaves `widgets` as `None`.
+    #[tokio::test]
+    async fn test_turn_without_widget_leaves_widgets_null() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use crate::db::repos::messages::MessagesRepo;
+
+        let (pool, events) = run_widget_turn("SystemMonitor", serde_json::json!({}), false).await?;
+        assert!(
+            !events.iter().any(is_widget_event),
+            "an invalid widget must not emit a `widget` event"
+        );
+
+        let (messages, _) = MessagesRepo::list_all(&pool, 100, None).await?;
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("the turn must persist an assistant message");
+        assert!(
+            assistant.widgets.is_none(),
+            "a turn without widgets must leave `widgets` as None"
+        );
+
         Ok(())
     }
 

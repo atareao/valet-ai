@@ -70,10 +70,21 @@ export function useMainChat() {
       .chatInit()
       .then((data) => {
         if (!mounted) return;
-        setMessages(data.messages || []);
+        const history = data.messages || [];
+        setMessages(history);
+        // Reconstruye los widgets persistidos en cada mensaje del historial para
+        // que vuelvan a mostrarse tras recargar la página. Los mensajes sin
+        // widgets no crean entrada.
+        const initialWidgets: Record<string, WidgetInstance[]> = {};
+        for (const message of history) {
+          if (message.widgets && message.widgets.length > 0) {
+            initialWidgets[message.id] = message.widgets;
+          }
+        }
+        setWidgetsByMessage(initialWidgets);
         console.log(
           "[useMainChat] Chat initialized, messages:",
-          data.messages?.length,
+          history.length,
         );
       })
       .catch((err: Error) => {
