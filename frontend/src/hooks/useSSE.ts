@@ -7,6 +7,7 @@ export interface UseSSEOptions {
   onDone?: (messageId: string, userMessageId?: string, location?: string | null, tools_used?: string, user_location?: string, user_created_at?: string) => void;
   onToolCall?: (name: string, args: unknown) => void;
   onToolResult?: (name: string, success: boolean) => void;
+  onWidget?: (id: string, name: string, data: unknown) => void;
   onError?: (message: string) => void;
   onApprovalRequired?: (
     requestId: string,
@@ -115,6 +116,16 @@ export function useSSE() {
                       event.name || "",
                       event.success ?? false,
                     );
+                    break;
+                  case "widget":
+                    if (!event.id) {
+                      console.warn(
+                        "[useSSE] Ignoring widget event without id",
+                        event,
+                      );
+                      break;
+                    }
+                    options.onWidget?.(event.id, event.name || "", event.data);
                     break;
                   case "approval_required":
                     options.onApprovalRequired?.(

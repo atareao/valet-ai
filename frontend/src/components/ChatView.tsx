@@ -4,6 +4,7 @@ import type { Message } from "../types";
 import { MessageBubble } from "./MessageBubble";
 import { DateSeparator } from "./DateSeparator";
 import { MessageInput, type MessageInputHandle } from "./MessageInput";
+import type { WidgetInstance } from "./widgets/types";
 
 interface ChatViewProps {
   messages: Message[];
@@ -20,6 +21,12 @@ interface ChatViewProps {
     reason: string;
   } | null;
   onResolveApproval?: (approved: boolean) => void;
+  widgetsByMessage?: Record<string, WidgetInstance[]>;
+  onWidgetAction?: (
+    widget: WidgetInstance,
+    action: string,
+    payload?: unknown,
+  ) => void;
 }
 
 function isSameDay(date1: string, date2: string): boolean {
@@ -43,6 +50,8 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
     userAvatarUrl,
     pendingApproval,
     onResolveApproval,
+    widgetsByMessage,
+    onWidgetAction,
   } = props;
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<MessageInputHandle>(null);
@@ -98,7 +107,13 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
           return (
             <React.Fragment key={msg.id}>
               {showSeparator && <DateSeparator date={msg.created_at} />}
-              <MessageBubble message={msg} userAvatarUrl={userAvatarUrl} />
+              <MessageBubble
+                message={msg}
+                userAvatarUrl={userAvatarUrl}
+                widgets={widgetsByMessage?.[msg.id]}
+                onWidgetAction={onWidgetAction}
+                widgetsDisabled={streaming}
+              />
             </React.Fragment>
           );
         })}

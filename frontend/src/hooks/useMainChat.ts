@@ -1,7 +1,9 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import type { Message } from "../types";
 import { api } from "../api/client";
 import { useSSE } from "./useSSE";
+import type { WidgetInstance } from "../components/widgets/types";
+import { formatWidgetAction } from "../components/widgets/actions";
 
 function getTimezone(): string {
   try {
@@ -53,6 +55,11 @@ export function useMainChat() {
     toolName: string;
     reason: string;
   } | null>(null);
+  const [widgetsByMessage, setWidgetsByMessage] = useState<
+    Record<string, WidgetInstance[]>
+  >({});
+  // Ref (no estado) para consultar desde callbacks sin depender del ciclo de render.
+  const streamingRef = useRef(false);
 
   const sse = useSSE();
 
@@ -94,6 +101,7 @@ export function useMainChat() {
       };
 
       setMessages((prev) => [...prev, optimistic]);
+      streamingRef.current = true;
       setStreaming(true);
       setStreamingContent("");
       setError(null);
@@ -157,6 +165,22 @@ export function useMainChat() {
               window.dispatchEvent(new CustomEvent("tasks-changed"));
             }
           },
+          onWidget: (id: string, name: string, data: unknown) => {
+            if (!streamingRef.current) {
+              console.warn(
+                "[useMainChat] Widget ignored (no active stream):",
+                name,
+                id,
+              );
+              return;
+            }
+            console.log("[useMainChat] Widget received:", name, id);
+            const widget: WidgetInstance = { id, name, data };
+            setWidgetsByMessage((prev) => ({
+              ...prev,
+              streaming: [...(prev["streaming"] ?? []), widget],
+            }));
+          },
           onApprovalRequired: (
             requestId: string,
             toolName: string,
@@ -178,10 +202,21 @@ export function useMainChat() {
               "[useMainChat] Stream done. Total content length:",
               assistantContent.length,
             );
+            const assistantId = messageId || "msg-" + Date.now();
+            // Move live widgets from the streaming placeholder to the final message
+            setWidgetsByMessage((prev) => {
+              const next = { ...prev };
+              const streamingWidgets = next["streaming"];
+              delete next["streaming"];
+              if (streamingWidgets && streamingWidgets.length > 0) {
+                next[assistantId] = streamingWidgets;
+              }
+              return next;
+            });
             // Replace temp user message id with real one instead of removing it
             setMessages((prev) => {
               const assistant: Message = {
-                id: messageId || "msg-" + Date.now(),
+                id: assistantId,
                 role: "assistant",
                 content: assistantContent,
                 location: location || null,
@@ -197,6 +232,7 @@ export function useMainChat() {
                 assistant,
               ];
             });
+            streamingRef.current = false;
             setStreaming(false);
             setStreamingContent("");
             setActiveTools([]);
@@ -206,11 +242,19 @@ export function useMainChat() {
           onError: (msg) => {
             console.error("[useMainChat] Stream error:", msg);
             setError(msg);
+            streamingRef.current = false;
             setStreaming(false);
             setStreamingContent("");
             setActiveTools([]);
             setUsedTools([]);
             setPendingApproval(null);
+            // Discard live widgets that never made it into a finished message
+            setWidgetsByMessage((prev) => {
+              if (!("streaming" in prev)) return prev;
+              const next = { ...prev };
+              delete next["streaming"];
+              return next;
+            });
             // Keep the user message visible - DON'T filter it out
           },
         },
@@ -218,6 +262,24 @@ export function useMainChat() {
       );
     },
     [sse],
+  );
+
+  const sendWidgetAction = useCallback(
+    (widget: WidgetInstance, action: string, payload?: unknown) => {
+      // Defensa: no abortar un stream en curso ni encolar un turno a medias.
+      if (streamingRef.current) {
+        console.warn("[useMainChat] Widget action ignored while streaming");
+        return;
+      }
+      const content = formatWidgetAction(
+        widget.name,
+        widget.id,
+        action,
+        payload,
+      );
+      void sendMessage(content);
+    },
+    [sendMessage],
   );
 
   const resolveApproval = useCallback(
@@ -245,5 +307,7 @@ export function useMainChat() {
     usedTools,
     pendingApproval,
     resolveApproval,
+    widgetsByMessage,
+    sendWidgetAction,
   };
 }

@@ -25,26 +25,26 @@
 
 ## 4. Frontend — RED
 
-- [ ] 4.1 Tests de `WIDGET_REGISTRY`/`WidgetRenderer`: widget conocido se pinta; desconocido muestra aviso y no revienta.
-- [ ] 4.2 Test de `useSSE`: el evento `type:"widget"` invoca el callback con `id`/`name`/`data`.
-- [ ] 4.3 Tests de `useMainChat`: un widget en vivo se asocia al mensaje del asistente; `sendWidgetAction` envía un turno de usuario con el envoltorio estable.
-- [ ] 4.4 Tests de `QuickFormWidget` y `ChecklistWidget`: submit llama a `onAction` con el payload esperado.
-- [ ] 4.5 `npm test` → los tests nuevos fallan y el resto sigue verde.
+- [x] 4.1 Tests de `WIDGET_REGISTRY`/`WidgetRenderer`: widget conocido se pinta; desconocido muestra aviso y no revienta.
+- [x] 4.2 Test de `useSSE`: el evento `type:"widget"` invoca el callback con `id`/`name`/`data`.
+- [x] 4.3 Tests de `useMainChat`: un widget en vivo se asocia al mensaje del asistente; `sendWidgetAction` envía un turno de usuario con el envoltorio estable.
+- [x] 4.4 Tests de `QuickFormWidget` y `ChecklistWidget`: submit llama a `onAction` con el payload esperado.
+- [x] 4.5 `npm test` → los tests nuevos fallan y el resto sigue verde.
 
 ## 5. Frontend — GREEN
 
-- [ ] 5.1 Tipos (`WidgetInstance`, evento SSE `widget`) y `formatWidgetAction`.
-- [ ] 5.2 `useSSE`: manejar `type:"widget"` y exponerlo por callback.
-- [ ] 5.3 `useMainChat`: acumular widgets por mensaje y `sendWidgetAction`.
-- [ ] 5.4 `components/widgets/registry.ts`, `WidgetRenderer.tsx`, `QuickFormWidget.tsx`, `ChecklistWidget.tsx` (antd).
-- [ ] 5.5 `MessageBubble`/`ChatView`: renderizar los widgets del mensaje tras el Markdown.
-- [ ] 5.6 `npm test` → todo verde; `npm run typecheck`.
+- [x] 5.1 Tipos (`WidgetInstance`, evento SSE `widget`) y `formatWidgetAction`.
+- [x] 5.2 `useSSE`: manejar `type:"widget"` y exponerlo por callback.
+- [x] 5.3 `useMainChat`: acumular widgets por mensaje y `sendWidgetAction`.
+- [x] 5.4 `components/widgets/registry.ts`, `WidgetRenderer.tsx`, `QuickFormWidget.tsx`, `ChecklistWidget.tsx` (antd).
+- [x] 5.5 `MessageBubble`/`ChatView`: renderizar los widgets del mensaje tras el Markdown.
+- [x] 5.6 `npm test` → todo verde; `npm run typecheck`.
 
 ## 6. Frontend — REFACTOR y PR
 
-- [ ] 6.1 `npm run lint` (0 warnings) y limpieza.
-- [ ] 6.2 Revisión (`react-reviewer`).
-- [ ] 6.3 PR a `development` (frontend).
+- [x] 6.1 `npm run lint` (0 warnings) y limpieza.
+- [x] 6.2 Revisión (`react-reviewer`).
+- [x] 6.3 PR a `development` (frontend).
 
 ## 7. Cierre
 

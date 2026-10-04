@@ -40,6 +40,14 @@
 - **Render en el flujo del mensaje.** Los widgets se asocian al mensaje del asistente en curso dentro de
   `useMainChat` y se pintan tras el Markdown. El tipo de API `Message` **no** se contamina: los widgets
   viven en un mapa aparte.
+- **Aislamiento por widget (Error Boundary).** Cada widget se renderiza dentro de un
+  `WidgetErrorBoundary` propio: un `data` que haga lanzar en render degrada a un `Alert` de error y no
+  tumba el chat. Además, los arrays estructurales (`fields`, `options`, `items`) se validan con
+  `Array.isArray` antes de recorrerlos, de modo que un `data` malformado degrada a lista vacía.
+- **Bloqueo durante el stream.** Los widgets no pueden emitir acciones mientras el asistente genera la
+  respuesta: `WidgetProps.disabled` fluye de `ChatView` (`streaming`) a los botones, y `sendWidgetAction`
+  ignora defensivamente la acción si hay un stream activo (evita abortar el stream en curso). Por el
+  mismo motivo, un evento `widget` que llegue sin stream activo se descarta.
 
 ## Contracts
 
@@ -65,6 +73,7 @@ Permiso: `NoConfirm`. En éxito devuelve
 export interface WidgetProps<T = unknown> {
   data: T;
   onAction: (action: string, payload?: unknown) => void;
+  disabled?: boolean;
 }
 export type WidgetComponent = React.ComponentType<WidgetProps>;
 
@@ -111,7 +120,11 @@ p. ej. `[widget:QuickForm#abc] submit {"ciudad":"Madrid"}`.
 ## Risks / Trade-offs
 
 - [El modelo entrega `data` malformado] → Render defensivo: campos/ítems que no encajen se ignoran o se
-  muestran como texto; nunca revienta.
+  muestran como texto; arrays inválidos degradan a lista vacía; un fallo de render queda contenido por
+  `WidgetErrorBoundary`; nunca revienta el chat.
+- [Acción durante el stream] → Los botones se deshabilitan con `disabled` y `sendWidgetAction` ignora la
+  acción si hay un stream activo, para no abortarlo ni perder el mensaje en curso.
+- [Widget con `id` vacío] → Descartado en `useSSE` con aviso, evitando `key` de React colisionando.
 - [Ruido en el historial] → El turno de acción se persiste como mensaje de usuario; es asumible y
   coherente con el resto.
 - [Bucle modelo↔widget] → El límite de reintentos ya existente (`MAX_TOOL_RETRIES = 5`) acota el riesgo.

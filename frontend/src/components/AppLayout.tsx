@@ -103,6 +103,8 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             userAvatarUrl={profile?.avatar_url ?? null}
             pendingApproval={mainChat.pendingApproval}
             onResolveApproval={mainChat.resolveApproval}
+            widgetsByMessage={mainChat.widgetsByMessage}
+            onWidgetAction={mainChat.sendWidgetAction}
           />
         )}
       </Content>
