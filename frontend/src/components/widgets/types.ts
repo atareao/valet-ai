@@ -40,6 +40,14 @@ export interface QuickFormData {
   submit_label?: string;
 }
 
+export interface LocationData {
+  title?: string;
+  description?: string;
+  latitude?: number;
+  longitude?: number;
+  address?: string;
+}
+
 export interface ChecklistItem {
   id?: string;
   label?: string;

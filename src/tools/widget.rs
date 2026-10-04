@@ -5,11 +5,11 @@ use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 
 /// Widget names the backend is willing to ask the client to render.
-const ALLOWED_WIDGETS: &[&str] = &["QuickForm", "Checklist"];
+const ALLOWED_WIDGETS: &[&str] = &["QuickForm", "Checklist", "LocationWidget"];
 
 /// Schema of the `data` argument, documented in the tool definition so the model
 /// emits the keys each widget actually reads.
-const DATA_SCHEMA_DESCRIPTION: &str = "Datos del widget según widget_name. QuickForm: {\"title\": str, \"fields\": [{\"name\": str, \"label\": str, \"type\": text|textarea|number|select|checkbox|slider, \"options\": [str] (solo cuando type es select), \"min\": num, \"max\": num (solo cuando type es slider)}], \"submit_label\": str}. Checklist: {\"title\": str, \"items\": [{\"id\": str, \"label\": str}]}.";
+const DATA_SCHEMA_DESCRIPTION: &str = "Datos del widget según widget_name. QuickForm: {\"title\": str, \"fields\": [{\"name\": str, \"label\": str, \"type\": text|textarea|number|select|checkbox|slider, \"options\": [str] (solo cuando type es select), \"min\": num, \"max\": num (solo cuando type es slider)}], \"submit_label\": str}. Checklist: {\"title\": str, \"items\": [{\"id\": str, \"label\": str}]}. LocationWidget: {\"title\": str, \"description\"?: str, \"latitude\": num, \"longitude\": num, \"address\"?: str}.";
 
 /// Name under which this tool is registered and intercepted by the orchestrator.
 pub const RENDER_WIDGET_TOOL_NAME: &str = "render_widget";
@@ -129,6 +129,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_render_widget_location_widget_succeeds() {
+        let tool = RenderWidgetTool::new();
+        let data = serde_json::json!({"title": "X", "latitude": 1.0, "longitude": 2.0});
+        let result = tool
+            .execute(serde_json::json!({
+                "widget_name": "LocationWidget",
+                "data": data.clone(),
+            }))
+            .await
+            .expect("a permitted LocationWidget name with object data must succeed");
+
+        assert!(result.success);
+        assert_eq!(result.data["widget_name"], "LocationWidget");
+        assert_eq!(
+            result.data["data"], data,
+            "an object `data` must be passed through unchanged"
+        );
+    }
+
+    #[tokio::test]
     async fn test_render_widget_unknown_name_is_invalid_arguments() {
         let tool = RenderWidgetTool::new();
         let result = tool
@@ -220,8 +240,8 @@ mod tests {
         // `widget_name` keeps its allowlist unchanged.
         assert_eq!(
             params["properties"]["widget_name"]["enum"],
-            serde_json::json!(["QuickForm", "Checklist"]),
-            "`widget_name` enum must remain [\"QuickForm\", \"Checklist\"]"
+            serde_json::json!(["QuickForm", "Checklist", "LocationWidget"]),
+            "`widget_name` enum must be [\"QuickForm\", \"Checklist\", \"LocationWidget\"]"
         );
 
         // `data` must carry a description documenting its schema.
@@ -232,6 +252,10 @@ mod tests {
         for token in [
             "QuickForm",
             "Checklist",
+            "LocationWidget",
+            "latitude",
+            "longitude",
+            "address",
             "fields",
             "name",
             "label",

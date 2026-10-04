@@ -1,10 +1,25 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import type { FC } from "react";
+import type { FC, ReactNode } from "react";
 import { WidgetRenderer } from "../components/widgets/WidgetRenderer";
 import { WidgetErrorBoundary } from "../components/widgets/WidgetErrorBoundary";
 import { WIDGET_REGISTRY } from "../components/widgets/registry";
 import type { WidgetComponent } from "../components/widgets/types";
+
+// LocationWidget se carga con `lazy()`: jsdom no renderiza mapas reales, así que
+// sustituimos react-leaflet por dobles planos (igual que en LocationWidget.test).
+vi.mock("react-leaflet", () => ({
+  MapContainer: ({ children }: { children?: ReactNode }) => (
+    <div data-testid="map">{children}</div>
+  ),
+  TileLayer: () => null,
+  CircleMarker: ({ children }: { children?: ReactNode }) => (
+    <div data-testid="marker">{children}</div>
+  ),
+  Popup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+}));
+
+vi.mock("leaflet/dist/leaflet.css", () => ({}));
 
 // Ant Design necesita matchMedia en jsdom.
 beforeEach(() => {
@@ -28,6 +43,10 @@ describe("WIDGET_REGISTRY", () => {
     expect(WIDGET_REGISTRY.QuickForm).toBeDefined();
     expect(WIDGET_REGISTRY.Checklist).toBeDefined();
   });
+
+  it("registra LocationWidget", () => {
+    expect(WIDGET_REGISTRY.LocationWidget).toBeDefined();
+  });
 });
 
 describe("WidgetRenderer", () => {
@@ -42,6 +61,21 @@ describe("WidgetRenderer", () => {
     );
 
     expect(screen.getByText("Tareas pendientes")).toBeInTheDocument();
+  });
+
+  it("carga el widget diferido (LocationWidget) a través de lazy + Suspense", async () => {
+    render(
+      <WidgetRenderer
+        id="w1"
+        name="LocationWidget"
+        data={{ title: "Oficina", latitude: 39.47, longitude: -0.37 }}
+        onAction={vi.fn()}
+      />,
+    );
+
+    // El mapa solo aparece cuando el chunk diferido termina de cargar.
+    expect(await screen.findByTestId("map")).toBeInTheDocument();
+    expect(screen.getAllByText("Oficina").length).toBeGreaterThan(0);
   });
 
   it("con un nombre desconocido muestra un aviso y no revienta", () => {

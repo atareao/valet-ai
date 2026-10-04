@@ -1,5 +1,5 @@
-import type { FC } from "react";
-import { Alert } from "antd";
+import { Suspense, type FC } from "react";
+import { Alert, Spin } from "antd";
 import { WIDGET_REGISTRY } from "./registry";
 import { WidgetErrorBoundary } from "./WidgetErrorBoundary";
 
@@ -39,7 +39,15 @@ export const WidgetRenderer: FC<WidgetRendererProps> = ({
   return (
     <WidgetErrorBoundary name={name}>
       <div style={{ marginTop: 8 }}>
-        <Component data={data} onAction={onAction} disabled={disabled} />
+        <Suspense
+          fallback={
+            <div style={{ padding: 12, textAlign: "center" }}>
+              <Spin size="small" />
+            </div>
+          }
+        >
+          <Component data={data} onAction={onAction} disabled={disabled} />
+        </Suspense>
       </div>
     </WidgetErrorBoundary>
   );
