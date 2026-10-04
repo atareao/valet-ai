@@ -1,3 +1,5 @@
+import type { WidgetInstance } from "../components/widgets/types";
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
@@ -12,6 +14,7 @@ export interface Message {
   location?: string | null;
   tools_used?: string;
   created_at: string;
+  widgets?: WidgetInstance[] | null;
 }
 
 export interface CreateMessage {
