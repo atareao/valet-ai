@@ -27,24 +27,26 @@ export interface WidgetInstance {
 export interface QuickFormField {
   name: string;
   label: string;
-  type: "text" | "select" | "checkbox" | "slider";
+  type: "text" | "textarea" | "number" | "select" | "checkbox" | "slider";
   options?: string[];
   min?: number;
   max?: number;
 }
 
 export interface QuickFormData {
-  title: string;
+  title?: string;
+  description?: string;
   fields: QuickFormField[];
   submit_label?: string;
 }
 
 export interface ChecklistItem {
-  id: string;
-  label: string;
+  id?: string;
+  label?: string;
+  text?: string;
 }
 
 export interface ChecklistData {
-  title: string;
+  title?: string;
   items: ChecklistItem[];
 }

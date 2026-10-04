@@ -1,5 +1,5 @@
 import { useId, useMemo, useState, type FC } from "react";
-import { Button, Checkbox, Input, Select, Slider, Typography } from "antd";
+import { Button, Checkbox, Input, InputNumber, Select, Slider, Typography } from "antd";
 import type { QuickFormData, QuickFormField, WidgetProps } from "./types";
 
 const { Text } = Typography;
@@ -7,6 +7,7 @@ const { Text } = Typography;
 function initialValue(field: QuickFormField): unknown {
   if (field.type === "checkbox") return false;
   if (field.type === "slider") return field.min ?? 0;
+  if (field.type === "number") return null;
   return "";
 }
 
@@ -46,6 +47,25 @@ export const QuickFormWidget: FC<WidgetProps<QuickFormData>> = ({
     const value = values[field.name];
 
     switch (field.type) {
+      case "number":
+        return (
+          <InputNumber
+            id={id}
+            style={{ width: "100%" }}
+            value={typeof value === "number" ? value : null}
+            onChange={(next) =>
+              setValue(field.name, typeof next === "number" ? next : null)
+            }
+          />
+        );
+      case "textarea":
+        return (
+          <Input.TextArea
+            id={id}
+            value={typeof value === "string" ? value : ""}
+            onChange={(e) => setValue(field.name, e.target.value)}
+          />
+        );
       case "select":
         return (
           <Select
@@ -90,6 +110,8 @@ export const QuickFormWidget: FC<WidgetProps<QuickFormData>> = ({
     }
   };
 
+  const title = data?.title ?? data?.description;
+
   return (
     <div
       style={{
@@ -100,9 +122,9 @@ export const QuickFormWidget: FC<WidgetProps<QuickFormData>> = ({
         maxWidth: 420,
       }}
     >
-      {data?.title && (
+      {title && (
         <Text strong style={{ display: "block", marginBottom: 12 }}>
-          {data.title}
+          {title}
         </Text>
       )}
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>

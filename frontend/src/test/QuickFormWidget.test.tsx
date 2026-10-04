@@ -136,4 +136,51 @@ describe("QuickFormWidget", () => {
 
     expect(screen.getByRole("button", { name: "Enviar" })).toBeDisabled();
   });
+
+  it("envía el valor de un campo numérico como número", async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    const data: QuickFormData = {
+      title: "Presupuesto",
+      fields: [{ name: "presupuesto", label: "Presupuesto", type: "number" }],
+    };
+
+    render(<QuickFormWidget data={data} onAction={onAction} />);
+
+    await user.type(screen.getByLabelText("Presupuesto"), "1500");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    expect(onAction).toHaveBeenCalledWith("submit", { presupuesto: 1500 });
+  });
+
+  it("renderiza un type `textarea` como área de texto y envía su valor", async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    const data: QuickFormData = {
+      title: "Notas",
+      fields: [{ name: "notas", label: "Notas", type: "textarea" }],
+    };
+
+    const { container } = render(
+      <QuickFormWidget data={data} onAction={onAction} />,
+    );
+
+    expect(container.querySelector("textarea")).not.toBeNull();
+
+    await user.type(screen.getByLabelText("Notas"), "Primera línea");
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    expect(onAction).toHaveBeenCalledWith("submit", { notas: "Primera línea" });
+  });
+
+  it("usa `description` como título cuando falta `title`", () => {
+    const data: QuickFormData = {
+      description: "Elige una opción",
+      fields: [{ name: "ciudad", label: "Ciudad", type: "text" }],
+    };
+
+    render(<QuickFormWidget data={data} onAction={vi.fn()} />);
+
+    expect(screen.getByText("Elige una opción")).toBeInTheDocument();
+  });
 });
