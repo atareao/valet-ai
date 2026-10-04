@@ -19,4 +19,4 @@
 ## 4. Cierre
 
 - [x] 4.1 Revisión (`react-reviewer`).
-- [ ] 4.2 PR a `development`; tras el merge, PR de archivado (`openspec archive frontend-tools-scroll`).
+- [x] 4.2 PR a `development`; tras el merge, PR de archivado (`openspec archive frontend-tools-scroll`).
