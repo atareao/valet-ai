@@ -13,6 +13,6 @@
 ## 3. Revisión y cierre
 
 - [x] 3.1 Revisión `react-reviewer`.
-- [ ] 3.2 PR a `development`.
-- [ ] 3.3 Prueba real: redesplegar y comprobar en la UI que el mapa muestra cartografía oscura.
-- [ ] 3.4 `openspec archive fix-location-tiles` y PR de archivado.
+- [x] 3.2 PR a `development`.
+- [x] 3.3 Prueba real: redesplegar y comprobar en la UI que el mapa muestra cartografía oscura.
+- [x] 3.4 `openspec archive fix-location-tiles` y PR de archivado.
