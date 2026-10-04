@@ -9,5 +9,5 @@
 ## 2. Cierre
 
 - [x] 2.1 Revisión (que solo describa el comportamiento actual).
-- [ ] 2.2 PR a `development`; tras el merge, PR de archivado (`openspec archive characterize-legacy-db`).
+- [x] 2.2 PR a `development`; tras el merge, PR de archivado (`openspec archive characterize-legacy-db`).
 - [ ] 2.3 Tras el archive, rellenar el `## Purpose` de las specs creadas (`db/repos` y `db/schema` ya existen: solo si se creara capability nueva).
