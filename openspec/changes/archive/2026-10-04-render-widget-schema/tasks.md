@@ -26,6 +26,6 @@
 
 ## 5. Cierre
 
-- [ ] 5.0 PR único (backend + frontend) a `development`.
-- [ ] 5.1 Prueba real contra el contenedor: repetir los dos prompts y comprobar que `Checklist` llega con `items[{id,label}]` y `QuickForm` con el tipo numérico.
-- [ ] 5.2 `openspec archive render-widget-schema` y PR de archivado.
+- [x] 5.0 PR único (backend + frontend) a `development`.
+- [x] 5.1 Prueba real contra el contenedor: repetir los dos prompts y comprobar que `Checklist` llega con `items[{id,label}]` y `QuickForm` con el tipo numérico.
+- [x] 5.2 `openspec archive render-widget-schema` y PR de archivado.
