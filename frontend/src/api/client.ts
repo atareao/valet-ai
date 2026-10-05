@@ -18,8 +18,21 @@ import type {
   PersistentMemoryState,
   Tool,
 } from "../types";
+import type { AuthUser } from "../contexts/AuthContext";
 
 export const BASE_URL = "/api";
+
+/** Evento global que emite el cliente al recibir un 401 en una ruta no-auth. */
+export const UNAUTHORIZED_EVENT = "valet:unauthorized";
+
+/**
+ * Las rutas de autenticación (`/auth/*`) quedan exentas de la detección global
+ * de 401: un 401 en `me`/`login`/`logout` es parte del propio flujo y no debe
+ * disparar una redirección sobre otra petición.
+ */
+function isAuthPath(path: string): boolean {
+  return path.startsWith("/auth/");
+}
 
 /**
  * Error de la API que conserva el código HTTP. Los consumidores que solo
@@ -37,10 +50,14 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
     ...options,
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...options?.headers },
   });
   if (!resp.ok) {
+    if (resp.status === 401 && !isAuthPath(path)) {
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    }
     const error = await resp.json().catch(() => ({ error: resp.statusText }));
     throw new ApiError(error.error || `HTTP ${resp.status}`, resp.status);
   }
@@ -49,6 +66,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getMe: () => request<AuthUser>("/auth/me"),
+
+  logout: () =>
+    // Contrato backend (`src/routes/auth.rs` → `LogoutResponse`):
+    // `end_session_url` es `null` cuando solo se cierra la sesión local.
+    request<{ end_session_url: string | null }>("/auth/logout", {
+      method: "POST",
+    }),
+
   chatInit: () => request<ChatInitResponse>("/chat/init"),
 
   listMessages: (limit = 50, cursor?: string) =>

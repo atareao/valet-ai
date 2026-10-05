@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useContext } from "react";
 import { Layout, Typography, Button, Space, Modal } from "antd";
 import {
   SettingOutlined,
   CalendarOutlined,
   CheckSquareOutlined,
   BarChartOutlined,
+  LogoutOutlined,
 } from "@ant-design/icons";
 import { ChatView } from "./ChatView";
 import { SettingsDialog } from "./SettingsDialog";
@@ -14,6 +15,7 @@ import { StatsDashboard } from "../pages/StatsDashboard";
 import { useMainChat } from "../hooks/useMainChat";
 import { useSettings } from "../hooks/useSettings";
 import { useProfileContext } from "../contexts/ProfileContext";
+import { AuthContext } from "../contexts/AuthContext";
 
 const { Header, Content } = Layout;
 const { Text } = Typography;
@@ -26,6 +28,13 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const mainChat = useMainChat();
   const { settings } = useSettings();
   const { profile } = useProfileContext();
+  // Se consume el contexto directamente (en vez de `useAuth()`) para que
+  // `AppLayout` siga siendo renderizable sin `<AuthProvider>` —hay tests de
+  // layout que no lo montan— y solo muestre el logout si hay sesión.
+  const auth = useContext(AuthContext);
+  const logout = auth?.logout;
+  const authenticated = auth?.user != null;
+  const loggingOut = auth?.loggingOut ?? false;
 
   // Apply font-size as CSS variable on root element
   const fontSize = settings?.font_size ? parseInt(settings.font_size, 10) : 16;
@@ -81,6 +90,19 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             onClick={() => setSettingsVisible(true)}
             style={{ color: "rgba(255,255,255,0.65)" }}
           />
+          {authenticated && logout && (
+            <Button
+              type="text"
+              icon={<LogoutOutlined />}
+              aria-label="Cerrar sesión"
+              loading={loggingOut}
+              disabled={loggingOut}
+              onClick={() => {
+                void logout();
+              }}
+              style={{ color: "rgba(255,255,255,0.65)" }}
+            />
+          )}
         </Space>
       </Header>
       <Content

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { BASE_URL } from "../api/client";
+import { BASE_URL, UNAUTHORIZED_EVENT } from "../api/client";
 import type { SSEStreamEvent, BrowserContext } from "../types";
 
 export interface UseSSEOptions {
@@ -48,6 +48,7 @@ export function useSSE() {
 
         const response = await fetch(`${BASE_URL}/chat/stream`, {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
           signal: abortRef.current.signal,
@@ -59,6 +60,10 @@ export function useSSE() {
             response.status,
             response.statusText,
           );
+          // Igual que el cliente HTTP: un 401 de streaming corta la sesión.
+          if (response.status === 401) {
+            window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+          }
           const errorBody = await response.json().catch(() => null);
           options.onError?.(errorBody?.error || `HTTP ${response.status}`);
           setConnected(false);
