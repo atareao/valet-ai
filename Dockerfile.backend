@@ -1,0 +1,83 @@
+# ═══════════════════════════════════════════════════════════════
+# Valet — backend de producción
+#
+# Construye SOLO el binario de la API (musl) y lo sirve desde un
+# runtime Alpine mínimo. El SPA no va aquí: lo sirve nginx
+# (Dockerfile.frontend), que además hace de proxy inverso de /api.
+#
+# El patrón de build (cache de dependencias, Cargo.lock, strip y los
+# enteros de sqlite-vec) se reutiliza del Dockerfile mono-servicio
+# para no tener dos formas distintas de compilar el mismo crate.
+# ═══════════════════════════════════════════════════════════════
+FROM docker.io/library/rust:1.98.1-alpine3.21 AS builder
+
+RUN apk add --no-cache --update \
+    build-base \
+    musl-dev \
+    pkgconfig
+
+WORKDIR /build
+
+# sqlite-vec.c declares `typedef u_intN_t ...` without including
+# <sys/types.h>. On glibc this goes unnoticed because <stdint.h> pulls in
+# <bits/types.h>, which declares u_intN_t under __USE_MISC; on musl it does
+# not. Alias the types to their <stdint.h> equivalents instead of forcing a
+# `-include`, because CFLAGS is global and also reaches the .S files of
+# aws-lc-sys. There a `-include` injects C headers into the assembler;
+# a `-D` only defines a preprocessor macro.
+ENV CFLAGS="-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t"
+
+# Cache dependencies: build the crate graph against dummy sources so the
+# expensive deps (sqlx, aws-lc, sqlite-vec, ...) are only compiled once.
+# The dummy files must exist because Cargo.toml declares all three bins.
+RUN cargo init --bin --name valet . && \
+    echo "pub fn dummy() {}" > src/lib.rs && \
+    mkdir -p src/bin && \
+    echo "fn main() {}" > src/bin/seed.rs && \
+    echo "fn main() {}" > src/bin/reindex.rs
+
+COPY Cargo.toml Cargo.lock ./
+RUN cargo build --release && \
+    rm -rf src
+
+# Real sources: this layer invalidates on every source change, but the
+# dependency layer above is reused.
+COPY src ./src
+RUN touch src/main.rs src/lib.rs && \
+    cargo build --release && \
+    strip target/release/valet
+
+# ═══════════════════════════════════════════════════════════════
+# Runtime — Alpine mínimo
+# ═══════════════════════════════════════════════════════════════
+FROM alpine:3.21
+
+# ca-certificates es imprescindible: el backend habla TLS con GitHub,
+# OpenRouter y el discovery/JWKS de PocketID (HTTPS).
+RUN apk add --no-cache --update \
+    ca-certificates && \
+    rm -rf /var/cache/apk/*
+
+WORKDIR /app
+
+# Usuario no privilegiado. Tanto `/data` (compose de producción) como
+# `/app/data` (ruta del compose de desarrollo y del test manual) se crean
+# con ownership 1000 para que el copy-up a un named volume vacío deje el
+# directorio escribible. No ejecutamos como root.
+RUN addgroup -S -g 1000 valet && \
+    adduser -S -D -H -u 1000 -G valet valet && \
+    mkdir -p /data /app/data && \
+    chown -R valet:valet /data /app/data
+
+COPY --from=builder /build/target/release/valet /app/valet
+# El binario resuelve las migraciones relativas al CWD (`/app` →
+# `migrations/`); sin este COPY la API aborta al arrancar.
+COPY migrations ./migrations
+RUN chown -R valet:valet /app
+
+USER valet
+
+ENV RUST_LOG=info
+
+EXPOSE 3000
+CMD ["/app/valet"]

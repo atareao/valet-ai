@@ -1,10 +1,37 @@
+# ═══════════════════════════════════════════════════════════════
+# Valet — stack de producción (Podman/Docker Compose)
+#
+#   frontend   nginx: sirve el SPA y hace de único ingress; /api -> backend:3000
+#   backend    API Rust (musl, no-root); el puerto 3000 NO se publica al host
+#   pocketid   proveedor OIDC (IdP)
+#
+# ── OIDC / PocketID ──────────────────────────────────────────────
+# AUTH_ISSUER_URL DEBE ser el issuer PÚBLICO: el valor que aparece en el
+# claim `iss` del ID token y que TANTO el navegador COMO el backend pueden
+# alcanzar. Dentro de esta red el backend también resuelve `http://pocketid:80`,
+# pero ese valor NO vale como issuer: el navegador no lo conoce y `iss` no
+# coincidiría. En un VPS con dominio y TLS, browser y backend usan la misma
+# URL pública, por ejemplo:
+#
+#     AUTH_ISSUER_URL=https://auth.example.com
+#     POCKETID_URL=https://auth.example.com
+#     AUTH_REDIRECT_URL=https://app.example.com/api/auth/callback
+#     AUTH_POST_LOGOUT_REDIRECT_URL=https://app.example.com
+#
+# En PocketID, crea el cliente OIDC con:
+#     Redirect URI    = https://app.example.com/api/auth/callback
+#     Post-logout URI = https://app.example.com   (== AUTH_POST_LOGOUT_REDIRECT_URL)
+#
+# El frontend publica el puerto 80; el 8080 de PocketID solo se publica para
+# poder gestionarlo/observarlo desde el host. El backend queda aislado.
+# ═══════════════════════════════════════════════════════════════
 services:
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    ports:
-      - "3000:3000"
+    container_name: valet_backend
+    restart: unless-stopped
     environment:
       - DATABASE_URL=/data/valet.db
       - LOG_LEVEL=info
@@ -15,35 +42,58 @@ services:
       - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
       - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
       - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
-      - AUTH_ENABLED=true
+      # Auth activo por defecto. Para levantar el stack sin PocketID
+      # (p. ej. un smoke test) exporta AUTH_ENABLED=false.
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
       - AUTH_ISSUER_URL=${AUTH_ISSUER_URL}
       - AUTH_CLIENT_ID=${AUTH_CLIENT_ID}
       - AUTH_CLIENT_SECRET=${AUTH_CLIENT_SECRET}
+      - AUTH_REDIRECT_URL=${AUTH_REDIRECT_URL}
+      - AUTH_POST_LOGOUT_REDIRECT_URL=${AUTH_POST_LOGOUT_REDIRECT_URL}
       - JWT_SECRET=${JWT_SECRET}
     volumes:
       - valet_data:/data
-    restart: unless-stopped
+    networks:
+      - valet
+    # El frontend solo conoce al backend por el nombre de servicio `backend`.
+    # No se publica `3000:3000`: el único ingress es nginx.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   frontend:
     build:
       context: .
       dockerfile: Dockerfile.frontend
+    container_name: valet_frontend
+    restart: unless-stopped
     ports:
       - "80:80"
     depends_on:
       - backend
-    restart: unless-stopped
+    networks:
+      - valet
 
   pocketid:
     image: ghcr.io/pocket-id/pocket-id:latest
+    container_name: valet_pocketid
+    restart: unless-stopped
     ports:
       - "8080:80"
     environment:
       - PUBLIC_APP_URL=${POCKETID_URL:-http://localhost:8080}
     volumes:
       - pocketid_data:/app/data
-    restart: unless-stopped
+    networks:
+      - valet
 
 volumes:
   valet_data:
   pocketid_data:
+
+networks:
+  valet:
+    driver: bridge
