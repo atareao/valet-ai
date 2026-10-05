@@ -25,6 +25,7 @@ pub struct Config {
     pub auth_client_id: String,
     pub auth_client_secret: String,
     pub auth_redirect_url: String,
+    pub auth_post_logout_redirect_url: String,
     pub jwt_secret: String,
 
     // Weather
@@ -89,12 +90,16 @@ impl Config {
             auth_enabled: env::var("AUTH_ENABLED")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false),
-            auth_issuer_url: env::var("AUTH_ISSUER_URL")
-                .unwrap_or_else(|_| "http://localhost:8080".into()),
+            auth_issuer_url: env::var("AUTH_ISSUER_URL").unwrap_or_default(),
             auth_client_id: env::var("AUTH_CLIENT_ID").unwrap_or_default(),
             auth_client_secret: env::var("AUTH_CLIENT_SECRET").unwrap_or_default(),
-            auth_redirect_url: env::var("AUTH_REDIRECT_URL")
-                .unwrap_or_else(|_| "http://localhost:3000/auth/callback".into()),
+            // Fail-closed: no non-empty default. With `AUTH_ENABLED=true` and
+            // these unset, `AuthConfig::validate()` aborts startup rather than
+            // pointing the callback at an inexistent route or injecting a stray
+            // origin into the credentialed CORS allow-list.
+            auth_redirect_url: env::var("AUTH_REDIRECT_URL").unwrap_or_default(),
+            auth_post_logout_redirect_url: env::var("AUTH_POST_LOGOUT_REDIRECT_URL")
+                .unwrap_or_default(),
             jwt_secret: env::var("JWT_SECRET").unwrap_or_default(),
 
             openweather_api_key: env::var("OPENWEATHER_API_KEY").ok(),
@@ -178,6 +183,7 @@ mod tests {
             "AUTH_CLIENT_ID",
             "AUTH_CLIENT_SECRET",
             "AUTH_REDIRECT_URL",
+            "AUTH_POST_LOGOUT_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
@@ -212,10 +218,13 @@ mod tests {
         assert_eq!(cfg.ollama_model, "llama3.2:3b");
 
         assert!(!cfg.auth_enabled);
-        assert_eq!(cfg.auth_issuer_url, "http://localhost:8080");
+        assert_eq!(cfg.auth_issuer_url, "");
         assert_eq!(cfg.auth_client_id, "");
         assert_eq!(cfg.auth_client_secret, "");
-        assert_eq!(cfg.auth_redirect_url, "http://localhost:3000/auth/callback");
+        // Fail-closed: an unset redirect URL must default to empty so that
+        // enabling auth without configuring it aborts startup.
+        assert_eq!(cfg.auth_redirect_url, "");
+        assert_eq!(cfg.auth_post_logout_redirect_url, "");
         assert_eq!(cfg.jwt_secret, "");
 
         assert!(cfg.openweather_api_key.is_none());
@@ -252,6 +261,10 @@ mod tests {
     #[test]
     #[serial]
     fn test_config_custom_values() {
+        // The test asserts the SEMANTIC_MODEL fallback, so it must start from a
+        // clean slate: an ambient SEMANTIC_MODEL would otherwise override it.
+        env::remove_var("SEMANTIC_MODEL");
+
         // Set custom values
         env::set_var("HOST", "127.0.0.1");
         env::set_var("PORT", "9090");
@@ -349,6 +362,7 @@ mod tests {
             "AUTH_CLIENT_ID",
             "AUTH_CLIENT_SECRET",
             "AUTH_REDIRECT_URL",
+            "AUTH_POST_LOGOUT_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
@@ -389,6 +403,7 @@ mod tests {
             "AUTH_CLIENT_ID",
             "AUTH_CLIENT_SECRET",
             "AUTH_REDIRECT_URL",
+            "AUTH_POST_LOGOUT_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
@@ -432,6 +447,7 @@ mod tests {
             "AUTH_CLIENT_ID",
             "AUTH_CLIENT_SECRET",
             "AUTH_REDIRECT_URL",
+            "AUTH_POST_LOGOUT_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",

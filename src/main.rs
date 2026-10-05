@@ -230,8 +230,16 @@ mod tests {
         // -----------------------------------------------------------------
         env::set_var("OPENROUTER_API_KEY", "sk-test-key-for-unit-test");
         env::set_var("AUTH_ENABLED", "true");
+        // AUTH_ISSUER_URL and AUTH_REDIRECT_URL have no default anymore
+        // (fail-closed), so they must be set explicitly for a complete, valid
+        // auth configuration.
+        env::set_var("AUTH_ISSUER_URL", "https://issuer.example");
         env::set_var("AUTH_CLIENT_ID", "test-client");
         env::set_var("AUTH_CLIENT_SECRET", "test-secret");
+        env::set_var(
+            "AUTH_REDIRECT_URL",
+            "http://localhost:3000/api/auth/callback",
+        );
         env::set_var("JWT_SECRET", "test-jwt-secret");
 
         let tmp_dir = env::temp_dir();
@@ -295,8 +303,10 @@ mod tests {
         // Clean up environment variables so they don't leak into other tests
         env::remove_var("OPENROUTER_API_KEY");
         env::remove_var("AUTH_ENABLED");
+        env::remove_var("AUTH_ISSUER_URL");
         env::remove_var("AUTH_CLIENT_ID");
         env::remove_var("AUTH_CLIENT_SECRET");
+        env::remove_var("AUTH_REDIRECT_URL");
         env::remove_var("JWT_SECRET");
     }
 }

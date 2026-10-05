@@ -272,6 +272,7 @@ mod tests {
             auth_client_id: String::new(),
             auth_client_secret: String::new(),
             auth_redirect_url: "http://localhost:3000/auth/callback".into(),
+            auth_post_logout_redirect_url: "http://localhost:3000".into(),
             jwt_secret: String::new(),
             openweather_api_key: None,
             google_places_api_key: None,
