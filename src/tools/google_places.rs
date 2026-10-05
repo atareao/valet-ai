@@ -274,7 +274,7 @@ impl Tool for SearchPlacesTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search for places using Google Places API (text search by name or type)"
+        "Busca lugares de interés, establecimientos o servicios usando Google Places API"
     }
 
     fn parameters(&self) -> Value {
@@ -283,22 +283,22 @@ impl Tool for SearchPlacesTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Place name or type to search for (e.g. cafe, restaurant, museum)"
+                    "description": "Tipo de lugar o nombre a buscar"
                 },
                 "latitude": {
                     "type": "number",
-                    "description": "Latitude in decimal degrees"
+                    "description": "Latitud en grados decimales (opcional, para centrar la búsqueda)"
                 },
                 "longitude": {
                     "type": "number",
-                    "description": "Longitude in decimal degrees"
+                    "description": "Longitud en grados decimales (opcional, para centrar la búsqueda)"
                 },
                 "radius": {
                     "type": "number",
-                    "description": "Search radius in meters (1-50000). Omit to search without location bias."
+                    "description": "Radio de búsqueda en metros (1-50000). Solo se aplica si se indican latitude y longitude"
                 }
             },
-            "required": ["query", "latitude", "longitude"]
+            "required": ["query"]
         })
     }
 
@@ -312,14 +312,8 @@ impl Tool for SearchPlacesTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing query".into()))?;
 
-        let lat = args
-            .get("latitude")
-            .and_then(|v| v.as_f64())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing or invalid latitude".into()))?;
-        let lon = args
-            .get("longitude")
-            .and_then(|v| v.as_f64())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing or invalid longitude".into()))?;
+        let lat = args.get("latitude").and_then(|v| v.as_f64());
+        let lon = args.get("longitude").and_then(|v| v.as_f64());
 
         // Read API key from settings DB first, fallback to Config/ENV
         let api_key =
@@ -336,11 +330,14 @@ impl Tool for SearchPlacesTool {
 
         let client = GooglePlacesClient::with_base_url(api_key, self.base_url.clone());
 
-        // Always use `places:searchText` with the free-text query. When a valid
-        // numeric `radius` is supplied, bias the search around the given
-        // coordinates with a `locationBias.circle`; an invalid radius (0,
-        // negative, null, non-numeric) applies no `locationBias` at all.
-        let location_bias = resolve_radius(args.get("radius")).map(|radius| (lat, lon, radius));
+        // Always use `places:searchText` with the free-text query. A
+        // `locationBias.circle` is applied only when both coordinates and a
+        // valid numeric `radius` are supplied; otherwise the search runs with
+        // no location bias at all.
+        let location_bias = match (lat, lon, resolve_radius(args.get("radius"))) {
+            (Some(lat), Some(lon), Some(radius)) => Some((lat, lon, radius)),
+            _ => None,
+        };
 
         let places = client.search_text(query, 10, location_bias).await?;
 
@@ -664,7 +661,7 @@ mod tests {
 
         let required = params["required"].as_array().unwrap();
         let req_values: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
-        assert_eq!(req_values, vec!["query", "latitude", "longitude"]);
+        assert_eq!(req_values, vec!["query"]);
 
         let props = params["properties"].as_object().unwrap();
         assert!(props.contains_key("query"), "Should have query");
@@ -686,8 +683,8 @@ mod tests {
             "radius description must mention the 1-50000 range, got: {radius_desc}"
         );
         assert!(
-            radius_desc.to_lowercase().contains("omit"),
-            "radius description must mention it can be omitted, got: {radius_desc}"
+            radius_desc.contains("latitude") && radius_desc.contains("longitude"),
+            "radius description must mention it only applies with coordinates, got: {radius_desc}"
         );
         assert!(
             !radius_desc.contains("1000"),
@@ -708,22 +705,6 @@ mod tests {
         assert!(
             matches!(result, Err(ToolError::InvalidArguments(_))),
             "Expected InvalidArguments error for missing query"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_search_places_missing_lat() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, tool) = setup_tool().await;
-        let result = tool
-            .execute(serde_json::json!({
-                "query": "cafe",
-                "longitude": -3.70
-            }))
-            .await;
-        assert!(
-            matches!(result, Err(ToolError::InvalidArguments(_))),
-            "Expected InvalidArguments error for missing latitude"
         );
         Ok(())
     }
@@ -1533,5 +1514,308 @@ mod tests {
             body.get("locationBias").is_none(),
             "body must NOT contain locationBias for a null radius, got body: {body}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: search_places requires only `query` and its
+    // definitions must be translated to Spanish.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: search_places tool requires only query
+    #[tokio::test]
+    async fn test_search_places_parameters_requires_only_query(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup_tool().await;
+        let params = tool.parameters();
+        assert_eq!(
+            params["required"],
+            serde_json::json!(["query"]),
+            "search_places must require only `query`, got: {}",
+            params["required"]
+        );
+        Ok(())
+    }
+
+    /// Scenario: Las tools en inglés se traducen al español
+    ///
+    /// `description()` and the descriptions of `query`, `latitude`, `longitude`
+    /// and `radius` must not contain the known English phrases.
+    #[tokio::test]
+    async fn test_search_places_descriptions_are_in_spanish(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup_tool().await;
+        let params = tool.parameters();
+        let props = params["properties"].as_object().unwrap();
+
+        // Known English phrases that must NOT appear once the definitions are
+        // translated to Spanish.
+        let forbidden = [
+            "search for places",
+            "place name or type",
+            "latitude in",
+            "longitude in",
+            "search radius",
+            "using google places api",
+        ];
+
+        let tool_desc = tool.description();
+        let tool_desc_lower = tool_desc.to_lowercase();
+        for phrase in forbidden {
+            assert!(
+                !tool_desc_lower.contains(phrase),
+                "description() must be in Spanish, found English phrase `{phrase}`: {tool_desc}"
+            );
+        }
+
+        let param_descs = [
+            (
+                "query",
+                props["query"]["description"].as_str().unwrap_or(""),
+            ),
+            (
+                "latitude",
+                props["latitude"]["description"].as_str().unwrap_or(""),
+            ),
+            (
+                "longitude",
+                props["longitude"]["description"].as_str().unwrap_or(""),
+            ),
+            (
+                "radius",
+                props["radius"]["description"].as_str().unwrap_or(""),
+            ),
+        ];
+        for (name, desc) in param_descs {
+            let lower = desc.to_lowercase();
+            for phrase in forbidden {
+                assert!(
+                    !lower.contains(phrase),
+                    "parameter `{name}` description must be in Spanish, found `{phrase}`: {desc}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Scenario: Búsqueda por texto sin coordenadas
+    ///
+    /// With only `query`, `execute` must call `places:searchText`, carry
+    /// `textQuery` and `languageCode: "es"`, and must NOT include
+    /// `locationBias` nor `includedTypes`.
+    #[tokio::test]
+    async fn test_execute_without_coordinates_uses_search_text_without_bias() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchText"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchNearby"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let (pool, _) = setup_tool().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "google_places_api_key", "test-key")
+            .await
+            .expect("failed to seed google_places_api_key");
+        let tool = SearchPlacesTool::new_with_base_url(pool, server.uri());
+
+        let result = tool
+            .execute(serde_json::json!({ "query": "museos en Madrid" }))
+            .await;
+        assert!(result.is_ok(), "execute failed: {:?}", result.err());
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("received_requests should be available");
+        let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
+        let search_text_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/places:searchText")
+            .collect();
+
+        assert_eq!(
+            search_text_requests.len(),
+            1,
+            "expected exactly one POST /places:searchText, got request paths: {paths:?}"
+        );
+
+        let body: Value =
+            serde_json::from_slice(&search_text_requests[0].body).expect("valid JSON body");
+        assert_eq!(
+            body["textQuery"], "museos en Madrid",
+            "textQuery must carry the query, got body: {body}"
+        );
+        assert_eq!(
+            body["languageCode"], "es",
+            "languageCode must be 'es', got body: {body}"
+        );
+        assert!(
+            body.get("locationBias").is_none(),
+            "body must NOT contain locationBias without coordinates, got body: {body}"
+        );
+        assert!(
+            body.get("includedTypes").is_none(),
+            "body must NOT contain includedTypes, got body: {body}"
+        );
+    }
+
+    /// Scenario: Radio sin coordenadas no aplica sesgo
+    ///
+    /// With `query` + `radius` but no coordinates, `execute` must succeed,
+    /// route to `places:searchText` and must NOT include `locationBias`.
+    #[tokio::test]
+    async fn test_execute_radius_without_coordinates_has_no_bias() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchText"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/places:searchNearby"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+            )
+            .mount(&server)
+            .await;
+
+        let (pool, _) = setup_tool().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "google_places_api_key", "test-key")
+            .await
+            .expect("failed to seed google_places_api_key");
+        let tool = SearchPlacesTool::new_with_base_url(pool, server.uri());
+
+        let result = tool
+            .execute(serde_json::json!({ "query": "cafe", "radius": 500 }))
+            .await;
+        assert!(result.is_ok(), "execute failed: {:?}", result.err());
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("received_requests should be available");
+        let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
+        let search_text_requests: Vec<_> = requests
+            .iter()
+            .filter(|r| r.url.path() == "/places:searchText")
+            .collect();
+
+        assert_eq!(
+            search_text_requests.len(),
+            1,
+            "expected exactly one POST /places:searchText, got request paths: {paths:?}"
+        );
+
+        let body: Value =
+            serde_json::from_slice(&search_text_requests[0].body).expect("valid JSON body");
+        assert_eq!(
+            body["textQuery"], "cafe",
+            "textQuery must carry the query, got body: {body}"
+        );
+        assert!(
+            body.get("locationBias").is_none(),
+            "body must NOT contain locationBias without coordinates, got body: {body}"
+        );
+    }
+
+    /// Scenario: Coordenadas parciales no aplican sesgo
+    ///
+    /// Regression guard for the removed `test_search_places_missing_lat`: when
+    /// only one of `latitude`/`longitude` is supplied, `execute` must still
+    /// succeed, route to `places:searchText`, and must NOT include
+    /// `locationBias` (nor `includedTypes`).
+    #[tokio::test]
+    async fn test_execute_partial_coordinates_have_no_bias() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let cases = [
+            serde_json::json!({ "query": "cafe", "longitude": -3.70 }),
+            serde_json::json!({ "query": "cafe", "latitude": 40.4168 }),
+        ];
+
+        for args in cases {
+            let server = MockServer::start().await;
+
+            Mock::given(method("POST"))
+                .and(path("/places:searchText"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+                )
+                .mount(&server)
+                .await;
+
+            Mock::given(method("POST"))
+                .and(path("/places:searchNearby"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "places": [] })),
+                )
+                .mount(&server)
+                .await;
+
+            let (pool, _) = setup_tool().await;
+            crate::db::repos::settings::SettingsRepo::set(
+                &pool,
+                "google_places_api_key",
+                "test-key",
+            )
+            .await
+            .expect("failed to seed google_places_api_key");
+            let tool = SearchPlacesTool::new_with_base_url(pool, server.uri());
+
+            let result = tool.execute(args.clone()).await;
+            assert!(
+                result.is_ok(),
+                "execute must succeed for partial coordinates {args}, got: {:?}",
+                result.err()
+            );
+
+            let requests = server
+                .received_requests()
+                .await
+                .expect("received_requests should be available");
+            let paths: Vec<&str> = requests.iter().map(|r| r.url.path()).collect();
+            let search_text_requests: Vec<_> = requests
+                .iter()
+                .filter(|r| r.url.path() == "/places:searchText")
+                .collect();
+
+            assert_eq!(
+                search_text_requests.len(),
+                1,
+                "expected exactly one POST /places:searchText for {args}, got request paths: {paths:?}"
+            );
+
+            let body: Value =
+                serde_json::from_slice(&search_text_requests[0].body).expect("valid JSON body");
+            assert!(
+                body.get("locationBias").is_none(),
+                "body must NOT contain locationBias for partial coordinates {args}, got body: {body}"
+            );
+            assert!(
+                body.get("includedTypes").is_none(),
+                "searchText body must NOT contain includedTypes for {args}, got body: {body}"
+            );
+        }
     }
 }

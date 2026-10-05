@@ -103,7 +103,7 @@ impl Tool for UnifiedSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Buscar en todas las dimensiones (mensajes, notas, eventos, tareas)"
+        "Buscar en todas las dimensiones (mensajes, notas, eventos y tareas) a partir de una consulta en lenguaje natural o palabras clave"
     }
 
     fn parameters(&self) -> Value {
@@ -291,6 +291,27 @@ mod tests {
         assert!(
             results.is_empty(),
             "Should return empty for non-matching query"
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: unified_search description in Spanish and it
+    // clarifies the query is natural language or keywords.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_unified_search_description_is_spanish() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tool = setup().await?;
+        let desc = tool.description();
+        assert!(
+            desc.contains("Buscar"),
+            "unified_search description must be in Spanish (must contain 'Buscar'), got: {desc}"
+        );
+        assert!(
+            desc.contains("lenguaje natural") || desc.contains("palabras clave"),
+            "unified_search description must clarify the query is in natural language or keywords, got: {desc}"
         );
         Ok(())
     }

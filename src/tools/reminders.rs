@@ -135,13 +135,14 @@ impl Tool for RemindersTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["set_reminder", "list_reminders", "dismiss_reminder", "snooze_reminder"]
+                    "enum": ["set_reminder", "list_reminders", "dismiss_reminder", "snooze_reminder"],
+                    "description": "Acción a realizar. `text` y `datetime` son obligatorios para `set_reminder`; `id` para `dismiss_reminder` y `snooze_reminder`."
                 },
-                "text": { "type": "string", "description": "Reminder text" },
-                "datetime": { "type": "string", "description": "ISO 8601 datetime" },
-                "id": { "type": "string", "description": "Reminder ID" },
-                "minutes": { "type": "integer", "description": "Minutes to snooze" },
-                "status": { "type": "string", "enum": ["pending", "dismissed", "snoozed"] }
+                "text": { "type": "string", "description": "Texto o motivo del recordatorio" },
+                "datetime": { "type": "string", "description": "Fecha y hora programada en formato ISO 8601" },
+                "id": { "type": "string", "description": "ID del recordatorio" },
+                "minutes": { "type": "integer", "description": "Minutos a posponer" },
+                "status": { "type": "string", "enum": ["pending", "dismissed", "snoozed"], "description": "Estado del recordatorio" }
             },
             "required": ["operation"]
         })
@@ -510,6 +511,97 @@ mod tests {
         assert!(params.get("properties").is_some());
         assert!(params.get("required").is_some());
         assert_eq!(params["required"][0], "operation");
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: the `operation` description documents the
+    // required fields per action.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: La operación documenta los obligatorios
+    #[tokio::test]
+    async fn test_reminders_operation_description_documents_required_fields(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = RemindersTool::new(db);
+        let params = tool.parameters();
+
+        let desc = params["properties"]["operation"]["description"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            !desc.is_empty(),
+            "the `operation` parameter must carry a description"
+        );
+        assert!(
+            desc.contains("`text`"),
+            "the `operation` description must mention `text` for set_reminder, got: {desc}"
+        );
+        assert!(
+            desc.contains("`datetime`"),
+            "the `operation` description must mention `datetime` for set_reminder, got: {desc}"
+        );
+        assert!(
+            desc.contains("`id`"),
+            "the `operation` description must mention `id` for dismiss/snooze, got: {desc}"
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: todas las descripciones de parámetros deben
+    // estar en español (requisito transversal de `tools/registry`).
+    // -----------------------------------------------------------------------
+
+    /// Scenario: Las definiciones de herramientas están en español y documentan
+    /// los obligatorios; aquí se cubre `reminders`.
+    #[tokio::test]
+    async fn test_reminders_parameter_descriptions_are_in_spanish(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = RemindersTool::new(db);
+        let params = tool.parameters();
+        let properties = params["properties"]
+            .as_object()
+            .expect("`properties` must be an object");
+
+        let text = properties["text"]["description"].as_str().unwrap_or("");
+        assert!(
+            text.contains("Texto"),
+            "`text` debe describirse en español, got: {text}"
+        );
+        let datetime = properties["datetime"]["description"].as_str().unwrap_or("");
+        assert!(
+            datetime.contains("Fecha"),
+            "`datetime` debe describirse en español, got: {datetime}"
+        );
+        let id = properties["id"]["description"].as_str().unwrap_or("");
+        assert!(
+            id.contains("ID"),
+            "`id` debe describirse en español usando «ID», got: {id}"
+        );
+        let minutes = properties["minutes"]["description"].as_str().unwrap_or("");
+        assert!(
+            minutes.contains("Minutos"),
+            "`minutes` debe describirse en español, got: {minutes}"
+        );
+
+        // Ninguna descripción conserva términos en inglés.
+        for (name, schema) in properties {
+            let desc = schema["description"].as_str().unwrap_or("");
+            for term in [
+                "Reminder text",
+                "ISO 8601 datetime",
+                "Reminder ID",
+                "Minutes to snooze",
+            ] {
+                assert!(
+                    !desc.contains(term),
+                    "la descripción de `{name}` no debe contener «{term}», got: {desc}"
+                );
+            }
+        }
         Ok(())
     }
 }

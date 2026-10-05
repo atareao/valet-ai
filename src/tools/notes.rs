@@ -105,7 +105,7 @@ impl Tool for NotesTool {
     }
 
     fn description(&self) -> &'static str {
-        "Gestión de notas personales con categorías (idea, journal, fact, todo)"
+        "Gestión de notas personales con categorías (idea, journal, fact)"
     }
 
     fn parameters(&self) -> Value {
@@ -114,17 +114,18 @@ impl Tool for NotesTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["create_note", "list_notes", "delete_note"]
+                    "enum": ["create_note", "list_notes", "delete_note"],
+                    "description": "Acción a realizar. `content` es obligatorio para `create_note`; `id` para `delete_note`."
                 },
-                "profile_id": { "type": "string", "description": "Profile ID (defaults to 'default')" },
-                "content": { "type": "string", "description": "Note content" },
+                "profile_id": { "type": "string", "description": "ID del perfil (por defecto 'default')" },
+                "content": { "type": "string", "description": "Contenido de la nota" },
                 "category": {
                     "type": "string",
-                    "enum": ["idea", "journal", "fact", "todo"],
-                    "description": "Note category (defaults to 'idea')"
+                    "enum": ["idea", "journal", "fact"],
+                    "description": "Categoría de la nota (por defecto 'idea')"
                 },
-                "tags": { "type": "string", "description": "Comma-separated tags" },
-                "id": { "type": "string", "description": "Note ID" }
+                "tags": { "type": "string", "description": "Etiquetas separadas por comas" },
+                "id": { "type": "string", "description": "ID de la nota" }
             },
             "required": ["operation"]
         })
@@ -175,6 +176,11 @@ mod tests {
         let tool = NotesTool::new(db);
         assert_eq!(tool.name(), "notes");
         assert!(tool.description().contains("categorías"));
+        assert!(
+            !tool.description().contains("todo"),
+            "the tool description must not mention the `todo` category, got: {}",
+            tool.description()
+        );
         Ok(())
     }
 
@@ -476,6 +482,118 @@ mod tests {
         assert_eq!(params["type"], "object");
         assert!(params.get("properties").is_some());
         assert!(params.get("required").is_some());
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: `todo` leaves the category enum and the
+    // `operation` description documents the required fields per action.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: La categoría todo no se ofrece
+    #[tokio::test]
+    async fn test_notes_category_enum_excludes_todo() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = NotesTool::new(db);
+        let params = tool.parameters();
+
+        let categories = params["properties"]["category"]["enum"]
+            .as_array()
+            .expect("category must expose an enum");
+        let values: Vec<&str> = categories.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(
+            values,
+            vec!["idea", "journal", "fact"],
+            "the category enum must be exactly [idea, journal, fact] (no `todo`), got: {values:?}"
+        );
+        Ok(())
+    }
+
+    /// Scenario: La operación documenta los obligatorios
+    #[tokio::test]
+    async fn test_notes_operation_description_documents_required_fields(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = NotesTool::new(db);
+        let params = tool.parameters();
+
+        let desc = params["properties"]["operation"]["description"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            !desc.is_empty(),
+            "the `operation` parameter must carry a description"
+        );
+        assert!(
+            desc.contains("`content`"),
+            "the `operation` description must mention `content` for create_note, got: {desc}"
+        );
+        assert!(
+            desc.contains("`id`"),
+            "the `operation` description must mention `id` for delete_note, got: {desc}"
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: todas las descripciones de parámetros deben
+    // estar en español (requisito transversal de `tools/registry`).
+    // -----------------------------------------------------------------------
+
+    /// Scenario: Las definiciones de herramientas están en español y documentan
+    /// los obligatorios; aquí se cubre `notes`.
+    #[tokio::test]
+    async fn test_notes_parameter_descriptions_are_in_spanish(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = NotesTool::new(db);
+        let params = tool.parameters();
+        let properties = params["properties"]
+            .as_object()
+            .expect("`properties` must be an object");
+
+        // Toda propiedad debe llevar una descripción no vacía.
+        for (name, schema) in properties {
+            let desc = schema["description"].as_str().unwrap_or("");
+            assert!(
+                !desc.is_empty(),
+                "la descripción de `{name}` no debe estar vacía"
+            );
+        }
+
+        // Las descripciones de `content`, `category` e `id` están en español.
+        let content = properties["content"]["description"].as_str().unwrap_or("");
+        assert!(
+            content.contains("Contenido"),
+            "`content` debe describirse en español, got: {content}"
+        );
+        let category = properties["category"]["description"].as_str().unwrap_or("");
+        assert!(
+            category.contains("Categoría"),
+            "`category` debe describirse en español, got: {category}"
+        );
+        let id = properties["id"]["description"].as_str().unwrap_or("");
+        assert!(
+            id.contains("ID"),
+            "`id` debe describirse en español usando «ID», got: {id}"
+        );
+
+        // Ninguna descripción conserva términos en inglés.
+        for (name, schema) in properties {
+            let desc = schema["description"].as_str().unwrap_or("");
+            for term in [
+                "Profile ID",
+                "Note content",
+                "Note category",
+                "Comma-separated",
+                "Note ID",
+            ] {
+                assert!(
+                    !desc.contains(term),
+                    "la descripción de `{name}` no debe contener «{term}», got: {desc}"
+                );
+            }
+        }
         Ok(())
     }
 }
