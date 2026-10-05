@@ -52,10 +52,10 @@
 
 ## 6. Verificación e integración
 
-- [ ] 6.1 Ejecutar `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` y `cargo test` y corregir cualquier fallo.
-- [ ] 6.2 Ejecutar `just check-all` y confirmar que cubre formato, clippy, tests Rust, lint, tests y build del frontend en verde.
-- [ ] 6.3 Ejecutar `openspec validate oidc-auth` y confirmar que el change valida sin errores.
-- [ ] 6.4 Verificar manualmente el flujo completo end-to-end (login → `me` → rutas protegidas → logout SSO) contra PocketID y documentar el resultado, comprobando explícitamente que tras el logout el SSO queda cerrado: al volver a entrar el proveedor pide credenciales de nuevo.
+- [x] 6.1 Ejecutar `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` y `cargo test` y corregir cualquier fallo.
+- [x] 6.2 Ejecutar `just check-all` y confirmar que cubre formato, clippy, tests Rust, lint, tests y build del frontend en verde.
+- [x] 6.3 Ejecutar `openspec validate oidc-auth` y confirmar que el change valida sin errores.
+- [ ] 6.4 Verificar manualmente el flujo completo end-to-end (login → `me` → rutas protegidas → logout SSO) contra PocketID y documentar el resultado, comprobando explícitamente que tras el logout el SSO queda cerrado: al volver a entrar el proveedor pide credenciales de nuevo. (pendiente: verificación manual end-to-end en el VPS con PocketID real; el agente no dispone de instancia)
 
 ## 7. Cierre y archivado
 
