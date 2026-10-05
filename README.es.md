@@ -104,11 +104,12 @@ Las variables de entorno se leen una vez al arrancar (ver `src/config.rs`) con d
 | `OLLAMA_BASE_URL` | URL base del fallback Ollama | `http://localhost:11434` |
 | `OLLAMA_MODEL` | Modelo de fallback Ollama | `llama3.2:3b` |
 | `AUTH_ENABLED` | Habilitar autenticación PocketID | `false` |
-| `AUTH_ISSUER_URL` | URL del emisor OIDC | `http://localhost:8080` |
-| `AUTH_CLIENT_ID` | Client ID OIDC | — |
-| `AUTH_CLIENT_SECRET` | Client secret OIDC | — |
-| `AUTH_REDIRECT_URL` | URL de redirección OIDC | `http://localhost:3000/auth/callback` |
-| `JWT_SECRET` | Secreto para firmar tokens de sesión | — |
+| `AUTH_ISSUER_URL` | URL del emisor OIDC (requerida cuando `AUTH_ENABLED=true`) | — |
+| `AUTH_CLIENT_ID` | Client ID OIDC (requerido cuando `AUTH_ENABLED=true`) | — |
+| `AUTH_CLIENT_SECRET` | Client secret OIDC (requerido cuando `AUTH_ENABLED=true`) | — |
+| `AUTH_REDIRECT_URL` | URL de redirección OIDC — Redirect URI del cliente PocketID (`https://TU_DOMINIO/api/auth/callback`); requerida cuando `AUTH_ENABLED=true` | — |
+| `AUTH_POST_LOGOUT_REDIRECT_URL` | URI de redirección tras el logout enviada al proveedor (opcional) | — |
+| `JWT_SECRET` | Secreto para firmar tokens de sesión (requerido cuando `AUTH_ENABLED=true`) | — |
 | `OPENWEATHER_API_KEY` | API key de OpenWeather | — |
 | `GOOGLE_PLACES_API_KEY` | API key de Google Places | — |
 | `BRAVE_SEARCH_API_KEY` | API key de Brave Search | — |
@@ -123,18 +124,39 @@ Las variables de entorno se leen una vez al arrancar (ver `src/config.rs`) con d
 
 ## 🏭 Producción
 
-`docker-compose.prod.yml` separa el stack en backend, frontend nginx independiente y PocketID.
+`docker-compose.prod.yml` separa el stack en un backend Rust (`Dockerfile.backend`, musl, corre como usuario no-root UID 1000), un frontend nginx independiente (`Dockerfile.frontend` + `nginx.conf`) y PocketID. El backend **no se publica al host**: nginx es el único ingress, sirve el SPA y hace proxy inverso de `/api` hacia `backend:3000`.
 
 ```bash
 # Variables requeridas
 export OPENROUTER_API_KEY="sk-..."
-export AUTH_ISSUER_URL="https://auth.example.com"
+export AUTH_ISSUER_URL="https://auth.example.com"          # issuer público, coincide con el claim `iss` del id_token
 export AUTH_CLIENT_ID="valet"
 export AUTH_CLIENT_SECRET="..."
+export AUTH_REDIRECT_URL="https://app.example.com/api/auth/callback"
+export AUTH_POST_LOGOUT_REDIRECT_URL="https://app.example.com"
 export JWT_SECRET="cambiar-en-produccion"
+export POCKETID_URL="https://auth.example.com"             # PocketID PUBLIC_APP_URL
 
-# Levantar
-docker compose -f docker-compose.prod.yml up -d
+# Levantar (la auth va activa por defecto; exporta AUTH_ENABLED=false para arrancar sin PocketID)
+podman compose -f docker-compose.prod.yml up -d
+# App: http://<host>/
+```
+
+### Cliente OIDC en PocketID
+
+Crea un cliente OIDC en PocketID y registra:
+
+- **Redirect URI** = `AUTH_REDIRECT_URL` (`https://app.example.com/api/auth/callback`)
+- **Post-logout URI** = `AUTH_POST_LOGOUT_REDIRECT_URL` (`https://app.example.com`)
+
+`AUTH_ISSUER_URL` debe ser el issuer **público** — el valor que aparece en el claim `iss` del ID token y que alcanzan tanto el navegador como el backend. El nombre de servicio interno `http://pocketid:80` *no* es un issuer válido.
+
+### Propiedad del volumen
+
+El backend corre como usuario no-root (UID 1000). En un volumen nombrado nuevo, Podman copia la propiedad de `/data` desde la imagen, así que es escribible. Un volumen creado por una imagen antigua (root) pertenece a `root` dentro del contenedor, y el backend no-root no puede escribir su base de datos SQLite. Reasigna la propiedad de un volumen existente con:
+
+```bash
+podman run --rm -v valet_valet_data:/data alpine chown -R 1000:1000 /data
 ```
 
 **Carencia conocida: el contenedor no sobrevive a un reinicio del host.** `docker-compose.yml` no declara `restart:`, así que si la máquina se apaga el servicio se queda caído hasta levantarlo a mano — el 2026-10-01 supuso unas 9 h y media de caída. Habilitar el autoarranque está deliberadamente aplazado; el arreglo verificado está en `AGENTS.md` § V.
