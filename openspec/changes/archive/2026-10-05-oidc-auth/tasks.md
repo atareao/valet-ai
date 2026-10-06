@@ -55,12 +55,12 @@
 - [x] 6.1 Ejecutar `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` y `cargo test` y corregir cualquier fallo.
 - [x] 6.2 Ejecutar `just check-all` y confirmar que cubre formato, clippy, tests Rust, lint, tests y build del frontend en verde.
 - [x] 6.3 Ejecutar `openspec validate oidc-auth` y confirmar que el change valida sin errores.
-- [ ] 6.4 Verificar manualmente el flujo completo end-to-end (login → `me` → rutas protegidas → logout SSO) contra PocketID y documentar el resultado, comprobando explícitamente que tras el logout el SSO queda cerrado: al volver a entrar el proveedor pide credenciales de nuevo. (pendiente: verificación manual end-to-end en el VPS con PocketID real; el agente no dispone de instancia)
+- [x] 6.4 Verificar manualmente el flujo completo end-to-end (login → `me` → rutas protegidas → logout SSO) contra PocketID y documentar el resultado, comprobando explícitamente que tras el logout el SSO queda cerrado: al volver a entrar el proveedor pide credenciales de nuevo. (verificado en el VPS con PocketID real el 2026-10-06: el flujo funciona y el proveedor vuelve a pedir credenciales)
 
 ## 7. Cierre y archivado
 
 - [x] 7.1 Actualizar la documentación de variables de entorno (`AUTH_REDIRECT_URL`, `AUTH_POST_LOGOUT_REDIRECT_URL`, `JWT_SECRET`, `AUTH_*`) y verificar que un lector puede configurar el stack solo con ella.
-- [ ] 7.2 Marcar las tareas completadas en `tasks.md` y, con las specs validadas, ejecutar `openspec archive oidc-auth` comprobando que los headers del delta coinciden con `openspec/specs/`.
+- [x] 7.2 Marcar las tareas completadas en `tasks.md` y, con las specs validadas, ejecutar `openspec archive oidc-auth` comprobando que los headers del delta coinciden con `openspec/specs/`. (ejecutado: change archivado como `2026-10-05-oidc-auth`)
 
 ## 8. Hardening de seguridad (auditoría REFACTOR)
 
