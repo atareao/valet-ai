@@ -1,9 +1,6 @@
-# tools/tasks Specification
+# Spec Delta
 
-## Purpose
-Gestión de tareas personales: listar, crear, actualizar, completar y borrar tareas mediante la tool `tasks`.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: TasksTool SHALL manage tasks through five operations
 
@@ -47,23 +44,3 @@ La tool `tasks` SHALL despachar por `operation` y soportar `list_tasks`, `add_ta
 - **Given** la definición de la tool `tasks`
 - **When** se inspecciona la descripción del parámetro `operation`
 - **Then** menciona `content` para `add_task` e `id` para `update_task`, `complete_task` y `delete_task`
-
-### Requirement: TasksTool SHALL require ExplicitApproval only for delete_task
-
-La tool `tasks` SHALL devolver `ExplicitApproval` para `delete_task` y `NoConfirm` para el resto de
-operaciones, conforme al requisito de permisos de `tools/registry`.
-
-**Given** una `TasksTool`
-**When** la `operation` es `delete_task`
-**Then** `permission()` DEBE devolver `ExplicitApproval`
-**And** para `list_tasks`, `add_task`, `update_task` y `complete_task` DEBE devolver `NoConfirm`
-
-#### Scenario: delete_task exige aprobación explícita
-**Given** una `TasksTool`
-**When** la `operation` es `delete_task`
-**Then** `permission()` DEBE devolver `ExplicitApproval`
-
-#### Scenario: El resto de operaciones no requiere confirmación
-**Given** una `TasksTool`
-**When** la `operation` es `list_tasks`, `add_task`, `update_task` o `complete_task`
-**Then** `permission()` DEBE devolver `NoConfirm`

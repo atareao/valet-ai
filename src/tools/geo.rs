@@ -50,7 +50,7 @@ impl Tool for GeocodeTool {
     }
 
     fn description(&self) -> &'static str {
-        "Geocodificar una dirección o lugar a coordenadas geográficas"
+        "Geocodifica una dirección o un lugar conocido (calle, ciudad o monumento) y devuelve sus coordenadas geográficas junto con la dirección desglosada."
     }
 
     fn parameters(&self) -> Value {
@@ -141,7 +141,7 @@ impl Tool for ReverseGeocodeTool {
     }
 
     fn description(&self) -> &'static str {
-        "Obtener dirección a partir de coordenadas geográficas"
+        "Obtiene la dirección y los detalles del lugar correspondientes a unas coordenadas geográficas de latitud y longitud."
     }
 
     fn parameters(&self) -> Value {
@@ -250,7 +250,7 @@ mod tests {
         assert_eq!(tool.name(), "geocode");
         assert_eq!(
             tool.description(),
-            "Geocodificar una dirección o lugar a coordenadas geográficas"
+            "Geocodifica una dirección o un lugar conocido (calle, ciudad o monumento) y devuelve sus coordenadas geográficas junto con la dirección desglosada."
         );
         Ok(())
     }
@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(tool.name(), "reverse_geocode");
         assert_eq!(
             tool.description(),
-            "Obtener dirección a partir de coordenadas geográficas"
+            "Obtiene la dirección y los detalles del lugar correspondientes a unas coordenadas geográficas de latitud y longitud."
         );
         Ok(())
     }
@@ -387,5 +387,34 @@ mod tests {
         assert_eq!(result["display_name"], "Plaza Mayor, Madrid, España");
         assert_eq!(result["address"]["city"], "Madrid");
         assert_eq!(result["address"]["postcode"], "28012");
+    }
+
+    // -----------------------------------------------------------------------
+    // Language guard — geocode / reverse_geocode descriptions in Spanish
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_geocode_and_reverse_geocode_descriptions_are_spanish() {
+        let geocode = GeocodeTool::new();
+        let g = geocode.description();
+        assert!(
+            g.contains("dirección"),
+            "geocode description must be in Spanish (must contain 'dirección'), got: {g}"
+        );
+        assert!(
+            g.contains("coordenadas"),
+            "geocode description must be in Spanish (must contain 'coordenadas'), got: {g}"
+        );
+
+        let reverse = ReverseGeocodeTool::new();
+        let r = reverse.description();
+        assert!(
+            r.contains("dirección"),
+            "reverse_geocode description must be in Spanish, got: {r}"
+        );
+        assert!(
+            r.contains("coordenadas"),
+            "reverse_geocode description must be in Spanish, got: {r}"
+        );
     }
 }
