@@ -6,6 +6,7 @@ pub mod errors;
 pub mod generation;
 pub mod handlers;
 pub mod llm;
+pub mod middleware;
 pub mod models;
 pub mod orchestrator;
 pub mod persistent_memory;
@@ -16,13 +17,14 @@ pub mod token_estimate;
 pub mod tools;
 pub mod workers;
 
+use axum::http::{header, HeaderValue, Method};
 use axum::routing::{delete, get, put};
 use axum::{extract::State, Json, Router};
 use serde_json::Value;
 use sqlx::SqlitePool;
 use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::config::Config;
@@ -167,6 +169,11 @@ impl AppState {
     pub async fn new_with_orchestrator(
         config: &Config,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        // 0. Fail-closed auth validation, before any side effect: an incomplete
+        //    auth config (e.g. empty JWT_SECRET with auth enabled) must abort
+        //    startup instead of silently running with a forgeable session.
+        let auth_config = crate::auth::AuthConfig::from_config(config)?;
+
         // 1. Open database connection pool
         let pool = db::init_db(&config.database_url).await?;
 
@@ -253,20 +260,7 @@ impl AppState {
             last_api_call.clone(),
         ));
 
-        // 7. Create auth config from environment
-        let auth_config = crate::auth::AuthConfig {
-            enabled: std::env::var("AUTH_ENABLED")
-                .map(|v| v == "true" || v == "1")
-                .unwrap_or(false),
-            issuer_url: std::env::var("AUTH_ISSUER_URL")
-                .unwrap_or_else(|_| "http://localhost:8080".into()),
-            client_id: std::env::var("AUTH_CLIENT_ID").unwrap_or_default(),
-            client_secret: std::env::var("AUTH_CLIENT_SECRET").unwrap_or_default(),
-            redirect_url: std::env::var("AUTH_REDIRECT_URL")
-                .unwrap_or_else(|_| "http://localhost:3000/auth/callback".into()),
-            jwt_secret: std::env::var("JWT_SECRET").unwrap_or_default(),
-        };
-
+        // 7. Auth config was built and validated at step 0 (`auth_config`).
         Ok(Self {
             db: pool,
             orchestrator: Some(orchestrator),
@@ -347,18 +341,71 @@ async fn health_handler(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
+/// Local development origins allowed when OIDC is disabled/unconfigured.
+const DEV_CORS_ORIGINS: [&str; 2] = ["http://localhost:5173", "http://localhost:3000"];
+
+/// Build the CORS layer with credentials enabled.
+///
+/// `allow_credentials(true)` can never coexist with the `*` wildcard (origin,
+/// methods or headers) per the Fetch spec, and reflecting arbitrary request
+/// origins while allowing credentials is equally unsafe. The allowed origins
+/// are therefore always an explicit list: the origin(s) derived from the auth
+/// config when enabled, or a fixed localhost list in dev. When no valid origin
+/// is available the list is empty, so no `Access-Control-Allow-Origin` is sent.
+fn cors_layer(state: &AppState) -> CorsLayer {
+    CorsLayer::new()
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            header::AUTHORIZATION,
+            header::CACHE_CONTROL,
+        ])
+        .allow_credentials(true)
+        .allow_origin(AllowOrigin::list(allowed_origins(state)))
+}
+
+/// Explicit allow-list of CORS origins (`scheme://host[:port]`).
+fn allowed_origins(state: &AppState) -> Vec<HeaderValue> {
+    match state.auth_config.as_ref() {
+        Some(config) if config.enabled => [
+            config.redirect_url.as_str(),
+            config.post_logout_redirect_url.as_str(),
+        ]
+        .into_iter()
+        .filter_map(origin_header)
+        .collect(),
+        _ => DEV_CORS_ORIGINS
+            .into_iter()
+            .filter_map(origin_header)
+            .collect(),
+    }
+}
+
+/// Normalise a URL to its `scheme://host[:port]` origin header, if valid.
+fn origin_header(url: &str) -> Option<HeaderValue> {
+    url::Url::parse(url)
+        .ok()
+        .map(|parsed| parsed.origin().ascii_serialization())
+        .and_then(|origin| HeaderValue::from_str(&origin).ok())
+}
+
 /// Build the Axum [`Router`] with all routes and the given [`AppState`].
 ///
 /// This is the primary entry point for the production server in `main.rs`.
 pub fn app_with_state(state: AppState) -> Router {
-    // CORS middleware — allows any origin in dev; production origins are
-    // restricted via AUTH_REDIRECT_URL or environment-specific config.
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    // CORS sits outside the session middleware so a preflight `OPTIONS` is
+    // never rejected with a 401.
+    let cors = cors_layer(&state);
 
-    Router::new()
+    let api = Router::new()
         // Health
         .route("/api/health", get(health_handler))
         // Export
@@ -410,7 +457,16 @@ pub fn app_with_state(state: AppState) -> Router {
         .route("/api/search", get(handlers::search::search))
         // Streaming + approval
         .merge(routes::stream::routes())
-        .fallback_service(ServeDir::new("static").fallback(ServeFile::new("static/index.html")))
+        // Authentication (OIDC login / callback / me / logout)
+        .merge(routes::auth::routes())
+        // Session middleware: enforces a valid session on `/api/*` when auth
+        // is enabled; a no-op when it is disabled (dev mode).
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::auth::session_middleware,
+        ));
+
+    api.fallback_service(ServeDir::new("static").fallback(ServeFile::new("static/index.html")))
         .layer(cors)
         .with_state(state)
 }
@@ -596,5 +652,81 @@ mod tests {
             Some(Permission::NoConfirm),
             "render_widget must not require confirmation"
         );
+    }
+
+    /// Fail-closed: with auth enabled but an empty `JWT_SECRET`, startup must
+    /// abort with an error instead of running with a forgeable session cookie.
+    #[tokio::test]
+    #[serial]
+    async fn test_new_with_orchestrator_fails_closed_when_auth_incomplete() {
+        let mut config = Config::from_env();
+        config.auth_enabled = true;
+        config.auth_issuer_url = "https://issuer.example".into();
+        config.auth_client_id = "client".into();
+        config.auth_client_secret = "secret".into();
+        config.auth_redirect_url = "http://localhost:3000/api/auth/callback".into();
+        config.jwt_secret = String::new();
+
+        let result = AppState::new_with_orchestrator(&config).await;
+
+        assert!(
+            result.is_err(),
+            "an empty JWT_SECRET with auth enabled must abort startup"
+        );
+    }
+
+    /// With a complete auth configuration the production entry point must
+    /// still start successfully.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn test_new_with_orchestrator_ok_with_complete_auth_config() {
+        env::set_var("OPENROUTER_API_KEY", "sk-test-key-for-unit-test");
+        env::set_var("OPENROUTER_MODEL", "test/model");
+        env::set_var("AUTH_ENABLED", "true");
+        env::set_var("AUTH_ISSUER_URL", "https://issuer.example");
+        env::set_var("AUTH_CLIENT_ID", "test-client");
+        env::set_var("AUTH_CLIENT_SECRET", "test-secret");
+        env::set_var(
+            "AUTH_REDIRECT_URL",
+            "https://app.example.com/api/auth/callback",
+        );
+        env::set_var("JWT_SECRET", "test-jwt-secret");
+
+        let tmp_dir = env::temp_dir();
+        let db_path = tmp_dir.join("valet_test_auth_complete.db");
+        let _ = std::fs::remove_file(&db_path);
+
+        let mut test_config = Config::from_env();
+        test_config.database_url = db_path.to_str().unwrap().to_string();
+
+        let state = AppState::new_with_orchestrator(&test_config)
+            .await
+            .expect("a complete auth config must start");
+
+        let auth = state
+            .auth_config
+            .as_ref()
+            .expect("auth_config must be wired");
+        assert!(auth.enabled);
+        assert_eq!(auth.client_id, "test-client");
+        assert_eq!(auth.jwt_secret, "test-jwt-secret");
+
+        // Teardown
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(tmp_dir.join("valet_test_auth_complete.db-wal"));
+        let _ = std::fs::remove_file(tmp_dir.join("valet_test_auth_complete.db-shm"));
+
+        for var in [
+            "OPENROUTER_API_KEY",
+            "OPENROUTER_MODEL",
+            "AUTH_ENABLED",
+            "AUTH_ISSUER_URL",
+            "AUTH_CLIENT_ID",
+            "AUTH_CLIENT_SECRET",
+            "AUTH_REDIRECT_URL",
+            "JWT_SECRET",
+        ] {
+            env::remove_var(var);
+        }
     }
 }

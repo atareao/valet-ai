@@ -3,3 +3,8 @@ frontend/node_modules/
 .git/
 *.md
 openspec/
+# Secretos de entorno: nunca deben viajar al contexto de build.
+.env
+.env.j2
+.env.local
+.env.*.local

@@ -104,11 +104,12 @@ Environment variables are read once at startup (see `src/config.rs`) with sensib
 | `OLLAMA_BASE_URL` | Ollama fallback base URL | `http://localhost:11434` |
 | `OLLAMA_MODEL` | Ollama fallback model | `llama3.2:3b` |
 | `AUTH_ENABLED` | Enable PocketID authentication | `false` |
-| `AUTH_ISSUER_URL` | OIDC issuer URL | `http://localhost:8080` |
-| `AUTH_CLIENT_ID` | OIDC client ID | — |
-| `AUTH_CLIENT_SECRET` | OIDC client secret | — |
-| `AUTH_REDIRECT_URL` | OIDC redirect URL | `http://localhost:3000/auth/callback` |
-| `JWT_SECRET` | Secret for signing session tokens | — |
+| `AUTH_ISSUER_URL` | OIDC issuer URL (required when `AUTH_ENABLED=true`) | — |
+| `AUTH_CLIENT_ID` | OIDC client ID (required when `AUTH_ENABLED=true`) | — |
+| `AUTH_CLIENT_SECRET` | OIDC client secret (required when `AUTH_ENABLED=true`) | — |
+| `AUTH_REDIRECT_URL` | OIDC redirect URL — the PocketID client Redirect URI (`https://YOUR_DOMAIN/api/auth/callback`); required when `AUTH_ENABLED=true` | — |
+| `AUTH_POST_LOGOUT_REDIRECT_URL` | Post-logout redirect URI sent to the provider (optional) | — |
+| `JWT_SECRET` | Secret for signing session tokens (required when `AUTH_ENABLED=true`) | — |
 | `OPENWEATHER_API_KEY` | OpenWeather API key | — |
 | `GOOGLE_PLACES_API_KEY` | Google Places API key | — |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API key | — |
@@ -123,18 +124,39 @@ Environment variables are read once at startup (see `src/config.rs`) with sensib
 
 ## 🏭 Production
 
-`docker-compose.prod.yml` splits the stack into backend, a standalone nginx frontend, and PocketID.
+`docker-compose.prod.yml` splits the stack into a Rust backend (`Dockerfile.backend`, musl, runs as non-root UID 1000), a standalone nginx frontend (`Dockerfile.frontend` + `nginx.conf`), and PocketID. The backend is **not published to the host**: nginx is the only ingress, serving the SPA and reverse-proxying `/api` to `backend:3000`.
 
 ```bash
 # Required variables
 export OPENROUTER_API_KEY="sk-..."
-export AUTH_ISSUER_URL="https://auth.example.com"
+export AUTH_ISSUER_URL="https://auth.example.com"          # public issuer, matches the id_token `iss` claim
 export AUTH_CLIENT_ID="valet"
 export AUTH_CLIENT_SECRET="..."
+export AUTH_REDIRECT_URL="https://app.example.com/api/auth/callback"
+export AUTH_POST_LOGOUT_REDIRECT_URL="https://app.example.com"
 export JWT_SECRET="change-me-in-production"
+export POCKETID_URL="https://auth.example.com"             # PocketID PUBLIC_APP_URL
 
-# Start
-docker compose -f docker-compose.prod.yml up -d
+# Start (auth is enabled by default; export AUTH_ENABLED=false to bring the stack up without PocketID)
+podman compose -f docker-compose.prod.yml up -d
+# App: http://<host>/
+```
+
+### PocketID OIDC client
+
+Create an OIDC client in PocketID and register:
+
+- **Redirect URI** = `AUTH_REDIRECT_URL` (`https://app.example.com/api/auth/callback`)
+- **Post-logout URI** = `AUTH_POST_LOGOUT_REDIRECT_URL` (`https://app.example.com`)
+
+`AUTH_ISSUER_URL` must be the **public** issuer — the value that appears in the ID token `iss` claim and is reachable by both the browser and the backend. The in-network `http://pocketid:80` is *not* a valid issuer.
+
+### Volume ownership
+
+The backend runs as a non-root user (UID 1000). On a fresh named volume, Podman copies `/data`'s ownership from the image, so it is writable. A volume created by an older (root) image is owned by container `root`, and the non-root backend cannot write its SQLite database. Re-own an existing volume with:
+
+```bash
+podman run --rm -v valet_valet_data:/data alpine chown -R 1000:1000 /data
 ```
 
 **Known gap: the container does not survive a host reboot.** `docker-compose.yml` omits `restart:`, so if the machine goes down the service stays down until it is started by hand — on 2026-10-01 that meant about 9.5 hours of downtime. Enabling auto-start is deliberately deferred; the verified fix is in `AGENTS.md` § V.
