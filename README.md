@@ -124,40 +124,48 @@ Environment variables are read once at startup (see `src/config.rs`) with sensib
 
 ## 🏭 Production
 
-`docker-compose.prod.yml` splits the stack into a Rust backend (`Dockerfile.backend`, musl, runs as non-root UID 1000), a standalone nginx frontend (`Dockerfile.frontend` + `nginx.conf`), and PocketID. The backend is **not published to the host**: nginx is the only ingress, serving the SPA and reverse-proxying `/api` to `backend:3000`.
+`docker-compose.prod.yml` deploys a **single service** `valet`, built from the repo's monolithic `Dockerfile` (multi-stage: the Vite SPA is compiled into `/app/static` and served by the Rust binary itself on `:3000`, together with `/api` — the same `Dockerfile` used by `docker-compose.yml` in development). **Nothing is published to the host**: the service joins an **existing Traefik** external network and is routed by labels; Traefik terminates TLS.
+
+### The app behind Traefik
+
+You need **one DNS name** pointing at the VPS (`APP_HOST`, **without scheme**). Traefik's external network must already exist (or point `TRAEFIK_NETWORK` at yours):
+
+```bash
+podman network create traefik
+```
 
 ```bash
 # Required variables
 export OPENROUTER_API_KEY="sk-..."
-export AUTH_ISSUER_URL="https://auth.example.com"          # public issuer, matches the id_token `iss` claim
+export APP_HOST="valet.example.com"                       # app DNS name, NO scheme
+export TRAEFIK_NETWORK="traefik"                          # external Traefik network
+export TRAEFIK_CERT_RESOLVER="letsencrypt"                # ACME resolver configured in Traefik
+export AUTH_ISSUER_URL="https://auth.example.com"         # public issuer of the existing PocketID (matches the id_token `iss` claim)
 export AUTH_CLIENT_ID="valet"
 export AUTH_CLIENT_SECRET="..."
-export AUTH_REDIRECT_URL="https://app.example.com/api/auth/callback"
-export AUTH_POST_LOGOUT_REDIRECT_URL="https://app.example.com"
+export AUTH_REDIRECT_URL="https://valet.example.com/api/auth/callback"
+export AUTH_POST_LOGOUT_REDIRECT_URL="https://valet.example.com"
 export JWT_SECRET="change-me-in-production"
-export POCKETID_URL="https://auth.example.com"             # PocketID PUBLIC_APP_URL
 
-# Start (auth is enabled by default; export AUTH_ENABLED=false to bring the stack up without PocketID)
+# Start (auth is enabled by default; export AUTH_ENABLED=false to bring the stack up without auth)
 podman compose -f docker-compose.prod.yml up -d
-# App: http://<host>/
+# App: https://valet.example.com/
 ```
 
-### PocketID OIDC client
+Traefik picks the container up from the labels and issues the certificate via `TRAEFIK_CERT_RESOLVER`; no `ports:` are exposed. The database is persisted in the `valet_data` volume mounted at `/app/data`.
 
-Create an OIDC client in PocketID and register:
+### PocketID (already deployed, external)
 
-- **Redirect URI** = `AUTH_REDIRECT_URL` (`https://app.example.com/api/auth/callback`)
-- **Post-logout URI** = `AUTH_POST_LOGOUT_REDIRECT_URL` (`https://app.example.com`)
+PocketID is **not** part of this stack — it is an OIDC provider already running on the VPS. The app consumes it through `AUTH_ISSUER_URL`, which must be the **public issuer**: the value that appears in the ID token `iss` claim and is reachable by both the browser and the backend (discovery, code exchange and JWKS all resolve against it). In the existing PocketID, register the OIDC client with:
 
-`AUTH_ISSUER_URL` must be the **public** issuer — the value that appears in the ID token `iss` claim and is reachable by both the browser and the backend. The in-network `http://pocketid:80` is *not* a valid issuer.
+- **Redirect URI** = `https://${APP_HOST}/api/auth/callback` (i.e. `AUTH_REDIRECT_URL`)
+- **Post-logout URI** = `https://${APP_HOST}` (i.e. `AUTH_POST_LOGOUT_REDIRECT_URL`)
 
-### Volume ownership
+No PocketID container, volume or DNS name is created by this repo.
 
-The backend runs as a non-root user (UID 1000). On a fresh named volume, Podman copies `/data`'s ownership from the image, so it is writable. A volume created by an older (root) image is owned by container `root`, and the non-root backend cannot write its SQLite database. Re-own an existing volume with:
+### Data volume
 
-```bash
-podman run --rm -v valet_valet_data:/data alpine chown -R 1000:1000 /data
-```
+The database lives in the named volume `valet_data` mounted at `/app/data` (see `DATABASE_URL`). On a fresh volume Podman seeds its ownership from the image. The app runs with whatever user the image defines — the monolithic `Dockerfile` runs as `root`, matching the development image.
 
 **Known gap: the container does not survive a host reboot.** `docker-compose.yml` omits `restart:`, so if the machine goes down the service stays down until it is started by hand — on 2026-10-01 that meant about 9.5 hours of downtime. Enabling auto-start is deliberately deferred; the verified fix is in `AGENTS.md` § V.
 
