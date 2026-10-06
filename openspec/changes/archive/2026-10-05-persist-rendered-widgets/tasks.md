@@ -23,6 +23,6 @@
 ## 4. Revisión y cierre
 
 - [x] 4.1 Revisión `rust-reviewer` y `react-reviewer`.
-- [ ] 4.2 PR (backend + frontend) a `development`.
-- [ ] 4.3 Prueba real: desplegar, renderizar un widget, **recargar** y comprobar que reaparece.
-- [ ] 4.4 `openspec archive persist-rendered-widgets` y PR de archivado.
+- [x] 4.2 PR (backend + frontend) a `development`. (PR #130, merge `c7de43f`)
+- [x] 4.3 Prueba real: desplegar, renderizar un widget, **recargar** y comprobar que reaparece. (verificado en el despliegue el 2026-10-06: el widget reaparece al recargar)
+- [x] 4.4 `openspec archive persist-rendered-widgets` y PR de archivado. (ejecutado: commit `20fe2fa`, deltas volcados a `openspec/specs/`)
