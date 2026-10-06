@@ -1,9 +1,6 @@
-# tools/notes Specification
+# Spec Delta
 
-## Purpose
-Notas personales con categorías (idea, journal, fact): crear, listar y borrar mediante la tool `notes`.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: NotesTool SHALL manage notes through three operations
 
@@ -34,18 +31,3 @@ La tool `notes` SHALL despachar por `operation` y soportar `create_note`, `list_
 - **When** se inspecciona el enum de `category` y la descripción de `operation`
 - **Then** el enum contiene `idea`, `journal` y `fact` y NO contiene `todo`
 - **And** la descripción de `operation` menciona `content` para `create_note` e `id` para `delete_note`
-
-### Requirement: NotesTool SHALL be NoConfirm for every operation
-
-La tool `notes` SHALL declarar `NoConfirm` para todas sus operaciones, incluida `delete_note`
-(asimetría intencionada o pendiente de revisar frente a `tasks.delete_task`, que sí exige
-aprobación explícita).
-
-**Given** una `NotesTool`
-**When** se consulta `permission()` para cualquier `operation`
-**Then** DEBE devolver `NoConfirm`
-
-#### Scenario: Permiso NoConfirm en todas las operaciones
-**Given** una `NotesTool`
-**When** la `operation` es `create_note`, `list_notes` o `delete_note`
-**Then** `permission()` DEBE devolver `NoConfirm`

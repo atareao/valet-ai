@@ -196,7 +196,7 @@ impl Tool for WeatherTool {
     }
 
     fn description(&self) -> &'static str {
-        "Consulta del clima actual o pronóstico para coordenadas geográficas"
+        "Consulta del clima actual o pronóstico para coordenadas geográficas. Si solo tienes el nombre de la ciudad, usa primero `geocode` para obtener las coordenadas."
     }
 
     fn parameters(&self) -> Value {
@@ -279,9 +279,10 @@ mod tests {
     async fn test_weather_name_and_description() -> Result<(), Box<dyn std::error::Error>> {
         let (_, tool) = setup().await?;
         assert_eq!(tool.name(), "weather");
-        assert_eq!(
-            tool.description(),
-            "Consulta del clima actual o pronóstico para coordenadas geográficas"
+        assert!(
+            tool.description().contains("geocode"),
+            "weather description must guide the model to `geocode` when only a city name is known, got: {}",
+            tool.description()
         );
         Ok(())
     }
@@ -467,5 +468,22 @@ mod tests {
             }
             other => panic!("expected Err(ToolError::ExecutionError), got: {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: the weather description must guide the model
+    // to resolve a city name with `geocode` first.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: La descripción de weather guía a geocode
+    #[tokio::test]
+    async fn test_weather_description_mentions_geocode() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let desc = tool.description();
+        assert!(
+            desc.contains("geocode"),
+            "weather description must mention `geocode` for city names, got: {desc}"
+        );
+        Ok(())
     }
 }

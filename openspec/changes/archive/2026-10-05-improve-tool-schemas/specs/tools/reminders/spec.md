@@ -1,9 +1,6 @@
-# tools/reminders Specification
+# Spec Delta
 
-## Purpose
-Recordatorios personales: crear, listar, posponer y descartar avisos y alarmas mediante la tool `reminders`.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: RemindersTool SHALL manage reminders through four operations
 
@@ -48,17 +45,3 @@ La tool `reminders` SHALL despachar por el argumento `operation` y soportar `set
 - **Given** la definición de la tool `reminders`
 - **When** se inspecciona la descripción del parámetro `operation`
 - **Then** menciona `text` y `datetime` para `set_reminder` e `id` para `dismiss_reminder` y `snooze_reminder`
-
-### Requirement: RemindersTool SHALL always request Notify permission
-
-La tool `reminders` SHALL declarar permiso `Notify` para todas sus operaciones, sin aprobación
-explícita ni ejecución silenciosa.
-
-**Given** una `RemindersTool`
-**When** se consulta `permission()`
-**Then** DEBE devolver `Notify` con independencia de la `operation`
-
-#### Scenario: Permiso Notify en todas las operaciones
-**Given** una `RemindersTool`
-**When** la `operation` es `set_reminder`, `list_reminders`, `dismiss_reminder` o `snooze_reminder`
-**Then** `permission()` DEBE devolver `Notify`

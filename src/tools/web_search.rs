@@ -69,7 +69,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search the web using Brave Search API. Returns up to 5 results with titles, URLs, and descriptions."
+        "Busca en la web con Brave Search API. Devuelve hasta 5 resultados con título, URL y descripción."
     }
 
     fn parameters(&self) -> Value {
@@ -78,7 +78,7 @@ impl Tool for WebSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search query"
+                    "description": "Consulta o palabras clave a buscar en internet"
                 }
             },
             "required": ["query"]
@@ -282,6 +282,36 @@ mod tests {
         assert!(
             matches!(result, Err(ToolError::ExecutionError(_))),
             "Expected ExecutionError when API key is missing"
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: web_search definitions must be in Spanish.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: Las tools en inglés se traducen al español
+    #[tokio::test]
+    async fn test_web_search_description_is_in_spanish() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup_tool().await;
+
+        let desc = tool.description();
+        assert!(
+            !desc.contains("Search the web"),
+            "tool description must be in Spanish, got: {desc}"
+        );
+        assert!(
+            desc.contains("Busca"),
+            "tool description must be in Spanish (must contain 'Busca'), got: {desc}"
+        );
+
+        let params = tool.parameters();
+        let query_desc = params["properties"]["query"]["description"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            !query_desc.contains("Search query"),
+            "query description must be in Spanish, got: {query_desc}"
         );
         Ok(())
     }
