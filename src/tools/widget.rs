@@ -62,7 +62,62 @@ impl Tool for RenderWidgetTool {
                 },
                 "data": {
                     "type": "object",
-                    "description": DATA_SCHEMA_DESCRIPTION
+                    "description": DATA_SCHEMA_DESCRIPTION,
+                    "anyOf": [
+                        {
+                            "title": "QuickForm",
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string" },
+                                "fields": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": { "type": "string" },
+                                            "label": { "type": "string" },
+                                            "type": {
+                                                "type": "string",
+                                                "enum": ["text", "textarea", "number", "select", "checkbox", "slider"]
+                                            },
+                                            "options": { "type": "array", "items": { "type": "string" } },
+                                            "min": { "type": "number" },
+                                            "max": { "type": "number" }
+                                        }
+                                    }
+                                },
+                                "submit_label": { "type": "string" }
+                            }
+                        },
+                        {
+                            "title": "Checklist",
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string" },
+                                "items": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": { "type": "string" },
+                                            "label": { "type": "string" }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        {
+                            "title": "LocationWidget",
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string" },
+                                "description": { "type": "string" },
+                                "latitude": { "type": "number" },
+                                "longitude": { "type": "number" },
+                                "address": { "type": "string" }
+                            }
+                        }
+                    ]
                 }
             },
             "required": ["widget_name"]
@@ -230,7 +285,8 @@ mod tests {
     fn test_render_widget_parameters_document_data_schema() {
         let params = RenderWidgetTool::new().parameters();
 
-        // `data` is a generic object; no provider-specific `oneOf` is used.
+        // `data` is an object refined with a union of widget shapes (`anyOf`),
+        // one alternative per allowed widget.
         assert_eq!(
             params["properties"]["data"]["type"],
             serde_json::json!("object"),
@@ -274,6 +330,93 @@ mod tests {
             assert!(
                 desc.contains(token),
                 "the `data` description must mention `{token}`; got: {desc}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: `data` stays optional and its schema uses a
+    // union of widget shapes (`anyOf`) with one alternative per widget.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: data sigue siendo opcional
+    #[test]
+    fn test_render_widget_data_is_not_required() {
+        let params = RenderWidgetTool::new().parameters();
+
+        assert_eq!(
+            params["required"],
+            serde_json::json!(["widget_name"]),
+            "`required` must be exactly [\"widget_name\"], got: {}",
+            params["required"]
+        );
+        let required = params["required"].as_array().unwrap();
+        assert!(
+            !required.iter().any(|v| v.as_str() == Some("data")),
+            "`required` must NOT contain `data`, got: {required:?}"
+        );
+    }
+
+    /// Scenario: El esquema de data usa una unión de formas por widget
+    #[test]
+    fn test_render_widget_data_schema_uses_union_of_widget_shapes() {
+        let params = RenderWidgetTool::new().parameters();
+        let data = &params["properties"]["data"];
+
+        let alternatives = data
+            .get("oneOf")
+            .or_else(|| data.get("anyOf"))
+            .and_then(|v| v.as_array())
+            .expect("`data` must define a union of widget shapes via `oneOf` or `anyOf`");
+
+        assert_eq!(
+            alternatives.len(),
+            ALLOWED_WIDGETS.len(),
+            "there must be one alternative per widget ({ALLOWED_WIDGETS:?}), got {} alternatives",
+            alternatives.len()
+        );
+
+        // Each branch is located by its `title`, and its structure is checked
+        // against the keys the corresponding widget actually reads, instead of
+        // merely asserting that the widget names appear somewhere in the union.
+        let find_branch = |title: &str| {
+            alternatives
+                .iter()
+                .find(|alt| alt["title"].as_str() == Some(title))
+                .unwrap_or_else(|| panic!("missing `{title}` branch in `data` union: {data}"))
+        };
+
+        let quick_form = find_branch("QuickForm");
+        assert!(
+            quick_form["properties"]["fields"].is_object(),
+            "QuickForm must declare `properties.fields`, got: {quick_form}"
+        );
+
+        let checklist = find_branch("Checklist");
+        assert!(
+            checklist["properties"]["items"].is_object(),
+            "Checklist must declare `properties.items`, got: {checklist}"
+        );
+
+        let location = find_branch("LocationWidget");
+        assert!(
+            location["properties"]["latitude"].is_object(),
+            "LocationWidget must declare `properties.latitude`, got: {location}"
+        );
+        assert!(
+            location["properties"]["longitude"].is_object(),
+            "LocationWidget must declare `properties.longitude`, got: {location}"
+        );
+
+        // Every branch must correspond to one of the `widget_name` enum values.
+        let enum_values = params["properties"]["widget_name"]["enum"]
+            .as_array()
+            .expect("`widget_name` must expose an enum");
+        for alt in alternatives {
+            let title = alt["title"].as_str().unwrap_or("");
+            assert!(
+                enum_values.iter().any(|v| v.as_str() == Some(title)),
+                "union branch `{title}` must match a `widget_name` enum value, got: {enum_values:?}"
             );
         }
     }
