@@ -65,4 +65,4 @@
 - [x] 10.1 `just check-all` en verde (Rust + frontend).
 - [x] 10.2 Review con `@rust-reviewer` y `@react-reviewer`; aplicar hallazgos.
 - [x] 10.3 Medición antes/después documentada y decisión razonada de encender o dejar apagado.
-- [ ] 10.4 PR a `development` y `openspec archive skill-router`.
+- [x] 10.4 PR a `development` y `openspec archive skill-router`. (archivado; delta consolidado en `openspec/specs/orchestrator/skill-router/`, `llm/decisions/` y `skill-router-ui/`)
