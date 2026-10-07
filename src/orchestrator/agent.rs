@@ -9,10 +9,14 @@ use crate::models::stats::LastApiCall;
 use tokio::sync::mpsc;
 
 use crate::db::repos::stats::StatsRepo;
+use crate::llm::decisions::DecisionsProvider;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider, StreamEvent, ToolCall};
 use crate::orchestrator::context_builder::ContextBuilder;
 use crate::orchestrator::context_classifier::ContextClassifier;
 use crate::orchestrator::guardrails::{ApprovalOutcome, GuardrailResult, Guardrails};
+use crate::orchestrator::skill_router::{
+    compose_skill_fragments, exposed_tools, read_router_config, read_skill_fragments, SkillRouter,
+};
 use crate::tools::geo_utils::reverse_geocode;
 use crate::tools::r#trait::ToolResult;
 use crate::tools::registry::ToolRegistry;
@@ -43,6 +47,10 @@ pub struct OrchestratorConfig {
 /// missing or empty. The real personality prompt lives in the database
 /// (seeded by migration `20260929000001_prompts.sql`).
 const DEFAULT_SYSTEM_PROMPT_FALLBACK: &str = "You are Valet, a helpful AI assistant.";
+
+/// Maximum characters kept per turn when building the router's conversational
+/// state. Cost and context hygiene: the state must not grow without bound.
+const ROUTER_HISTORY_TURN_MAX_CHARS: usize = 400;
 
 impl Default for OrchestratorConfig {
     fn default() -> Self {
@@ -357,6 +365,11 @@ pub struct Orchestrator {
     pub collapse_tx: Option<mpsc::Sender<String>>,
     pub memory_tx: Option<mpsc::Sender<()>>,
     pub last_api_call: Arc<RwLock<Option<LastApiCall>>>,
+    /// Cliente del modelo de decisiones. `None` = sin credencial (el enrutado
+    /// cae a fallo abierto). Nace a `None` en [`Orchestrator::new`], de modo que
+    /// el enrutado queda apagado salvo que se adjunte con
+    /// [`Orchestrator::with_decisions`].
+    pub decisions: Option<Arc<dyn DecisionsProvider>>,
 }
 
 impl Orchestrator {
@@ -383,7 +396,15 @@ impl Orchestrator {
             collapse_tx,
             memory_tx,
             last_api_call,
+            decisions: None,
         }
+    }
+
+    /// Builder: adjunta el cliente de decisiones (producción). `None` deja el
+    /// enrutado apagado y cae a fallo abierto.
+    pub fn with_decisions(mut self, decisions: Option<Arc<dyn DecisionsProvider>>) -> Self {
+        self.decisions = decisions;
+        self
     }
 
     /// Save the last API call data in memory so it can be served by the stats endpoint.
@@ -550,6 +571,67 @@ impl Orchestrator {
                 }
             };
 
+        // Load conversation history from the DB on the token budget. Done here,
+        // once per turn and before composing the system message, so a single
+        // read feeds both the router and the request. The final order of
+        // `messages` stays `[system, ...history..., user]`.
+        let history = crate::db::repos::messages::MessagesRepo::list_by_token_budget(
+            &self.db,
+            max_window_tokens,
+        )
+        .await?;
+
+        // Skill routing: one decision per turn, taken before the ReAct loop
+        // (D1). The router reads its settings on every turn, so toggling it
+        // takes effect without a restart. On any failure it falls open by
+        // exposing every enabled tool — the behaviour without a router.
+        let router = SkillRouter::new(self.decisions.clone(), read_router_config(&self.db).await);
+
+        let enabled_tools: Vec<String> = self
+            .registry
+            .definitions()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+
+        // Conversational state for the classifier: each turn is truncated so
+        // the state cannot grow without bound; `select` keeps only the last
+        // `ROUTER_HISTORY_TURNS`.
+        let history_for_router: Vec<String> = history
+            .iter()
+            .map(|msg| {
+                let turn = format!("{}: {}", msg.role, msg.content);
+                turn.chars().take(ROUTER_HISTORY_TURN_MAX_CHARS).collect()
+            })
+            .collect();
+
+        let selection = router
+            .select(user_message, &history_for_router, &enabled_tools)
+            .await;
+
+        // `core ∪ skills_seleccionadas ∩ habilitadas`. Computed once, outside
+        // the loop: every iteration advertises the same set and never decides
+        // again nor re-reads settings.
+        let exposed_names = exposed_tools(&selection, &enabled_tools);
+        let exposed_refs: Vec<&str> = exposed_names.iter().map(String::as_str).collect();
+
+        tracing::debug!(
+            exposed_tools = ?exposed_names,
+            source = ?selection.source,
+            "Skill routing decision for this turn"
+        );
+
+        // Prompt fragments of the active skills (R6/D8), inserted after the base
+        // prompt and before the code-composed sections. The base prompt is never
+        // modified: the duplicate check uses the original.
+        let fragments = read_skill_fragments(&self.db, &selection.skills).await;
+        let skill_sections = compose_skill_fragments(&selection, &system_prompt, &fragments);
+        let prompt_with_skills = if skill_sections.is_empty() {
+            system_prompt.clone()
+        } else {
+            format!("{}\n\n{}", system_prompt, skill_sections.join("\n\n"))
+        };
+
         // 3. ReAct loop
         tracing::debug!(
             system_prompt_len = %ctx.system_prompt.len(),
@@ -639,7 +721,7 @@ impl Orchestrator {
         // so with only the prompt the message is exactly the prompt, and the
         // browser section always closes it.
         let system_content = compose_system_message(
-            &system_prompt,
+            &prompt_with_skills,
             user_name,
             persistent_section,
             compose_episodic_memory_block(&ctx.rag_memories),
@@ -653,27 +735,21 @@ impl Orchestrator {
             tool_call_id: None,
         });
 
-        // Load conversation history from DB using token budget
-        {
-            let history = crate::db::repos::messages::MessagesRepo::list_by_token_budget(
-                &self.db,
-                max_window_tokens,
-            )
-            .await?;
-            for msg in &history {
-                let tool_calls: Option<Vec<ToolCall>> = msg
-                    .tool_calls
-                    .as_ref()
-                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+        // Append the conversation history pre-loaded above (same content and
+        // same order as before: `[system, ...history..., user]`).
+        for msg in &history {
+            let tool_calls: Option<Vec<ToolCall>> = msg
+                .tool_calls
+                .as_ref()
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
 
-                messages.push(ChatMessage {
-                    role: msg.role.clone(),
-                    content: msg.content.clone(),
-                    tool_calls,
-                    tool_result: msg.tool_results.clone(),
-                    tool_call_id: None,
-                });
-            }
+            messages.push(ChatMessage {
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+                tool_calls,
+                tool_result: msg.tool_results.clone(),
+                tool_call_id: None,
+            });
         }
 
         messages.push(ChatMessage {
@@ -734,7 +810,7 @@ impl Orchestrator {
             let request = ChatRequest {
                 model: self.config.model.clone(),
                 messages: messages.clone(),
-                tools: Some(self.registry.definitions()),
+                tools: Some(self.registry.definitions_for(&exposed_refs)),
                 temperature: Some(generation.temperature),
                 max_tokens: Some(generation.max_tokens),
                 stream: true,
@@ -1491,6 +1567,7 @@ Respond in JSON format:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::decisions::{DecisionsProvider, DecisionsRequest, DecisionsResponse};
     use crate::llm::provider::{
         ChatResponse, LLMError, ReasoningEffort, ReasoningSpec, StreamEvent, TokenUsage,
     };
@@ -5088,5 +5165,456 @@ mod tests {
             "the rejection message must reach the LLM, got: {messages:?}"
         );
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Skill router integration (skill-router, group 6)
+    // -----------------------------------------------------------------------
+
+    /// Decisions double that counts invocations and returns prefixed
+    /// probabilities. `fail` makes it return an error (fail-open case).
+    struct CountingDecisions {
+        calls: Arc<AtomicUsize>,
+        answers: std::collections::HashMap<String, f32>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl DecisionsProvider for CountingDecisions {
+        async fn decide(&self, _request: DecisionsRequest) -> Result<DecisionsResponse, LLMError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(LLMError::HttpError("boom".into()));
+            }
+            Ok(DecisionsResponse {
+                answers: self.answers.clone(),
+                input_tokens: 1,
+                output_tokens: 1,
+                cost: 0.0,
+            })
+        }
+    }
+
+    fn counting_decisions(
+        calls: Arc<AtomicUsize>,
+        answers: &[(&str, f32)],
+        fail: bool,
+    ) -> Arc<dyn DecisionsProvider> {
+        Arc::new(CountingDecisions {
+            calls,
+            answers: answers.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            fail,
+        })
+    }
+
+    /// Build an orchestrator with the production registry (13 tools) and a mock
+    /// LLM that captures the full chat request, attaching the given classifier.
+    async fn build_routed_orchestrator(
+        pool: SqlitePool,
+        captured: Arc<Mutex<Option<ChatRequest>>>,
+        decisions: Option<Arc<dyn DecisionsProvider>>,
+    ) -> Orchestrator {
+        let llm = Arc::new(FullChatRequestCaptureLLM { captured });
+        let registry = Arc::new(crate::build_tool_registry(&pool));
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig {
+            enable_reflection: false,
+            ..Default::default()
+        };
+        Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool,
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        )
+        .with_decisions(decisions)
+    }
+
+    /// Run one turn on a routed orchestrator and return the captured request.
+    async fn run_routed_turn(
+        pool: SqlitePool,
+        decisions: Option<Arc<dyn DecisionsProvider>>,
+    ) -> ChatRequest {
+        let captured: Arc<Mutex<Option<ChatRequest>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_routed_orchestrator(pool, captured.clone(), decisions).await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await
+            .expect("process_message_stream must succeed");
+        while rx.recv().await.is_some() {}
+
+        let request = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the chat request must have been captured");
+        request
+    }
+
+    /// Tool names advertised by a captured request, sorted for set comparison.
+    fn tool_names(request: &ChatRequest) -> Vec<String> {
+        let mut names: Vec<String> = request
+            .tools
+            .as_ref()
+            .map(|defs| defs.iter().map(|d| d.name.clone()).collect())
+            .unwrap_or_default();
+        names.sort_unstable();
+        names
+    }
+
+    /// The names of every tool enabled in the production registry, sorted.
+    async fn all_enabled_tool_names(pool: &SqlitePool) -> Vec<String> {
+        let mut names: Vec<String> = crate::build_tool_registry(pool)
+            .definitions()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// The `role:"system"` message of a captured request.
+    fn system_message(request: &ChatRequest) -> &str {
+        request
+            .messages
+            .iter()
+            .find(|m| m.role == "system")
+            .map(|m| m.content.as_str())
+            .expect("a system message must be present")
+    }
+
+    /// R5: with the router on and `agenda` selected, the request advertises
+    /// exactly the core plus `calendar`.
+    #[tokio::test]
+    async fn routed_turn_exposes_only_core_and_selected_skills() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[("agenda", 0.9)], false);
+
+        let request = run_routed_turn(pool, Some(decisions)).await;
+
+        let mut expected = vec![
+            "calendar".to_string(),
+            "get_current_time".to_string(),
+            "render_widget".to_string(),
+        ];
+        expected.sort_unstable();
+
+        assert_eq!(
+            tool_names(&request),
+            expected,
+            "an agenda turn must advertise exactly the core plus calendar"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the classifier must run exactly once per turn"
+        );
+    }
+
+    /// Mock LLM that emits a tool call on its first two calls, then answers.
+    struct MockLLMWithTwoToolCallsThenAnswer {
+        call_count: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for MockLLMWithTwoToolCallsThenAnswer {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count <= 2 {
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: format!("Checking ({})", *count),
+                        tool_calls: Some(vec![ToolCall {
+                            id: format!("call-{}", *count),
+                            name: "weather".into(),
+                            arguments: serde_json::json!({
+                                "latitude": 40.4168,
+                                "longitude": -3.7038
+                            }),
+                        }]),
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            } else {
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "Listo.".into(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                })
+            }
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let result = self.chat(request).await?;
+            let tool_calls = result.message.tool_calls.clone();
+
+            let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
+            if let Some(tcs) = tool_calls {
+                for tc in tcs {
+                    events.push(Ok(StreamEvent::ToolCall(tc)));
+                }
+            } else {
+                for chunk in result
+                    .message
+                    .content
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(10)
+                    .map(|c| c.iter().collect::<String>())
+                {
+                    events.push(Ok(StreamEvent::Chunk(chunk)));
+                }
+            }
+            events.push(Ok(StreamEvent::Done(result)));
+
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// R2: a turn spanning three ReAct iterations decides exactly once.
+    #[tokio::test]
+    async fn routing_decides_once_per_turn_across_react_iterations() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[("clima", 0.9)], false);
+
+        let llm = Arc::new(MockLLMWithTwoToolCallsThenAnswer {
+            call_count: Arc::new(Mutex::new(0)),
+        });
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MockWeatherTool));
+        let registry = Arc::new(registry);
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let config = OrchestratorConfig {
+            enable_reflection: false,
+            ..Default::default()
+        };
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            config,
+            pool,
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        )
+        .with_decisions(Some(decisions));
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "¿Qué tiempo hace?", None, tx)
+            .await
+            .expect("process_message_stream must succeed");
+        while rx.recv().await.is_some() {}
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the classifier must run once even across three ReAct iterations"
+        );
+    }
+
+    /// R4/D6(a): a classifier error exposes all enabled tools.
+    #[tokio::test]
+    async fn classifier_error_fails_open_with_all_tools() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+        let expected = all_enabled_tool_names(&pool).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[], true);
+
+        let request = run_routed_turn(pool, Some(decisions)).await;
+
+        assert_eq!(
+            tool_names(&request),
+            expected,
+            "a classifier error must expose all enabled tools"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the classifier must have been attempted"
+        );
+    }
+
+    /// R4/D6(b): with every probability below the threshold only the core shows.
+    #[tokio::test]
+    async fn all_below_threshold_exposes_core_only() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions =
+            counting_decisions(calls.clone(), &[("agenda", 0.10), ("clima", 0.20)], false);
+
+        let request = run_routed_turn(pool, Some(decisions)).await;
+
+        let mut expected = vec!["get_current_time".to_string(), "render_widget".to_string()];
+        expected.sort_unstable();
+
+        assert_eq!(
+            tool_names(&request),
+            expected,
+            "a conversational turn must expose only the core"
+        );
+    }
+
+    /// R4/D6(c): a disabled router exposes all enabled tools and never calls the
+    /// classifier. `ROUTER_ENABLED` defaults to `false` from the migration.
+    #[tokio::test]
+    async fn router_disabled_exposes_all_tools() {
+        let pool = setup_test_db().await;
+        let expected = all_enabled_tool_names(&pool).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[("agenda", 1.0)], false);
+
+        let request = run_routed_turn(pool, Some(decisions)).await;
+
+        assert_eq!(
+            tool_names(&request),
+            expected,
+            "a disabled router must expose all enabled tools"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a disabled router must not call the classifier"
+        );
+    }
+
+    /// R4/D6(d): without a decisions client the router fails open.
+    #[tokio::test]
+    async fn missing_decisions_client_exposes_all_tools() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+        let expected = all_enabled_tool_names(&pool).await;
+
+        let request = run_routed_turn(pool, None).await;
+
+        assert_eq!(
+            tool_names(&request),
+            expected,
+            "without a classifier the router must expose all enabled tools"
+        );
+    }
+
+    /// R6: only the fragments of the active skills are injected, and the base
+    /// prompt is left untouched.
+    #[tokio::test]
+    async fn only_active_skill_fragments_are_injected() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+        crate::db::repos::settings::SettingsRepo::set(
+            &pool,
+            "SKILL_AGENDA_PROMPT",
+            "FRAGMENTO_AGENDA_UNICO",
+        )
+        .await
+        .unwrap();
+        crate::db::repos::settings::SettingsRepo::set(
+            &pool,
+            "SKILL_TAREAS_PROMPT",
+            "FRAGMENTO_TAREAS_UNICO",
+        )
+        .await
+        .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[("agenda", 0.9)], false);
+
+        let request = run_routed_turn(pool, Some(decisions)).await;
+        let system = system_message(&request);
+
+        assert!(
+            system.contains("FRAGMENTO_AGENDA_UNICO"),
+            "the active agenda fragment must be injected, got: {system:?}"
+        );
+        assert!(
+            !system.contains("FRAGMENTO_TAREAS_UNICO"),
+            "an inactive skill fragment must not be injected, got: {system:?}"
+        );
+    }
+
+    /// R8: a routed turn writes no classifier row to the stats table — only the
+    /// chat model appears.
+    #[tokio::test]
+    async fn routed_turn_writes_no_classifier_stats_row() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[("agenda", 0.9)], false);
+        let _request = run_routed_turn(pool.clone(), Some(decisions)).await;
+
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            after - before,
+            1,
+            "only the single chat call must record a stats row"
+        );
+
+        let classifier_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests WHERE model = 'typesafe/jev-1.13'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            classifier_rows, 0,
+            "the classifier must not write to the stats table"
+        );
     }
 }

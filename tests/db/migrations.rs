@@ -749,3 +749,77 @@ async fn test_migration_prompts_idempotent() {
         assert_eq!(count, 1, "Expected exactly one row for key '{key}'");
     }
 }
+
+// ── Skill router (20261007000001_skill_router.sql) ─────────────────────────
+
+/// Reads the skill-router migration SQL from disk.
+fn skill_router_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261007000001_skill_router.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// After migrating, the `ROUTER_*` knobs hold their defaults and the eight
+/// `SKILL_*_PROMPT` fragments exist and are non-empty.
+#[tokio::test]
+async fn test_skill_router_settings_seeded_with_defaults() {
+    let pool = setup().await;
+
+    let router_defaults = [
+        ("ROUTER_ENABLED", "false"),
+        ("ROUTER_MODEL", "typesafe/jev-1.13"),
+        ("ROUTER_THRESHOLD", "0.3"),
+        ("ROUTER_TIMEOUT_MS", "800"),
+        ("ROUTER_HISTORY_TURNS", "2"),
+    ];
+    for (key, value) in router_defaults {
+        assert_eq!(
+            setting_value(&pool, key).await,
+            value,
+            "after migrations, settings.{key} must hold its default"
+        );
+    }
+
+    let skill_keys = [
+        "SKILL_AGENDA_PROMPT",
+        "SKILL_TAREAS_PROMPT",
+        "SKILL_RECORDATORIOS_PROMPT",
+        "SKILL_NOTAS_PROMPT",
+        "SKILL_CLIMA_PROMPT",
+        "SKILL_LUGARES_PROMPT",
+        "SKILL_BUSQUEDA_WEB_PROMPT",
+        "SKILL_MEMORIA_PROMPT",
+    ];
+    for key in skill_keys {
+        let value = setting_value(&pool, key).await;
+        assert!(!value.trim().is_empty(), "fragment {key} must not be empty");
+        assert!(
+            value.contains("# SKILL ACTIVA:"),
+            "fragment {key} must carry its section heading"
+        );
+    }
+}
+
+/// A hand-edited, non-empty value survives a second run of the migration.
+#[tokio::test]
+async fn test_skill_router_migration_respects_edited_value() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = '0.9' WHERE key = 'ROUTER_THRESHOLD'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = skill_router_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD").await,
+        "0.9",
+        "a hand-edited, non-empty value must not be overwritten by the upsert"
+    );
+}
