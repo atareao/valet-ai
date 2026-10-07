@@ -14,4 +14,4 @@
 
 - [x] 3.1 Revisión `react-reviewer`.
 - [x] 3.2 Verificación visual (fondo oscuro + logo + botón) y `just check-all`.
-- [ ] 3.3 PR a `development` y `openspec archive login-dark-ux`.
+- [x] 3.3 PR a `development` y `openspec archive login-dark-ux`. (archivado como `2026-10-07-login-dark-ux`; delta consolidado en `openspec/specs/frontend/spec.md`)
