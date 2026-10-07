@@ -17,6 +17,7 @@ import type {
   UpdateProfile,
   PersistentMemoryState,
   Tool,
+  SkillsResponse,
 } from "../types";
 import type { AuthUser } from "../contexts/AuthContext";
 
@@ -179,6 +180,8 @@ export const api = {
     request<void>("/persistent-memory", { method: "DELETE" }),
 
   getTools: () => request<Tool[]>("/tools"),
+
+  getSkills: () => request<SkillsResponse>("/skills"),
 
   toggleTool: (id: string) =>
     request<Tool>(`/tools/${id}/toggle`, { method: "PUT" }),

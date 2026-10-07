@@ -4,6 +4,7 @@ pub mod memories;
 pub mod messages;
 pub mod profile;
 pub mod search;
+pub mod skills;
 pub mod stats;
 pub mod tasks;
 pub mod tools;

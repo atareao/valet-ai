@@ -52,6 +52,10 @@ path = "src/bin/seed.rs"
 name = "valet-reindex"
 path = "src/bin/reindex.rs"
 
+[[bin]]
+name = "valet-route-eval"
+path = "src/bin/route-eval.rs"
+
 [features]
 default = ["vec0"]
 vec0 = ["sqlite-vec"]

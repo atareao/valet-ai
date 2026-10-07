@@ -50,7 +50,10 @@ pub struct AppState {
 }
 
 /// Build the production tool registry with all 13 built-in tools.
-fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
+///
+/// Exposed so the evaluation harness (`valet-route-eval`) can resolve the same
+/// enabled-tool set the running application advertises.
+pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(crate::tools::weather::WeatherTool::new(
         pool.clone(),
@@ -248,17 +251,35 @@ impl AppState {
         let last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>> =
             Arc::new(RwLock::new(None));
 
-        let orchestrator = Arc::new(Orchestrator::new(
-            llm_provider,
-            tool_registry.clone(),
-            guardrails.clone(),
-            context_builder,
-            orchestrator_config,
-            pool.clone(),
-            collapse_tx.clone(),
-            memory_tx.clone(),
-            last_api_call.clone(),
-        ));
+        // Decisions classifier for per-turn skill routing. A missing or empty
+        // `OPENROUTER_API_KEY` yields `None`, so routing falls open. The client
+        // timeout is a hard ceiling; the effective one is imposed per request by
+        // `ROUTER_TIMEOUT_MS` from the router. The model is overridden per
+        // request by the router, so a default here is enough.
+        let decisions: Option<Arc<dyn crate::llm::decisions::DecisionsProvider>> =
+            crate::llm::decisions::JevDecisionsConfig::from_env(
+                "typesafe/jev-1.13".to_string(),
+                10_000,
+            )
+            .map(|c| {
+                Arc::new(crate::llm::decisions::JevDecisionsProvider::new(c))
+                    as Arc<dyn crate::llm::decisions::DecisionsProvider>
+            });
+
+        let orchestrator = Arc::new(
+            Orchestrator::new(
+                llm_provider,
+                tool_registry.clone(),
+                guardrails.clone(),
+                context_builder,
+                orchestrator_config,
+                pool.clone(),
+                collapse_tx.clone(),
+                memory_tx.clone(),
+                last_api_call.clone(),
+            )
+            .with_decisions(decisions),
+        );
 
         // 7. Auth config was built and validated at step 0 (`auth_config`).
         Ok(Self {
@@ -435,6 +456,8 @@ pub fn app_with_state(state: AppState) -> Router {
         // Tools
         .route("/api/tools", get(routes::tools::list_tools))
         .route("/api/tools/{id}/toggle", put(routes::tools::toggle_tool))
+        // Skills catalog (read-only; same session middleware as `/api/tools`)
+        .route("/api/skills", get(handlers::skills::list_skills))
         // Settings
         .route(
             "/api/settings",

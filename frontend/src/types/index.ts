@@ -220,3 +220,17 @@ export interface Tool {
   description: string;
   enabled: boolean;
 }
+
+/** Skill del catálogo cerrado del enrutador (`GET /api/skills`). */
+export interface SkillInfo {
+  id: string;
+  prompt_key: string;
+  prompt_heading: string;
+  tools: string[];
+}
+
+/** Respuesta de `GET /api/skills`: skills enrutables + herramientas núcleo. */
+export interface SkillsResponse {
+  skills: SkillInfo[];
+  core_tools: string[];
+}

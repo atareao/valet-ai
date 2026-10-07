@@ -252,3 +252,109 @@ async fn test_toggle_render_widget() {
     let toggled = resp.json::<serde_json::Value>().await;
     assert_eq!(toggled["enabled"].as_bool().unwrap(), !was_enabled);
 }
+
+#[tokio::test]
+async fn test_list_skills_returns_the_catalog_and_core_tools() {
+    // Given the closed skills catalog lives in code
+    // When GET /api/skills is called
+    // Then it returns the eight skills (with their prompt fragment key and
+    //      tools) and the non-routable core set, sourced from the catalog.
+    let app = TestApp::new().await;
+
+    let resp = app.get("/api/skills").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<serde_json::Value>().await;
+
+    let skills = body["skills"]
+        .as_array()
+        .expect("GET /api/skills must return a `skills` array");
+    assert_eq!(skills.len(), 8, "the closed catalog has eight skills");
+
+    let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
+    for expected in [
+        "agenda",
+        "tareas",
+        "recordatorios",
+        "notas",
+        "clima",
+        "lugares",
+        "busqueda_web",
+        "memoria",
+    ] {
+        assert!(
+            ids.contains(&expected),
+            "missing skill id {expected}: {ids:?}"
+        );
+    }
+
+    for skill in skills {
+        assert!(
+            skill["prompt_key"].as_str().is_some_and(|k| !k.is_empty()),
+            "every skill must expose a non-empty prompt_key: {skill}"
+        );
+        let tools = skill["tools"]
+            .as_array()
+            .expect("every skill must expose a `tools` array");
+        assert!(!tools.is_empty(), "skill {} covers no tools", skill["id"]);
+    }
+
+    // A concrete skill carries the documented fragment key/heading and tools.
+    let agenda = skills
+        .iter()
+        .find(|s| s["id"] == "agenda")
+        .expect("agenda must be in the catalog");
+    assert_eq!(agenda["prompt_key"], "SKILL_AGENDA_PROMPT");
+    assert_eq!(agenda["prompt_heading"], "# SKILL ACTIVA: AGENDA");
+    let agenda_tools: Vec<&str> = agenda["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t.as_str())
+        .collect();
+    assert!(agenda_tools.contains(&"calendar"));
+
+    let core: Vec<&str> = body["core_tools"]
+        .as_array()
+        .expect("GET /api/skills must return a `core_tools` array")
+        .iter()
+        .filter_map(|t| t.as_str())
+        .collect();
+    assert!(core.contains(&"render_widget"));
+    assert!(core.contains(&"get_current_time"));
+}
+
+#[tokio::test]
+async fn test_list_skills_catalog_tools_exist_in_the_production_registry() {
+    // Given the production tool registry
+    // When every tool of the skills catalog is contrasted with it
+    // Then none of them is missing (routing would silently degrade otherwise).
+    let app = TestApp::new().await;
+
+    let resp = app.get("/api/skills").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<serde_json::Value>().await;
+
+    let registry = valet::build_tool_registry(&app.db);
+    let registry_names: Vec<String> = registry
+        .definitions()
+        .iter()
+        .map(|def| def.name.clone())
+        .collect();
+
+    let mut catalog_tools: Vec<String> = Vec::new();
+    for skill in body["skills"].as_array().unwrap() {
+        for tool in skill["tools"].as_array().unwrap() {
+            let name = tool.as_str().unwrap().to_string();
+            if !catalog_tools.contains(&name) {
+                catalog_tools.push(name);
+            }
+        }
+    }
+
+    for tool in &catalog_tools {
+        assert!(
+            registry_names.contains(tool),
+            "catalog tool {tool} must exist in the production registry: {registry_names:?}"
+        );
+    }
+}

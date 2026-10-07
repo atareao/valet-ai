@@ -1,3 +1,4 @@
+pub mod decisions;
 pub mod fallback;
 pub mod ollama;
 pub mod openrouter;

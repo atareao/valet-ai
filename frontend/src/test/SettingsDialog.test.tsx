@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App as AntdApp } from "antd";
+import { useState } from "react";
 import type { ReactElement, ReactNode } from "react";
+import type { SkillsResponse } from "../types";
 
 // ---------------------------------------------------------------------------
 // Ant Design matchMedia mock
@@ -26,6 +28,14 @@ beforeEach(() => {
 const mockUpdateProfile = vi.fn();
 const mockUpdateSettings = vi.fn();
 const mockResetToDefaults = vi.fn();
+// `useSkills` (consumido por RouterControl y SkillPromptFields) es real: llama a
+// `api.getSkills()`. Se mockea el cliente API parcialmente para controlar el
+// catálogo por test. El prefijo `mock` permite referenciarlo desde el factory
+// hoisted de `vi.mock`, igual que el resto de spies de este fichero.
+const mockGetSkills = vi.fn();
+// Spy sobre la lectura de settings del `RouterControl` autocontenido: permite
+// contar las relecturas (p. ej. al remontarlo) además de servir el fixture.
+const mockGetSettings = vi.fn();
 
 // Fixture de settings devuelta por el hook mockeado (equivale a lo que
 // responde `GET /settings`). Es mutable para que cada test pueda simular
@@ -58,9 +68,37 @@ const defaultSettings: Record<string, string> = {
   GENERATION_SEMANTIC_TEMPERATURE: "0.1",
   GENERATION_SEMANTIC_REASONING: "low",
   GENERATION_SEMANTIC_MAX_TOKENS: "2048",
+  ROUTER_ENABLED: "false",
+  ROUTER_MODEL: "typesafe/jev-1.13",
+  ROUTER_THRESHOLD: "0.3",
+  ROUTER_TIMEOUT_MS: "800",
+  ROUTER_HISTORY_TURNS: "2",
+  SKILL_AGENDA_PROMPT: "Fragmento de agenda",
+  SKILL_TAREAS_PROMPT: "Fragmento de tareas",
 };
 
 let mockSettings: Record<string, string> = { ...defaultSettings };
+
+// Catálogo cerrado devuelto por `GET /api/skills` (forma real). Dos skills
+// bastan: `agenda`→`calendar` y `tareas`→`tasks`, con dos herramientas núcleo
+// que el enrutador nunca filtra.
+const skillsFixture: SkillsResponse = {
+  skills: [
+    {
+      id: "agenda",
+      prompt_key: "SKILL_AGENDA_PROMPT",
+      prompt_heading: "# SKILL ACTIVA: AGENDA",
+      tools: ["calendar"],
+    },
+    {
+      id: "tareas",
+      prompt_key: "SKILL_TAREAS_PROMPT",
+      prompt_heading: "# SKILL ACTIVA: TAREAS",
+      tools: ["tasks"],
+    },
+  ],
+  core_tools: ["render_widget", "get_current_time"],
+};
 
 // ---------------------------------------------------------------------------
 // Mock hooks
@@ -139,7 +177,37 @@ vi.mock("../hooks/useTools", () => ({
   useTools: vi.fn(() => mockToolsState),
 }));
 
+// `useSkills` es real (no se mockea el hook): llama a `api.getSkills()`. Se
+// sustituye solo esa función manteniendo el resto del cliente con
+// `importActual` —los demás endpoints nunca se invocan porque sus hooks sí
+// están mockeados—. `RouterControl` es autocontenido: llama directamente a
+// `api.getSettings()` / `api.updateSettings()`, así que se enrutan al mismo
+// fixture (`mockSettings`) y al mismo spy (`mockUpdateSettings`) que usa el
+// resto del suite; las aserciones no cambian.
+vi.mock("../api/client", async () => {
+  const actual =
+    await vi.importActual<typeof import("../api/client")>("../api/client");
+  return {
+    ...actual,
+    api: {
+      ...actual.api,
+      // Diferido a tiempo de llamada: el factory de `vi.mock` se hoisted y se
+      // evalúa antes de que `const mockGetSkills` exista. La función anidada
+      // solo toca el spy cuando `useSkills` invoca `api.getSkills()`.
+      getSkills: (...args: unknown[]) => mockGetSkills(...args),
+      // Mismo diferido que `getSkills`: el factory se hoisted y solo toca el
+      // spy cuando `RouterControl` invoca `api.getSettings()`.
+      getSettings: () => mockGetSettings(),
+      updateSettings: (data: Record<string, string>) => {
+        mockUpdateSettings(data);
+        return Promise.resolve(mockSettings);
+      },
+    },
+  };
+});
+
 import { SettingsDialog } from "../components/SettingsDialog";
+import { RouterControl } from "../components/RouterControl";
 import { ProfileProvider } from "../contexts/ProfileProvider";
 
 // antd `App.useApp()` exige un `<App>` ancestro. Sin él el contexto por defecto
@@ -156,6 +224,8 @@ describe("SettingsDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSettings = { ...defaultSettings };
+    mockGetSkills.mockResolvedValue(skillsFixture);
+    mockGetSettings.mockImplementation(() => Promise.resolve(mockSettings));
     mockToolsState = {
       tools: [],
       loading: false,
@@ -828,7 +898,7 @@ describe("SettingsDialog", () => {
 
     expect(await screen.findByText("Weather")).toBeInTheDocument();
     expect(screen.getByText("Consulta el tiempo")).toBeInTheDocument();
-    expect(screen.getByRole("switch")).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Weather" })).toBeChecked();
   });
 
   it("muestra un indicador de carga y no la lista mientras loading es true", async () => {
@@ -844,7 +914,9 @@ describe("SettingsDialog", () => {
     await user.click(screen.getByRole("tab", { name: "Herramientas" }));
 
     expect(document.querySelector(".ant-spin")).not.toBeNull();
-    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "Weather" }),
+    ).not.toBeInTheDocument();
   });
 
   it("apagar el Switch de una tool llama a toggle(id)", async () => {
@@ -865,7 +937,7 @@ describe("SettingsDialog", () => {
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("tab", { name: "Herramientas" }));
-    await user.click(await screen.findByRole("switch"));
+    await user.click(await screen.findByRole("switch", { name: "Weather" }));
 
     await waitFor(() => {
       expect(mockToggleTool).toHaveBeenCalledWith("weather");
@@ -891,7 +963,7 @@ describe("SettingsDialog", () => {
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("tab", { name: "Herramientas" }));
-    await user.click(await screen.findByRole("switch"));
+    await user.click(await screen.findByRole("switch", { name: "Weather" }));
 
     expect(
       await screen.findByText("Error al cambiar la herramienta"),
@@ -981,7 +1053,7 @@ describe("SettingsDialog", () => {
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("tab", { name: "Herramientas" }));
-    const switchEl = await screen.findByRole("switch");
+    const switchEl = await screen.findByRole("switch", { name: "Weather" });
     expect(switchEl).not.toBeChecked();
 
     await user.click(switchEl);
@@ -1376,5 +1448,261 @@ describe("SettingsDialog", () => {
     // depender de getComputedStyle con pseudo-elementos (jsdom no lo implementa).
     const dialog = screen.getByRole("dialog") as HTMLElement;
     expect(parseFloat(dialog.style.width)).toBeGreaterThanOrEqual(960);
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // change `skill-router` — pestaña «Herramientas» (control del enrutador),
+  // sub-pestaña «Skills» de «Prompts» y avisos no bloqueantes.
+  // ════════════════════════════════════════════════════════════════
+
+  const ROUTER_SWITCH = "Enrutador de skills";
+
+  // R1 — «Herramientas»: el control refleja el estado vigente.
+  it("el control del enrutador refleja el estado vigente", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    // En la pestaña convive un switch por herramienta: el del enrutador se
+    // localiza por su nombre accesible, no por rol a secas.
+    expect(screen.getByRole("switch", { name: ROUTER_SWITCH })).not.toBeChecked();
+
+    // El InputNumber formatea según el `step` (0,05 → dos decimales): se
+    // compara numéricamente para no atar el test al formato de display.
+    const threshold = screen.getByLabelText(
+      "Umbral del enrutador",
+    ) as HTMLInputElement;
+    expect(Number(threshold.value)).toBeCloseTo(0.3);
+  });
+
+  // R1 — encender y guardar persiste solo las claves del enrutador.
+  it("encender el enrutador y guardar envía solo las claves del enrutador", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+    await user.click(screen.getByRole("switch", { name: ROUTER_SWITCH }));
+
+    const region = screen.getByRole("region", { name: "Enrutador de skills" });
+    await user.click(within(region).getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledTimes(1);
+    });
+    const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, string>;
+    // Exactamente las tres claves del enrutador: sin `SKILL_*` ni ningún otro
+    // grupo de settings colándose en la petición.
+    expect(Object.keys(payload).sort()).toEqual([
+      "ROUTER_ENABLED",
+      "ROUTER_MODEL",
+      "ROUTER_THRESHOLD",
+    ]);
+    expect(payload.ROUTER_ENABLED).toBe("true");
+    expect(payload.ROUTER_THRESHOLD).toBe("0.3");
+    expect(payload.ROUTER_MODEL).toBe("typesafe/jev-1.13");
+    // No arrastra claves de otros grupos de settings.
+    expect(payload).not.toHaveProperty("system_prompt");
+
+    expect(
+      await screen.findByText("Ajustes del enrutador guardados"),
+    ).toBeInTheDocument();
+  });
+
+  // R1 — relación de skills y herramientas núcleo fuera del enrutado.
+  it("la relación de skills muestra sus herramientas y que el core no se enruta", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    expect(await screen.findByText("agenda")).toBeInTheDocument();
+    expect(screen.getByText("calendar")).toBeInTheDocument();
+    expect(screen.getByText("tareas")).toBeInTheDocument();
+    expect(screen.getByText("tasks")).toBeInTheDocument();
+
+    expect(
+      screen.getByText("Herramientas núcleo: siempre expuestas, fuera del enrutado"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/render_widget, get_current_time/),
+    ).toBeInTheDocument();
+  });
+
+  // R1 — el campo del modelo se identifica como modelo de decisiones.
+  it("el campo del modelo se identifica como modelo de decisiones", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    expect(screen.getByLabelText("Modelo de decisiones")).toHaveValue(
+      "typesafe/jev-1.13",
+    );
+    expect(screen.getByText(/no un modelo generativo/i)).toBeInTheDocument();
+  });
+
+  // R3 — aviso de enrutado inactivo sin bloquear el guardado.
+  it("avisa de que el enrutado está inactivo cuando está apagado", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    expect(
+      await screen.findByText(/El enrutador está apagado/),
+    ).toBeInTheDocument();
+
+    // El guardado sigue disponible pese al aviso.
+    const region = screen.getByRole("region", { name: "Enrutador de skills" });
+    await user.click(within(region).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalled();
+    });
+  });
+
+  // R3 — aviso con umbral extremo sin bloquear el guardado.
+  it.each([
+    { value: "0", message: /desactiva el filtrado/i },
+    { value: "1", message: /inalcanzable/i },
+  ])(
+    "avisa con umbral extremo ($value) sin bloquear el guardado",
+    async ({ value, message }) => {
+      const user = userEvent.setup();
+      mockUpdateSettings.mockResolvedValue(undefined);
+      mockSettings = { ...mockSettings, ROUTER_THRESHOLD: value };
+      renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+      await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+      expect(await screen.findByText(message)).toBeInTheDocument();
+
+      const region = screen.getByRole("region", { name: "Enrutador de skills" });
+      await user.click(within(region).getByRole("button", { name: "Guardar" }));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ ROUTER_THRESHOLD: value }),
+        );
+      });
+    },
+  );
+
+  // R2 — sub-pestaña «Skills»: un área de texto por fragmento vigente.
+  it("muestra un área de texto por skill", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Prompts" }));
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+
+    expect(await screen.findByLabelText("agenda")).toHaveValue(
+      "Fragmento de agenda",
+    );
+    expect(screen.getByLabelText("tareas")).toHaveValue("Fragmento de tareas");
+  });
+
+  // R2 — guardar un fragmento no altera el resto de settings.
+  it("guardar envía el fragmento editado sin alterar el resto", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Prompts" }));
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+
+    const area = await screen.findByLabelText("agenda");
+    await user.clear(area);
+    await user.type(area, "Nueva agenda");
+
+    const form = area.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          SKILL_AGENDA_PROMPT: "Nueva agenda",
+          // El fragmento vecino conserva su valor vigente…
+          SKILL_TAREAS_PROMPT: "Fragmento de tareas",
+          // …y el prompt del sistema no se altera.
+          system_prompt: "Eres Valet",
+        }),
+      );
+    });
+  });
+
+  // R2 — si el catálogo falla, el formulario cae a las claves crudas y guarda.
+  it("si el catálogo de skills falla, el formulario sigue renderizando", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    mockGetSkills.mockRejectedValue(new Error("boom"));
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Prompts" }));
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+
+    // Sin catálogo, la etiqueta cae a la propia clave de settings.
+    const area = screen.getByLabelText("SKILL_AGENDA_PROMPT");
+    await user.clear(area);
+    await user.type(area, "Otro texto");
+
+    const form = area.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ SKILL_AGENDA_PROMPT: "Otro texto" }),
+      );
+    });
+  });
+
+  // R1 — regresión: el borrador del enrutador se descarta al remontar el
+  // control, que vuelve a leer lo persistido.
+  //
+  // El mecanismo real incrementa `routerOpenKey` desde el `afterOpenChange` del
+  // `Modal` de antd. En jsdom ese callback NO dispara: `rc-motion` espera un
+  // `transitionend` que jsdom nunca emite y `Dialog` no pasa `motionDeadline`,
+  // así que la animación nunca «termina» y `onVisibleChanged` no se invoca. No
+  // se fabrica un test que dependa de ese evento. Se cubre el comportamiento
+  // observable equivalente: `RouterControl` remontado (lo que produce el cambio
+  // de `key`) descarta la edición sin guardar y re-lee `getSettings`.
+  it("remontar el control descarta la edición sin guardar y relee lo persistido", async () => {
+    const user = userEvent.setup();
+    mockSettings = { ...mockSettings, ROUTER_ENABLED: "false" };
+
+    function RouterHarness() {
+      const [mountKey, setMountKey] = useState(0);
+      return (
+        <>
+          <button type="button" onClick={() => setMountKey((k) => k + 1)}>
+            remount
+          </button>
+          <RouterControl key={mountKey} />
+        </>
+      );
+    }
+
+    render(<RouterHarness />, { wrapper: AppWrapper });
+
+    const switchBefore = await screen.findByRole("switch", { name: ROUTER_SWITCH });
+    expect(switchBefore).not.toBeChecked();
+
+    // Encender sin guardar: el borrador vive solo en el estado local.
+    await user.click(switchBefore);
+    expect(screen.getByRole("switch", { name: ROUTER_SWITCH })).toBeChecked();
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
+
+    const readsBefore = mockGetSettings.mock.calls.length;
+
+    await user.click(screen.getByRole("button", { name: "remount" }));
+
+    // El control remontado relee y pinta lo persistido (apagado), no el
+    // borrador encendido.
+    expect(
+      await screen.findByRole("switch", { name: ROUTER_SWITCH }),
+    ).not.toBeChecked();
+    expect(mockGetSettings.mock.calls.length).toBeGreaterThan(readsBefore);
   });
 });

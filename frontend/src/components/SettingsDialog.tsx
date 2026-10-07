@@ -11,11 +11,15 @@ import {
   Space,
   Spin,
   Alert,
+  Divider,
 } from "antd";
 import { useSettings } from "../hooks/useSettings";
 import { useProfileContext } from "../contexts/ProfileContext";
 import { PersistentMemoryPanel } from "./PersistentMemoryPanel";
 import { ToolsTab } from "./ToolsTab";
+import { RouterControl } from "./RouterControl";
+import { SkillPromptFields } from "./SkillPromptFields";
+import { collectSkillPromptKeys } from "./skillRouter";
 
 const { TextArea } = Input;
 
@@ -137,6 +141,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     getMissingConsolidatorPlaceholders(consolidatorPrompt);
   const [resetting, setResetting] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
+  // Contador de aperturas: el `Modal` no se desmonta al cerrar y las panes de
+  // `Tabs` siguen montadas, así que `RouterControl` se remonta en cada apertura
+  // (patrón `statsOpenKey` de `AppLayout`) para que siempre relea lo persistido.
+  const [routerOpenKey, setRouterOpenKey] = useState(0);
 
   // Load settings into form when visible changes
   useEffect(() => {
@@ -195,6 +203,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           settings.GENERATION_SEMANTIC_MAX_TOKENS || "2048",
         ),
       });
+      // Los fragmentos por skill se cargan desde el propio objeto de settings,
+      // filtrados por patrón: aparecen solos aunque se añada una skill nueva.
+      for (const key of collectSkillPromptKeys(settings)) {
+        settingsForm.setFieldValue(key, settings[key] ?? "");
+      }
     }
   }, [settings, visible, settingsForm]);
 
@@ -231,7 +244,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     values: Partial<SettingsFormValues>,
   ) => {
     try {
-      await updateSettings({
+      const payload: Record<string, string> = {
         font_size: (
           values.font_size ?? parseInt(settings?.font_size || "16")
         ).toString(),
@@ -313,7 +326,17 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           values.GENERATION_SEMANTIC_MAX_TOKENS ??
           parseInt(settings?.GENERATION_SEMANTIC_MAX_TOKENS || "2048")
         ).toString(),
-      });
+      };
+      // Los fragmentos por skill viajan en el mismo submit, tomados del propio
+      // formulario (o de settings si el campo no se registró): guardar no pisa
+      // el resto de claves ni deja atrás un fragmento nuevo.
+      const skillValues = values as Record<string, unknown>;
+      for (const key of collectSkillPromptKeys(settings)) {
+        const edited = skillValues[key];
+        payload[key] =
+          typeof edited === "string" ? edited : (settings?.[key] ?? "");
+      }
+      await updateSettings(payload);
       messageApi.success("Ajustes guardados");
       onClose();
     } catch {
@@ -366,6 +389,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       closable={false}
       footer={null}
       width={1000}
+      afterOpenChange={(open) => {
+        if (open) setRouterOpenKey((k) => k + 1);
+      }}
     >
       <Tabs
         items={[
@@ -528,6 +554,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                           <TextArea rows={10} />
                         </Form.Item>
                       ),
+                    },
+                    {
+                      key: "skills",
+                      label: "Skills",
+                      forceRender: true,
+                      children: <SkillPromptFields settings={settings} />,
                     },
                   ]}
                 />
@@ -707,7 +739,13 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           {
             key: "tools",
             label: "Herramientas",
-            children: <ToolsTab />,
+            children: (
+              <>
+                <RouterControl key={routerOpenKey} />
+                <Divider />
+                <ToolsTab />
+              </>
+            ),
           },
         ]}
       />
