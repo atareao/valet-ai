@@ -24,4 +24,4 @@
 
 - [x] 3.1 Revisión `react-reviewer`.
 - [x] 3.2 `just check-all` en verde y comprobación manual del reparto de chunks.
-- [ ] 3.3 PR a `development` y `openspec archive lazy-app-bundle`.
+- [x] 3.3 PR a `development` y `openspec archive lazy-app-bundle`. (archivado como `2026-10-07-lazy-app-bundle`; delta consolidado en `openspec/specs/frontend/spec.md`)
