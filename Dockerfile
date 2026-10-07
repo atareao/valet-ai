@@ -48,6 +48,12 @@ COPY frontend/ ./
 ENV CI=true
 RUN npm run build
 
+# `npm run build` genera `dist/.vite/manifest.json` (lo consume
+# `frontend/scripts/check-initial-bundle.mjs` durante el propio build). No debe
+# servirse en producción (el backend sirve `static` con ServeDir), así que se
+# elimina antes de copiar la imagen final.
+RUN rm -rf dist/.vite
+
 # ═══════════════════════════════════════════════════════════════
 # Stage 3: Runtime
 # ═══════════════════════════════════════════════════════════════

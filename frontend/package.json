@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "postbuild": "node scripts/check-initial-bundle.mjs",
     "preview": "vite preview",
     "lint": "eslint .",
     "lint:ci": "eslint . --max-warnings 0",

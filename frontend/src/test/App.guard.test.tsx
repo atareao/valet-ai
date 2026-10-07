@@ -6,15 +6,16 @@ import { useAuth } from "../contexts/AuthContext";
 import type { AuthUser } from "../contexts/AuthContext";
 
 /**
- * Fase GREEN del change `oidc-auth`.
+ * Contrato del guard de sesión de `App.tsx`:
+ *   - mientras se resuelve `/api/auth/me` (`loading`) → `AppLoader`
+ *     (`data-testid="auth-loading"`);
+ *   - sin sesión → pantalla de login;
+ *   - con sesión → app autenticada, cargada en diferido (`React.lazy` +
+ *     `Suspense`), por lo que aparece tras resolverse el chunk
+ *     (`data-testid="app-layout"`).
  *
- * Contrato (spec `frontend`, requirements "pantalla de login" y "estado de
- * carga"): mientras se resuelve `/api/auth/me` se muestra carga
- * (`data-testid="auth-loading"`); sin sesión, la pantalla de login; con sesión
- * (`data-testid="app-layout"`), la aplicación.
- *
- * `App.tsx` aún no tiene guard, así que renderiza la app en todos los casos y
- * los asserts de carga/login fallan.
+ * `AuthenticatedApp` se mockea para no arrastrar antd real (ni su chunk lazy)
+ * al test del guard.
  */
 vi.mock("../contexts/AuthContext", () => ({
   useAuth: vi.fn(),
@@ -24,8 +25,8 @@ vi.mock("../contexts/AuthProvider", () => ({
   AuthProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
-vi.mock("../components/AppLayout", () => ({
-  AppLayout: () => <div data-testid="app-layout">app</div>,
+vi.mock("../AuthenticatedApp", () => ({
+  default: () => <div data-testid="app-layout">app</div>,
 }));
 
 vi.mock("../api/client", () => ({
@@ -91,7 +92,7 @@ describe("App — guard de sesión", () => {
     expect(screen.queryByTestId("app-layout")).toBeNull();
   });
 
-  it("con sesión muestra la aplicación y no la pantalla de login", () => {
+  it("con sesión muestra la aplicación y no la pantalla de login", async () => {
     mockUseAuth.mockReturnValue({
       user: authedUser,
       loading: false,
@@ -101,7 +102,7 @@ describe("App — guard de sesión", () => {
 
     render(<App />);
 
-    expect(screen.getByTestId("app-layout")).toBeInTheDocument();
+    expect(await screen.findByTestId("app-layout")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /iniciar sesión/i }),
     ).toBeNull();

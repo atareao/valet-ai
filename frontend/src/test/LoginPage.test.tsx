@@ -70,6 +70,17 @@ describe("LoginPage", () => {
   });
 
   // ════════════════════════════════════════════════════════════════
+  // change `lazy-app-bundle`: botón nativo, sin antd (RED → GREEN)
+  // ════════════════════════════════════════════════════════════════
+
+  it("el control de login es un botón nativo, sin antd", () => {
+    render(<LoginPage />);
+    const btn = screen.getByRole("button", { name: /iniciar sesión/i });
+    expect(btn.tagName).toBe("BUTTON");
+    expect(btn).not.toHaveClass("ant-btn");
+  });
+
+  // ════════════════════════════════════════════════════════════════
   // change `login-dark-ux`: fondo oscuro y logo real (implementado)
   // ════════════════════════════════════════════════════════════════
 

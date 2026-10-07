@@ -1,59 +1,42 @@
-import { BrowserRouter, Routes, Route } from "react-router-dom";
-import { ConfigProvider, App as AntdApp, Spin } from "antd";
-import { valetTheme } from "./theme";
-import { AppLayout } from "./components/AppLayout";
+import { lazy, Suspense } from "react";
+import { AppLoader } from "./components/AppLoader";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { LoginPage } from "./components/LoginPage";
-import { ProfileProvider } from "./contexts/ProfileProvider";
 import { AuthProvider } from "./contexts/AuthProvider";
 import { useAuth } from "./contexts/AuthContext";
+
+const AuthenticatedApp = lazy(() => import("./AuthenticatedApp"));
 
 /**
  * Guard de sesión: mientras se resuelve `/api/auth/me` muestra carga; sin
  * sesión, la pantalla de login; con sesión, la aplicación autenticada.
+ *
+ * La app autenticada (antd + router + vistas) se carga con `React.lazy` para
+ * que nada de ello entre en el bundle inicial.
  */
 function AuthGate() {
   const { user, loading } = useAuth();
 
-  if (loading) {
-    return (
-      <div
-        data-testid="auth-loading"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          minHeight: "100vh",
-        }}
-      >
-        <Spin size="large" />
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <LoginPage />;
-  }
+  if (loading) return <AppLoader />;
+  if (!user) return <LoginPage />;
 
   return (
-    <ProfileProvider>
-      <Routes>
-        <Route path="*" element={<AppLayout />} />
-      </Routes>
-    </ProfileProvider>
+    // `ErrorBoundary` envuelve al `Suspense`: si falla la descarga del chunk de
+    // la app autenticada (`React.lazy` rechaza), se muestra un aviso recuperable
+    // en lugar de dejar la pantalla en blanco.
+    <ErrorBoundary>
+      <Suspense fallback={<AppLoader />}>
+        <AuthenticatedApp />
+      </Suspense>
+    </ErrorBoundary>
   );
 }
 
 function App() {
   return (
-    <BrowserRouter>
-      <ConfigProvider theme={valetTheme}>
-        <AntdApp>
-          <AuthProvider>
-            <AuthGate />
-          </AuthProvider>
-        </AntdApp>
-      </ConfigProvider>
-    </BrowserRouter>
+    <AuthProvider>
+      <AuthGate />
+    </AuthProvider>
   );
 }
 
