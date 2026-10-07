@@ -1,11 +1,13 @@
 import React from "react";
-import { Button } from "antd";
 import valetIcon from "../assets/valet-icon.svg";
 
 /**
  * Pantalla mostrada cuando no hay sesión válida. Muestra el logo real de Valet
  * sobre el fondo oscuro del layout e inicia el flujo OIDC navegando al endpoint
  * `login` del backend.
+ *
+ * Usa un `<button>` nativo (clase `.login-button` en `global.css`) para que la
+ * pantalla de login no arrastre `antd` al bundle inicial.
  */
 export const LoginPage: React.FC = () => {
   const handleLogin = () => {
@@ -26,9 +28,9 @@ export const LoginPage: React.FC = () => {
       }}
     >
       <img src={valetIcon} alt="Valet" width={120} height={120} />
-      <Button type="primary" size="large" onClick={handleLogin}>
+      <button type="button" className="login-button" onClick={handleLogin}>
         Iniciar sesión
-      </Button>
+      </button>
     </div>
   );
 };

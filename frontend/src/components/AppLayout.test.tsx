@@ -25,11 +25,11 @@ vi.mock("./SettingsDialog", () => ({
 }));
 
 vi.mock("./CalendarView", () => ({
-  CalendarView: () => null,
+  CalendarView: () => <div data-testid="calendar-view">Calendar</div>,
 }));
 
 vi.mock("./TaskView", () => ({
-  TaskView: () => null,
+  TaskView: () => <div data-testid="task-view">Tasks</div>,
 }));
 
 vi.mock("../hooks/useMainChat", () => ({
@@ -144,6 +144,42 @@ describe("AppLayout — settings dialog", () => {
     await user.click(statsButton);
     await waitFor(() => {
       expect(screen.getByTestId("stats-dashboard")).toBeInTheDocument();
+    });
+  });
+
+  it("calendar view is not mounted until its modal opens", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <ProfileProvider>
+          <AppLayout />
+        </ProfileProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByTestId("calendar-view")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /calendar/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId("calendar-view")).toBeInTheDocument();
+    });
+  });
+
+  it("task view is not mounted until its modal opens", async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <ProfileProvider>
+          <AppLayout />
+        </ProfileProvider>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByTestId("task-view")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /check-square/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId("task-view")).toBeInTheDocument();
     });
   });
 });

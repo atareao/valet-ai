@@ -36,6 +36,9 @@ afterEach(() => {
 });
 
 describe("cadena 401 → valet:unauthorized → AuthProvider → LoginPage", () => {
+  // Timeout holgado en el propio `it`: este es el único test que monta la app
+  // real (`App`) con antd, cuyo arranque en jsdom excede el 1 s por defecto.
+  // No se tocan los timeouts globales para no enmascarar cuelgues en el resto.
   it("pasa a no autenticado y muestra la pantalla de login", async () => {
     vi.stubGlobal(
       "fetch",
@@ -58,8 +61,11 @@ describe("cadena 401 → valet:unauthorized → AuthProvider → LoginPage", () 
 
     render(<App />);
 
-    // Sesión resuelta: se muestra la aplicación.
-    expect(await screen.findByTestId("app-layout")).toBeInTheDocument();
+    // Sesión resuelta: se muestra la aplicación. `findByTestId` con timeout
+    // propio para absorber la carga diferida del `Suspense` (app autenticada).
+    expect(
+      await screen.findByTestId("app-layout", undefined, { timeout: 10000 }),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /iniciar sesión/i }),
     ).toBeNull();
@@ -69,11 +75,13 @@ describe("cadena 401 → valet:unauthorized → AuthProvider → LoginPage", () 
       window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
     });
 
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: /iniciar sesión/i }),
-      ).toBeInTheDocument(),
+    await waitFor(
+      () =>
+        expect(
+          screen.getByRole("button", { name: /iniciar sesión/i }),
+        ).toBeInTheDocument(),
+      { timeout: 10000 },
     );
     expect(screen.queryByTestId("app-layout")).toBeNull();
-  });
+  }, 15000);
 });
