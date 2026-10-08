@@ -57,5 +57,5 @@
 - [x] 9.2 Reviews con `@rust-reviewer` y `@react-reviewer`; hallazgos aplicados.
   - **`rust-reviewer`**: 1 MAYOR real (la guía de widgets podía viajar dos veces si el usuario había editado el bloque: el marcador anti-duplicado miraba un encabezado que el fragmento no llevaba) + 4 menores (marca `overridden` del umbral, trim consistente, validación de `--threshold` en el arnés) — todo con test. Verificaciones pendientes completadas, incluida la **discrepancia de contexto entre el arnés y producción**.
   - **`react-reviewer`**: sin bugs críticos; 2 mayores aplicados (colisión de nombres accesibles entre las seis skills y doble `GET /api/skills` por apertura, ahora con un único dueño del catálogo) + menores (tipo unión de `overridden`, tests directos de `skillEffectiveValues`/`skillFields`, test del fallo de «Restaurar»). Deuda documentada en código: restaurar un fragmento (hoy inalcanzable) y un override de umbral igual al global (invisible, no limpiable).
-- [ ] 9.3 Documentar en el PR la medición antes/después y la decisión razonada sobre encender (el enrutador se entrega **apagado**).
-- [ ] 9.4 PR a `development` y `openspec archive skill-router-tuning`.
+- [x] 9.3 Documentar en el PR la medición antes/después y la decisión razonada sobre encender (el enrutador se entrega **apagado**).
+- [x] 9.4 PR a `development` y `openspec archive skill-router-tuning`.
