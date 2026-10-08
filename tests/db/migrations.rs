@@ -773,6 +773,14 @@ fn skill_router_migration_sql() -> String {
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
+/// Reads the router-enabled migration SQL from disk.
+fn router_enabled_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261008000002_router_enabled_by_default.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
 /// After migrating, the `ROUTER_*` knobs hold their defaults and the eight
 /// `SKILL_*_PROMPT` fragments exist and are non-empty.
 #[tokio::test]
@@ -780,7 +788,8 @@ async fn test_skill_router_settings_seeded_with_defaults() {
     let pool = setup().await;
 
     let router_defaults = [
-        ("ROUTER_ENABLED", "false"),
+        // Flipped to true by 20261008000002_router_enabled_by_default.sql.
+        ("ROUTER_ENABLED", "true"),
         ("ROUTER_MODEL", "typesafe/jev-1.13"),
         // Bumped from 0.3 by 20261008000001_skill_router_tuning.sql (measured).
         ("ROUTER_THRESHOLD", "0.10"),
@@ -816,6 +825,20 @@ async fn test_skill_router_settings_seeded_with_defaults() {
     }
 }
 
+/// After the migrations, the router boots enabled: 20261008000002 flips the
+/// seeded `ROUTER_ENABLED` from `false` to `true` so a migrated database routes
+/// out of the box.
+#[tokio::test]
+async fn test_router_enabled_is_true_after_migrations() {
+    let pool = setup().await;
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_ENABLED").await,
+        "true",
+        "a freshly migrated database must boot with the router enabled"
+    );
+}
+
 /// A hand-edited, non-empty value survives a second run of the migration.
 #[tokio::test]
 async fn test_skill_router_migration_respects_edited_value() {
@@ -836,6 +859,55 @@ async fn test_skill_router_migration_respects_edited_value() {
         setting_value(&pool, "ROUTER_THRESHOLD").await,
         "0.9",
         "a hand-edited, non-empty value must not be overwritten by the upsert"
+    );
+}
+
+/// The flip only touches the exact seeded value: a user who turned the router
+/// off with the `0` spelling keeps it off after re-applying the migration.
+#[tokio::test]
+async fn test_router_enabled_migration_respects_user_value() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = '0' WHERE key = 'ROUTER_ENABLED'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = router_enabled_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_ENABLED").await,
+        "0",
+        "a user-chosen value that is not the seeded default must survive the migration"
+    );
+}
+
+/// The documented caveat is executable: an explicit `false` that started from
+/// the seeded value is indistinguishable from it, so the migration flips it
+/// once. That is the price of a plain SQL migration; the window is small.
+#[tokio::test]
+async fn test_router_enabled_migration_flips_the_seeded_false_once() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = 'false' WHERE key = 'ROUTER_ENABLED'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = router_enabled_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_ENABLED").await,
+        "true",
+        "the seeded `false` is flipped once — see the migration's caveat"
     );
 }
 
