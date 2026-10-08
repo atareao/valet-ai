@@ -5501,10 +5501,13 @@ mod tests {
     }
 
     /// R4/D6(c): a disabled router exposes all enabled tools and never calls the
-    /// classifier. `ROUTER_ENABLED` defaults to `false` from the migration.
+    /// classifier. The disabled state is set explicitly: it is no longer the default.
     #[tokio::test]
     async fn router_disabled_exposes_all_tools() {
         let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "false")
+            .await
+            .unwrap();
         let expected = all_enabled_tool_names(&pool).await;
 
         let calls = Arc::new(AtomicUsize::new(0));
