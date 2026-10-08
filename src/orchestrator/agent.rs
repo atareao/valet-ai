@@ -5308,7 +5308,7 @@ mod tests {
         let mut expected = vec![
             "calendar".to_string(),
             "get_current_time".to_string(),
-            "render_widget".to_string(),
+            "get_current_location".to_string(),
         ];
         expected.sort_unstable();
 
@@ -5483,11 +5483,14 @@ mod tests {
 
         let calls = Arc::new(AtomicUsize::new(0));
         let decisions =
-            counting_decisions(calls.clone(), &[("agenda", 0.10), ("clima", 0.20)], false);
+            counting_decisions(calls.clone(), &[("agenda", 0.05), ("entorno", 0.09)], false);
 
         let request = run_routed_turn(pool, Some(decisions)).await;
 
-        let mut expected = vec!["get_current_time".to_string(), "render_widget".to_string()];
+        let mut expected = vec![
+            "get_current_time".to_string(),
+            "get_current_location".to_string(),
+        ];
         expected.sort_unstable();
 
         assert_eq!(

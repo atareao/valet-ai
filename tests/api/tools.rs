@@ -2,6 +2,8 @@ mod common;
 use common::TestApp;
 
 use axum::http::StatusCode;
+use valet::db::repos::settings::SettingsRepo;
+use valet::orchestrator::skills::catalog;
 
 #[tokio::test]
 async fn test_list_tools() {
@@ -255,9 +257,9 @@ async fn test_toggle_render_widget() {
 
 #[tokio::test]
 async fn test_list_skills_returns_the_catalog_and_core_tools() {
-    // Given the closed skills catalog lives in code
+    // Given the closed six-domain skills catalog lives in code
     // When GET /api/skills is called
-    // Then it returns the eight skills (with their prompt fragment key and
+    // Then it returns the six skills (with their prompt fragment key and
     //      tools) and the non-routable core set, sourced from the catalog.
     let app = TestApp::new().await;
 
@@ -268,11 +270,23 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
     let skills = body["skills"]
         .as_array()
         .expect("GET /api/skills must return a `skills` array");
-    assert_eq!(skills.len(), 8, "the closed catalog has eight skills");
+    assert_eq!(skills.len(), 6, "the closed catalog has six skills");
 
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
     for expected in [
         "agenda",
+        "pendientes",
+        "recuerdos",
+        "entorno",
+        "web",
+        "widgets",
+    ] {
+        assert!(
+            ids.contains(&expected),
+            "missing skill id {expected}: {ids:?}"
+        );
+    }
+    for legacy in [
         "tareas",
         "recordatorios",
         "notas",
@@ -282,8 +296,8 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
         "memoria",
     ] {
         assert!(
-            ids.contains(&expected),
-            "missing skill id {expected}: {ids:?}"
+            !ids.contains(&legacy),
+            "legacy skill id {legacy} must be gone: {ids:?}"
         );
     }
 
@@ -319,8 +333,12 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
         .iter()
         .filter_map(|t| t.as_str())
         .collect();
-    assert!(core.contains(&"render_widget"));
+    assert!(
+        !core.contains(&"render_widget"),
+        "render_widget is routed with the widgets skill, not the core"
+    );
     assert!(core.contains(&"get_current_time"));
+    assert!(core.contains(&"get_current_location"));
 }
 
 #[tokio::test]
@@ -357,4 +375,146 @@ async fn test_list_skills_catalog_tools_exist_in_the_production_registry() {
             "catalog tool {tool} must exist in the production registry: {registry_names:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn test_list_skills_exposes_effective_values_without_overrides() {
+    // Given a freshly migrated database (no per-skill criterion overrides; the
+    //       migration seeds an explicit `ROUTER_THRESHOLD_WIDGETS` equal to the
+    //       catalog default)
+    // When GET /api/skills is called
+    // Then every effective value is the catalog's, and the only marked field is
+    //      the widget threshold —an explicit per-skill override— while a raised
+    //      global would mark nothing.
+    let app = TestApp::new().await;
+
+    let resp = app.get("/api/skills").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<serde_json::Value>().await;
+    let skills = body["skills"].as_array().unwrap();
+
+    for skill in skills {
+        let id = skill["id"].as_str().unwrap();
+        let spec = catalog()
+            .iter()
+            .find(|spec| spec.id == id)
+            .unwrap_or_else(|| panic!("skill {id} must be in the catalog"));
+
+        assert_eq!(
+            skill["question"], spec.instructions,
+            "effective question for {id}"
+        );
+        assert_eq!(
+            skill["criteria_true"], spec.criteria_true,
+            "effective criteria_true for {id}"
+        );
+        assert_eq!(
+            skill["criteria_false"], spec.criteria_false,
+            "effective criteria_false for {id}"
+        );
+        let threshold = skill["threshold"].as_f64().unwrap();
+        assert!(
+            (threshold - spec.threshold as f64).abs() < 1e-6,
+            "effective threshold for {id}: {threshold} != {}",
+            spec.threshold
+        );
+
+        let overridden: Vec<&str> = skill["overridden"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        if id == "widgets" {
+            assert_eq!(
+                overridden,
+                vec!["threshold"],
+                "the seeded widget override is the only marked field"
+            );
+        } else {
+            assert_eq!(
+                overridden,
+                Vec::<&str>::new(),
+                "nothing is overridden for {id} without settings overrides"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_list_skills_exposes_overridden_values_and_marks_them() {
+    // Given an overridden agenda question and an overridden widget threshold
+    // When GET /api/skills is called
+    // Then those effective values travel and the overridden fields are named
+    let app = TestApp::new().await;
+    SettingsRepo::set(&app.db, "SKILL_AGENDA_QUESTION", "¿Agenda sobrescrita?")
+        .await
+        .unwrap();
+    SettingsRepo::set(&app.db, "ROUTER_THRESHOLD_WIDGETS", "0.35")
+        .await
+        .unwrap();
+
+    let resp = app.get("/api/skills").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<serde_json::Value>().await;
+    let skills = body["skills"].as_array().unwrap();
+
+    let agenda = skills
+        .iter()
+        .find(|s| s["id"] == "agenda")
+        .expect("agenda must be in the catalog");
+    assert_eq!(
+        agenda["question"], "¿Agenda sobrescrita?",
+        "the effective question is the overridden one"
+    );
+    let agenda_overridden: Vec<&str> = agenda["overridden"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        agenda_overridden.contains(&"question"),
+        "the overridden question must be named: {agenda_overridden:?}"
+    );
+    assert!(
+        !agenda_overridden.contains(&"criteria_true")
+            && !agenda_overridden.contains(&"criteria_false"),
+        "untouched criteria must not be marked: {agenda_overridden:?}"
+    );
+
+    let widgets = skills
+        .iter()
+        .find(|s| s["id"] == "widgets")
+        .expect("widgets must be in the catalog");
+    assert!(
+        (widgets["threshold"].as_f64().unwrap() - 0.35).abs() < 1e-6,
+        "the widget threshold override must travel: {}",
+        widgets["threshold"]
+    );
+    let widgets_overridden: Vec<&str> = widgets["overridden"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(
+        widgets_overridden.contains(&"threshold"),
+        "the overridden threshold must be named: {widgets_overridden:?}"
+    );
+    assert!(
+        !widgets_overridden.contains(&"question"),
+        "an untouched question must not be marked: {widgets_overridden:?}"
+    );
+
+    // A skill with no overrides keeps the catalog values and no marks.
+    let web = skills
+        .iter()
+        .find(|s| s["id"] == "web")
+        .expect("web must be in the catalog");
+    assert_eq!(
+        web["overridden"].as_array().unwrap().len(),
+        0,
+        "web has no overrides"
+    );
 }

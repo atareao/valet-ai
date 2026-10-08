@@ -14,22 +14,38 @@ import {
   Typography,
 } from "antd";
 import { api } from "../api/client";
-import { useSkills } from "../hooks/useSkills";
+import type { SkillInfo, SkillsResponse } from "../types";
 import {
   DEFAULT_THRESHOLD,
+  formatThreshold,
   parseEnabled,
   parseThreshold,
   ROUTER_ENABLED_LABEL,
   ROUTER_MODEL_LABEL,
   ROUTER_THRESHOLD_LABEL,
+  skillThresholdKey,
 } from "./skillRouter";
 
 const { Text, Title } = Typography;
 
+export interface RouterControlProps {
+  /** Catálogo de skills (`GET /api/skills`); lo posee `SettingsDialog`. */
+  skills: SkillInfo[];
+  /** Herramientas núcleo, siempre expuestas, fuera del enrutado. */
+  coreTools: string[];
+  /** Estado de carga del catálogo. */
+  loading: boolean;
+  /** Error de la consulta del catálogo (si lo hubo). */
+  error: string | null;
+  /** Relee el catálogo; tras guardar refresca los umbrales efectivos. */
+  refetch: () => Promise<SkillsResponse>;
+}
+
 /**
  * Control del enrutador de skills dentro de la pestaña «Herramientas»: sección
- * autocontenida (como `ToolsTab`). Al montar pide él mismo sus tres claves
- * (`GET /settings`) y el catálogo de skills (`GET /api/skills`) y, al guardar,
+ * autocontenida (como `ToolsTab`). Recibe el catálogo de skills por props —lo
+ * posee `SettingsDialog`, para no repetir `GET /api/skills` en cada apertura—
+ * y, al montar, pide él mismo sus tres claves (`GET /settings`) y, al guardar,
  * envía únicamente `ROUTER_ENABLED`, `ROUTER_THRESHOLD` y `ROUTER_MODEL`
  * (`PUT /settings`), sin tocar el formulario compartido del diálogo: guardar el
  * enrutador no reescribe la identidad de `settings` ni revierte ediciones
@@ -37,15 +53,27 @@ const { Text, Title } = Typography;
  * de modo que siempre relee lo persistido y el borrador nace limpio. Los avisos
  * son informativos: nunca deshabilitan el guardado.
  */
-export function RouterControl() {
+export function RouterControl({
+  skills,
+  coreTools,
+  loading,
+  error,
+  refetch,
+}: RouterControlProps) {
   const { message: messageApi } = AntdApp.useApp();
-  const { skills, coreTools, loading, error } = useSkills();
 
   const [loadingSettings, setLoadingSettings] = useState(true);
   const [saving, setSaving] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [threshold, setThreshold] = useState<number | null>(DEFAULT_THRESHOLD);
   const [model, setModel] = useState("");
+  // Overrides de umbral por skill en edición (id → valor). Solo guarda los
+  // skills que el usuario ha tocado; el valor mostrado cae al efectivo del
+  // catálogo si no hay entrada, de modo que no hace falta sincronizar estado
+  // al cargar las skills (evita `setState` dentro de un efecto).
+  const [skillThresholds, setSkillThresholds] = useState<Record<string, number>>(
+    {},
+  );
 
   // Lectura propia de las claves del enrutador. El `setState` ocurre en callbacks
   // asíncronos (nunca síncrono dentro del efecto) y el componente se remonta por
@@ -73,14 +101,37 @@ export function RouterControl() {
 
   const extremeThreshold = threshold === 0 || threshold === 1;
 
+  const handleSkillThresholdChange = (
+    skillId: string,
+    value: number | null,
+  ) => {
+    setSkillThresholds((prev) => {
+      if (value === null) {
+        if (!(skillId in prev)) return prev;
+        const next = { ...prev };
+        delete next[skillId];
+        return next;
+      }
+      return { ...prev, [skillId]: value };
+    });
+  };
+
   const handleSave = async () => {
     setSaving(true);
-    // Solo las tres claves del enrutador, siempre como cadenas.
+    // Siempre las tres claves del enrutador, y además el umbral propio solo de
+    // las skills cuyo valor editado difiere de su efectivo (sin sobrescrituras
+    // redundantes: con el borrador limpio el payload vuelve a ser solo tres).
     const payload: Record<string, string> = {
       ROUTER_ENABLED: enabled ? "true" : "false",
       ROUTER_THRESHOLD: String(threshold ?? DEFAULT_THRESHOLD),
       ROUTER_MODEL: model,
     };
+    for (const skill of skills) {
+      const edited = skillThresholds[skill.id];
+      if (edited !== undefined && edited !== skill.threshold) {
+        payload[skillThresholdKey(skill.id)] = String(edited);
+      }
+    }
     try {
       await api.updateSettings(payload);
       // El estado local refleja lo realmente enviado.
@@ -88,6 +139,10 @@ export function RouterControl() {
       setThreshold(Number(payload.ROUTER_THRESHOLD));
       setModel(payload.ROUTER_MODEL);
       messageApi.success("Ajustes del enrutador guardados");
+      // El catálogo lo posee el diálogo: se relee para que los umbrales
+      // efectivos y las marcas de override no queden obsoletos tras persistir.
+      // El fallo de la relectura no revierte el guardado ya confirmado.
+      refetch().catch(() => undefined);
     } catch {
       messageApi.error("Error al guardar los ajustes del enrutador");
     } finally {
@@ -193,14 +248,49 @@ export function RouterControl() {
           size="small"
           dataSource={skills}
           rowKey="id"
-          renderItem={(skill) => (
-            <List.Item>
-              <Text strong style={{ marginRight: 8 }}>
-                {skill.id}
-              </Text>
-              <Text>{skill.tools.join(", ")}</Text>
-            </List.Item>
-          )}
+          renderItem={(skill) => {
+            // Solo las skills cuyo umbral efectivo difiere del global tienen
+            // umbral propio: el resto hereda el global y no lleva campo.
+            //
+            // Deuda conocida (no resuelta a propósito): un
+            // `ROUTER_THRESHOLD_<ID>` persistido con el mismo valor que el
+            // global no difiere y, por tanto, no muestra campo ni forma de
+            // limpiarlo desde aquí. Se deja así: no se añade acción de limpiar.
+            const hasOwnThreshold =
+              threshold !== null && skill.threshold !== threshold;
+            const currentThreshold =
+              skillThresholds[skill.id] ?? skill.threshold;
+            return (
+              <List.Item>
+                <Space
+                  direction="vertical"
+                  size={4}
+                  style={{ width: "100%" }}
+                >
+                  <Space wrap size="small">
+                    <Text strong>{skill.id}</Text>
+                    <Text>{skill.tools.join(", ")}</Text>
+                    <Text type="secondary">
+                      {`Umbral: ${formatThreshold(skill.threshold)}`}
+                    </Text>
+                  </Space>
+                  {hasOwnThreshold && (
+                    <InputNumber
+                      aria-label={`Umbral de ${skill.id}`}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={currentThreshold}
+                      onChange={(value) =>
+                        handleSkillThresholdChange(skill.id, value)
+                      }
+                      style={{ width: "100%" }}
+                    />
+                  )}
+                </Space>
+              </List.Item>
+            );
+          }}
         />
       )}
 

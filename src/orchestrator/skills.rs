@@ -1,9 +1,9 @@
 //! Catálogo cerrado de skills y su relación con las herramientas.
 //!
 //! Una *skill* es una habilidad del asistente que agrupa las herramientas de
-//! un dominio **incluyendo sus prerrequisitos** (p. ej. `clima` cubre
-//! `weather` y `geocode`). El conjunto *core* (`render_widget`,
-//! `get_current_time`) no se enruta y se expone siempre.
+//! un dominio **incluyendo sus prerrequisitos** (p. ej. `entorno` cubre
+//! `weather` y `geocode`). El conjunto *core* (`get_current_time`,
+//! `get_current_location`) no se enruta y se expone siempre.
 //!
 //! Este módulo es la fuente de verdad del catálogo; el router y el arnés de
 //! evaluación lo consumen. Una herramienta registrada debe pertenecer al core
@@ -15,13 +15,11 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Skill {
     Agenda,
-    Tareas,
-    Recordatorios,
-    Notas,
-    Clima,
-    Lugares,
-    BusquedaWeb,
-    Memoria,
+    Pendientes,
+    Recuerdos,
+    Entorno,
+    Web,
+    Widgets,
 }
 
 /// Especificación cerrada de una skill.
@@ -36,99 +34,95 @@ pub struct SkillSpec {
     pub criteria_true: &'static str,
     /// Criteria del «no» (primitiva `noul`).
     pub criteria_false: &'static str,
+    /// Umbral por defecto de la skill (se usa si no hay override en settings).
+    pub threshold: f32,
     /// Herramientas que cubre, **incluyendo prerrequisitos**.
     pub tools: &'static [&'static str],
     /// Clave del fragmento de prompt (p. ej. `"SKILL_AGENDA_PROMPT"`).
     pub prompt_key: &'static str,
-    /// Encabezado de la sección del fragmento.
+    /// **Marcador de duplicado**: coincide con la primera línea del fragmento
+    /// (su encabezado real). [`compose_skill_fragments`] omite el fragmento si
+    /// el prompt base ya contiene esta cadena, de modo que la guía no viaja dos
+    /// veces.
+    ///
+    /// [`compose_skill_fragments`]: crate::orchestrator::skill_router::compose_skill_fragments
     pub prompt_heading: &'static str,
 }
 
 /// Herramientas siempre expuestas y **nunca** enrutables.
-pub const CORE_TOOLS: &[&str] = &["render_widget", "get_current_time"];
+pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 8] = [
+static CATALOG: [SkillSpec; 6] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
-        instructions: "¿Se necesita consultar o modificar la agenda: eventos, citas, reuniones, cumpleaños o disponibilidad?",
-        criteria_true: "El usuario pregunta por eventos, citas, reuniones o cumpleaños, o pide crearlos, moverlos o cancelarlos, o pregunta por su disponibilidad o huecos libres",
-        criteria_false: "El usuario no menciona eventos, citas, reuniones ni cumpleaños, no pide crearlos, moverlos ni cancelarlos, y no pregunta por su disponibilidad ni por huecos libres",
+        instructions: "¿La respuesta requiere mirar o cambiar la agenda (eventos, citas, reuniones, cumpleaños, disponibilidad)?",
+        criteria_true: "El mensaje se refiere a eventos, citas, reuniones, cumpleaños, calendario, disponibilidad o huecos libres, o a qué tiene el usuario en un momento o un día.",
+        criteria_false: "El mensaje no se refiere a nada programado en el tiempo ni pide planificar nada en una fecha.",
+        threshold: 0.10,
         tools: &["calendar"],
         prompt_key: "SKILL_AGENDA_PROMPT",
         prompt_heading: "# SKILL ACTIVA: AGENDA",
     },
     SkillSpec {
-        skill: Skill::Tareas,
-        id: "tareas",
-        instructions: "¿Se necesita gestionar tareas: listarlas, crearlas, actualizarlas o completarlas?",
-        criteria_true: "El usuario habla de tareas, pendientes, cosas por hacer, prioridades o el estado de algo que debe completar",
-        criteria_false: "El usuario no habla de tareas, pendientes, cosas por hacer ni prioridades, y no pregunta por el estado de algo que deba completar",
-        tools: &["tasks"],
-        prompt_key: "SKILL_TAREAS_PROMPT",
-        prompt_heading: "# SKILL ACTIVA: TAREAS",
+        skill: Skill::Pendientes,
+        id: "pendientes",
+        instructions: "¿La respuesta requiere gestionar tareas por hacer, recordatorios o alarmas?",
+        criteria_true: "El mensaje se refiere a tareas, pendientes, cosas por hacer, prioridades, recordatorios, alarmas o avisos a una hora.",
+        criteria_false: "El mensaje no se refiere a pendientes ni a ningún aviso.",
+        threshold: 0.10,
+        tools: &["tasks", "reminders"],
+        prompt_key: "SKILL_PENDIENTES_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: PENDIENTES",
     },
     SkillSpec {
-        skill: Skill::Recordatorios,
-        id: "recordatorios",
-        instructions: "¿Se necesita poner, listar, posponer o descartar un recordatorio o una alarma?",
-        criteria_true: "El usuario pide que le avisen o le recuerden algo, o habla de recordatorios, alarmas o avisos temporales",
-        criteria_false: "El usuario no pide que le avisen ni le recuerden algo, y no habla de recordatorios, alarmas ni avisos temporales",
-        tools: &["reminders"],
-        prompt_key: "SKILL_RECORDATORIOS_PROMPT",
-        prompt_heading: "# SKILL ACTIVA: RECORDATORIOS",
+        skill: Skill::Recuerdos,
+        id: "recuerdos",
+        instructions: "¿La respuesta requiere guardar o recuperar notas, apuntes o algo ya hablado?",
+        criteria_true: "El mensaje pide apuntar, guardar, recuperar o listar un texto, una idea o un diario, o pregunta por algo ya hablado.",
+        criteria_false: "El mensaje no pide guardar ni recuperar información personal del usuario ni busca en el historial.",
+        threshold: 0.10,
+        tools: &["notes", "unified_search"],
+        prompt_key: "SKILL_RECUERDOS_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: RECUERDOS",
     },
     SkillSpec {
-        skill: Skill::Notas,
-        id: "notas",
-        instructions: "¿Se necesita gestionar notas personales?",
-        criteria_true: "El usuario pide guardar, recuperar, listar o clasificar una nota, una idea, un journal o un dato suelto que quiere conservar",
-        criteria_false: "El usuario no pide guardar, recuperar, listar ni clasificar una nota, una idea, un journal ni un dato suelto que quiera conservar",
-        tools: &["notes"],
-        prompt_key: "SKILL_NOTAS_PROMPT",
-        prompt_heading: "# SKILL ACTIVA: NOTAS",
+        skill: Skill::Entorno,
+        id: "entorno",
+        instructions: "¿La respuesta requiere el tiempo, un lugar, una dirección o unas coordenadas?",
+        criteria_true: "El mensaje pregunta por el tiempo o la previsión, busca dónde hay algo o dónde está algo, o pide resolver una dirección o unas coordenadas.",
+        criteria_false: "El mensaje no pregunta por el tiempo ni por lugares, direcciones o coordenadas.",
+        threshold: 0.10,
+        tools: &["weather", "geocode", "reverse_geocode", "search_places"],
+        prompt_key: "SKILL_ENTORNO_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: ENTORNO",
     },
     SkillSpec {
-        skill: Skill::Clima,
-        id: "clima",
-        instructions: "¿Se necesita consultar el clima actual o una previsión meteorológica?",
-        criteria_true: "El usuario pregunta por el tiempo, la temperatura, la lluvia o la previsión, en un lugar concreto o donde está",
-        criteria_false: "El usuario no pregunta por el tiempo, la temperatura, la lluvia ni la previsión, ni en un lugar concreto ni donde está",
-        tools: &["weather", "geocode", "get_current_location"],
-        prompt_key: "SKILL_CLIMA_PROMPT",
-        prompt_heading: "# SKILL ACTIVA: CLIMA",
-    },
-    SkillSpec {
-        skill: Skill::Lugares,
-        id: "lugares",
-        instructions: "¿Se necesita buscar un lugar, establecimiento o servicio, o resolver una dirección o unas coordenadas?",
-        criteria_true: "El usuario busca dónde está o dónde hay algo (negocios, servicios, puntos de interés), o pide convertir una dirección en coordenadas o unas coordenadas en una dirección",
-        criteria_false: "El usuario no busca dónde está ni dónde hay algo (negocios, servicios, puntos de interés), y no pide convertir una dirección en coordenadas ni unas coordenadas en una dirección",
-        tools: &["search_places", "geocode", "reverse_geocode", "get_current_location"],
-        prompt_key: "SKILL_LUGARES_PROMPT",
-        prompt_heading: "# SKILL ACTIVA: LUGARES",
-    },
-    SkillSpec {
-        skill: Skill::BusquedaWeb,
-        id: "busqueda_web",
-        instructions: "¿Se necesita buscar información en la web?",
-        criteria_true: "El usuario pide información externa o actual: noticias, documentación, precios, o hechos que hay que comprobar fuera de sus propios datos",
-        criteria_false: "El usuario no pide información externa ni actual (noticias, documentación, precios), ni hechos que haya que comprobar fuera de sus propios datos",
+        skill: Skill::Web,
+        id: "web",
+        instructions: "¿La respuesta requiere información externa de internet?",
+        criteria_true: "El mensaje pide información que no está en los datos del usuario: noticias, documentación, precios, datos de una empresa, un producto o una persona, o cualquier hecho que haya que comprobar.",
+        criteria_false: "El mensaje se responde con datos del propio usuario o de su entorno, o no necesita internet.",
+        threshold: 0.10,
         tools: &["web_search"],
-        prompt_key: "SKILL_BUSQUEDA_WEB_PROMPT",
-        prompt_heading: "# SKILL ACTIVA: BÚSQUEDA WEB",
+        prompt_key: "SKILL_WEB_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: WEB",
     },
     SkillSpec {
-        skill: Skill::Memoria,
-        id: "memoria",
-        instructions: "¿Se necesita buscar en el historial: conversaciones anteriores, notas, eventos o tareas del propio usuario?",
-        criteria_true: "El usuario pregunta por algo ya hablado, por lo que dijo o le dijiste antes, o pide buscar de forma transversal en sus mensajes, notas, eventos o tareas",
-        criteria_false: "El usuario no pregunta por algo ya hablado ni por lo que dijo o le dijiste antes, y no pide buscar de forma transversal en sus mensajes, notas, eventos ni tareas",
-        tools: &["unified_search"],
-        prompt_key: "SKILL_MEMORIA_PROMPT",
-        prompt_heading: "# SKILL ACTIVA: MEMORIA",
+        skill: Skill::Widgets,
+        id: "widgets",
+        instructions: "¿La respuesta requiere mostrar algo interactivo en pantalla (formulario, lista para marcar, opciones, mapa o datos geográficos)?",
+        criteria_true: "El turno implica pedir varios datos a la vez, dar una lista para marcar, ofrecer una elección entre opciones, presentar un plan con pasos, o mostrar direcciones, un mapa, una tabla de datos geográficos o estadísticas. Cuenta también si el usuario pide expresamente un widget, un formulario, un checklist, un plano o un mapa.",
+        criteria_false: "El turno se resuelve con una explicación, un dato o una lista de texto.",
+        threshold: 0.20,
+        tools: &["render_widget"],
+        prompt_key: "SKILL_WIDGETS_PROMPT",
+        // The real heading of the seeded fragment (copied verbatim from the
+        // system prompt by the migration), so the anti-duplication rule detects
+        // it even when the user edited the block and it was not removed.
+        prompt_heading: "# Instrucciones de Interfaz y Widgets Interactivos",
     },
 ];
 
@@ -171,17 +165,15 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las ocho variantes del enum, para exigir que el catálogo las cubra
+    /// Las seis variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 8] = [
+    const ALL_SKILLS: [Skill; 6] = [
         Skill::Agenda,
-        Skill::Tareas,
-        Skill::Recordatorios,
-        Skill::Notas,
-        Skill::Clima,
-        Skill::Lugares,
-        Skill::BusquedaWeb,
-        Skill::Memoria,
+        Skill::Pendientes,
+        Skill::Recuerdos,
+        Skill::Entorno,
+        Skill::Web,
+        Skill::Widgets,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -288,29 +280,15 @@ mod tests {
     }
 
     #[test]
-    fn clima_and_lugares_cover_their_prerequisites() {
-        let clima = catalog().iter().find(|spec| spec.skill == Skill::Clima);
-        assert!(clima.is_some(), "clima must be in the catalog");
-        let clima = clima.unwrap();
-        assert!(
-            clima.tools.contains(&"weather"),
-            "clima must cover weather: {:?}",
-            clima.tools
-        );
-        assert!(
-            clima.tools.contains(&"geocode"),
-            "clima must cover its prerequisite geocode: {:?}",
-            clima.tools
-        );
-
-        let lugares = catalog().iter().find(|spec| spec.skill == Skill::Lugares);
-        assert!(lugares.is_some(), "lugares must be in the catalog");
-        let lugares = lugares.unwrap();
-        for tool in ["search_places", "geocode", "reverse_geocode"] {
+    fn entorno_covers_its_prerequisites() {
+        let entorno = catalog().iter().find(|spec| spec.skill == Skill::Entorno);
+        assert!(entorno.is_some(), "entorno must be in the catalog");
+        let entorno = entorno.unwrap();
+        for tool in ["weather", "geocode", "reverse_geocode", "search_places"] {
             assert!(
-                lugares.tools.contains(&tool),
-                "lugares must cover {tool}: {:?}",
-                lugares.tools
+                entorno.tools.contains(&tool),
+                "entorno must cover {tool}: {:?}",
+                entorno.tools
             );
         }
     }
@@ -333,7 +311,7 @@ mod tests {
 
     #[test]
     fn tools_for_has_no_duplicates_and_follows_catalog_order() {
-        let selected = [Skill::Agenda, Skill::Clima, Skill::Lugares, Skill::Tareas];
+        let selected = [Skill::Agenda, Skill::Entorno, Skill::Pendientes];
         let tools = tools_for(&selected);
 
         assert!(
@@ -369,9 +347,252 @@ mod tests {
     #[test]
     fn skill_of_tool_maps_catalog_tools_and_not_core() {
         assert_eq!(skill_of_tool("calendar"), Some(Skill::Agenda));
-        assert_eq!(skill_of_tool("weather"), Some(Skill::Clima));
-        assert_eq!(skill_of_tool("render_widget"), None);
+        assert_eq!(skill_of_tool("weather"), Some(Skill::Entorno));
+        assert_eq!(skill_of_tool("render_widget"), Some(Skill::Widgets));
         assert_eq!(skill_of_tool("get_current_time"), None);
+        assert_eq!(skill_of_tool("get_current_location"), None);
         assert_eq!(skill_of_tool("no_existe"), None);
+    }
+
+    // ─── RED: catálogo de seis dominios amplios (skill-router-tuning 1.1) ────
+    //
+    // El contrato es el diseño medido: seis ids canónicos, la agrupación por
+    // dominio, el core reducido y los seis fragmentos. Estos tests describen ese
+    // contrato y **fallan** con el catálogo actual (ocho skills finas).
+
+    /// Herramientas de una skill por su id, o vacío si el id no existe todavía
+    /// (para que el test falle por aserción y no por pánico).
+    fn tools_of(id: &str) -> Vec<&'static str> {
+        catalog()
+            .iter()
+            .find(|spec| spec.id == id)
+            .map(|spec| spec.tools.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Umbral por defecto de una skill por su id, o `None` si aún no existe.
+    fn threshold_of(id: &str) -> Option<f32> {
+        catalog()
+            .iter()
+            .find(|spec| spec.id == id)
+            .map(|spec| spec.threshold)
+    }
+
+    /// Porcentaje entero del umbral, para comparar sin ruido de coma flotante.
+    fn pct(t: f32) -> i32 {
+        (t * 100.0).round() as i32
+    }
+
+    #[test]
+    fn catalog_declares_exactly_the_six_wide_domain_ids() {
+        let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
+
+        for id in [
+            "agenda",
+            "pendientes",
+            "recuerdos",
+            "entorno",
+            "web",
+            "widgets",
+        ] {
+            assert!(
+                ids.contains(&id),
+                "el catálogo debe declarar la skill `{id}`; tiene {ids:?}"
+            );
+        }
+        assert_eq!(
+            ids.len(),
+            6,
+            "el catálogo debe tener exactamente seis skills; tiene {ids:?}"
+        );
+    }
+
+    #[test]
+    fn no_legacy_skill_ids_remain() {
+        let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
+
+        for legacy in [
+            "tareas",
+            "recordatorios",
+            "notas",
+            "clima",
+            "lugares",
+            "busqueda_web",
+            "memoria",
+        ] {
+            assert!(
+                !ids.contains(&legacy),
+                "el id antiguo `{legacy}` no debe permanecer; tiene {ids:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn grouping_places_each_domain_tool_in_one_skill() {
+        let pendientes = tools_of("pendientes");
+        for tool in ["tasks", "reminders"] {
+            assert!(
+                pendientes.contains(&tool),
+                "pendientes debe cubrir {tool}: {pendientes:?}"
+            );
+        }
+
+        let recuerdos = tools_of("recuerdos");
+        for tool in ["notes", "unified_search"] {
+            assert!(
+                recuerdos.contains(&tool),
+                "recuerdos debe cubrir {tool}: {recuerdos:?}"
+            );
+        }
+
+        let entorno = tools_of("entorno");
+        for tool in ["weather", "geocode", "reverse_geocode", "search_places"] {
+            assert!(
+                entorno.contains(&tool),
+                "entorno debe cubrir {tool}: {entorno:?}"
+            );
+        }
+
+        assert!(
+            tools_of("agenda").contains(&"calendar"),
+            "agenda debe cubrir calendar: {:?}",
+            tools_of("agenda")
+        );
+        assert!(
+            tools_of("web").contains(&"web_search"),
+            "web debe cubrir web_search: {:?}",
+            tools_of("web")
+        );
+        assert!(
+            tools_of("widgets").contains(&"render_widget"),
+            "widgets debe cubrir render_widget: {:?}",
+            tools_of("widgets")
+        );
+    }
+
+    #[test]
+    fn core_is_time_and_location_and_widget_is_not_core() {
+        assert_eq!(
+            CORE_TOOLS,
+            &["get_current_time", "get_current_location"],
+            "el core debe ser get_current_time y get_current_location"
+        );
+        assert!(
+            !CORE_TOOLS.contains(&"render_widget"),
+            "render_widget no debe pertenecer al core"
+        );
+        for spec in catalog() {
+            assert!(
+                !spec.tools.contains(&"get_current_location"),
+                "get_current_location es core: no debe estar en la skill {}",
+                spec.id
+            );
+        }
+        assert!(
+            tools_of("widgets").contains(&"render_widget"),
+            "render_widget debe enrutarse con la skill widgets: {:?}",
+            tools_of("widgets")
+        );
+    }
+
+    #[test]
+    fn catalog_plus_core_covers_all_thirteen_tools_without_orphans() {
+        let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
+        for spec in catalog() {
+            for tool in spec.tools {
+                covered.push((*tool).to_string());
+            }
+        }
+        covered.sort_unstable();
+        covered.dedup();
+
+        assert_eq!(
+            covered.len(),
+            13,
+            "el core más las seis skills deben cubrir las trece herramientas: {covered:?}"
+        );
+        for spec in catalog() {
+            assert!(
+                !spec.tools.contains(&"get_current_location"),
+                "get_current_location solo puede venir del core, no de {}",
+                spec.id
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_keys_are_the_six_canonical_keys() {
+        let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
+
+        for key in [
+            "SKILL_AGENDA_PROMPT",
+            "SKILL_PENDIENTES_PROMPT",
+            "SKILL_RECUERDOS_PROMPT",
+            "SKILL_ENTORNO_PROMPT",
+            "SKILL_WEB_PROMPT",
+            "SKILL_WIDGETS_PROMPT",
+        ] {
+            assert!(
+                keys.contains(&key),
+                "falta la clave de fragmento {key}; tiene {keys:?}"
+            );
+        }
+        for legacy in [
+            "SKILL_TAREAS_PROMPT",
+            "SKILL_RECORDATORIOS_PROMPT",
+            "SKILL_NOTAS_PROMPT",
+            "SKILL_CLIMA_PROMPT",
+            "SKILL_LUGARES_PROMPT",
+            "SKILL_BUSQUEDA_WEB_PROMPT",
+            "SKILL_MEMORIA_PROMPT",
+        ] {
+            assert!(
+                !keys.contains(&legacy),
+                "la clave antigua {legacy} no debe permanecer; tiene {keys:?}"
+            );
+        }
+    }
+
+    // ─── RED: umbrales por defecto por skill (skill-router-tuning 1.2) ───────
+
+    #[test]
+    fn every_skill_declares_a_positive_threshold() {
+        for spec in catalog() {
+            assert!(
+                spec.threshold > 0.0,
+                "la skill {} debe declarar un umbral > 0.0 (threshold={})",
+                spec.id,
+                spec.threshold
+            );
+        }
+    }
+
+    #[test]
+    fn domain_skills_share_threshold_010_and_widgets_is_020() {
+        for id in ["agenda", "pendientes", "recuerdos", "entorno", "web"] {
+            let t = threshold_of(id).unwrap_or(-1.0);
+            assert_eq!(
+                pct(t),
+                10,
+                "el dominio `{id}` debe declarar un umbral de 0.10"
+            );
+        }
+        assert_eq!(
+            threshold_of("widgets").map(pct),
+            Some(20),
+            "widgets debe declarar un umbral de 0.20"
+        );
+    }
+
+    #[test]
+    fn widgets_threshold_is_strictly_above_every_domain() {
+        let widgets = threshold_of("widgets").unwrap_or(0.0);
+        for id in ["agenda", "pendientes", "recuerdos", "entorno", "web"] {
+            let domain = threshold_of(id).unwrap_or(0.0);
+            assert!(
+                widgets > domain,
+                "widgets ({widgets}) debe superar el umbral de `{id}` ({domain})"
+            );
+        }
     }
 }

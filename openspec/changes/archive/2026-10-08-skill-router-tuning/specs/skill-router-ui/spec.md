@@ -1,9 +1,4 @@
-# skill-router-ui Specification
-
-## Purpose
-La cara visible del enrutador de skills en el diálogo de ajustes: encenderlo o apagarlo, elegir modelo y umbral, entender qué herramientas agrupa cada skill y editar los fragmentos de prompt que se activan con ellas.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: La pestaña «Herramientas» SHALL exponer el control del enrutador
 
@@ -73,19 +68,3 @@ La pestaña «Prompts» SHALL incluir una sub-pestaña que liste las skills **a 
 - **When** se abre la sub-pestaña de skills
 - **Then** el formulario sigue renderizando
 - **And** no se pierde ningún valor de settings
-
-### Requirement: La interfaz SHALL avisar sin bloquear ante configuraciones inertes
-
-La interfaz SHALL advertir, sin impedir el guardado, cuando el enrutador está apagado (los fragmentos no se inyectan y las herramientas no se filtran) y cuando el umbral está en los extremos cero o uno.
-
-#### Scenario: Aviso con el enrutador apagado
-- **Given** el enrutador apagado
-- **When** se inspecciona la sección del enrutador
-- **Then** se muestra un aviso de que el enrutado está inactivo
-- **And** el guardado sigue permitido
-
-#### Scenario: Aviso con umbral extremo
-- **Given** un umbral de cero o de uno
-- **When** se inspecciona el campo del umbral
-- **Then** se muestra un aviso de que ese valor desactiva el filtrado o lo vuelve inalcanzable
-- **And** el guardado sigue permitido

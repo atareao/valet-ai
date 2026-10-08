@@ -13,7 +13,7 @@ use sqlx::SqlitePool;
 
 use crate::db::repos::settings::SettingsRepo;
 use crate::llm::decisions::{DecisionsProvider, DecisionsQuestion, DecisionsRequest};
-use crate::orchestrator::skills::{catalog, Skill, CORE_TOOLS};
+use crate::orchestrator::skills::{catalog, Skill, SkillSpec, CORE_TOOLS};
 
 /// De dónde salió la selección.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +45,9 @@ pub struct SkillRouterConfig {
     pub enabled: bool,
     pub model: String,
     pub threshold: f32,
+    /// Umbrales efectivos por skill que sobreescriben al global, indexados por
+    /// id de skill (clave `ROUTER_THRESHOLD_<ID>`). Por defecto vacío.
+    pub threshold_overrides: HashMap<String, f32>,
     pub timeout_ms: u64,
     pub history_turns: usize,
 }
@@ -54,24 +57,61 @@ impl Default for SkillRouterConfig {
         Self {
             enabled: false,
             model: "typesafe/jev-1.13".to_string(),
-            threshold: 0.3,
+            threshold: 0.10,
+            threshold_overrides: HashMap::new(),
             timeout_ms: 800,
-            history_turns: 2,
+            history_turns: 6,
         }
     }
+}
+
+/// Los tres textos con los que se pregunta al clasificador por una skill.
+///
+/// Es la forma **efectiva** de la pregunta: [`read_skill_criteria`] y
+/// [`SkillRouter::with_criteria`] la construyen de modo que ningún campo quede
+/// vacío (un campo ausente o en blanco cae al valor declarado en el catálogo).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillCriteria {
+    pub instructions: String,
+    pub criteria_true: String,
+    pub criteria_false: String,
 }
 
 /// Enrutador de skills por turno.
 pub struct SkillRouter {
     provider: Option<Arc<dyn DecisionsProvider>>,
     config: SkillRouterConfig,
+    /// Criterios efectivos vigentes en `settings`, indexados por id de skill.
+    /// Cada entrada sobreescribe los textos del catálogo para esa skill.
+    criteria: HashMap<String, SkillCriteria>,
 }
 
 impl SkillRouter {
     /// Construye el router con un clasificador inyectable (`None` = sin
     /// clasificador, que en la práctica equivale a enrutador apagado).
     pub fn new(provider: Option<Arc<dyn DecisionsProvider>>, config: SkillRouterConfig) -> Self {
-        Self { provider, config }
+        Self {
+            provider,
+            config,
+            criteria: HashMap::new(),
+        }
+    }
+
+    /// Builder: adjunta los criterios efectivos vigentes.
+    ///
+    /// Las entradas se aplican al construir cada pregunta en [`select`]: un
+    /// campo vacío o en blanco de una entrada cae al valor del catálogo, de
+    /// modo que ninguna pregunta puede viajar sin criterios.
+    pub fn with_criteria(mut self, criteria: HashMap<String, SkillCriteria>) -> Self {
+        self.criteria = criteria;
+        self
+    }
+
+    /// Umbral efectivo de una skill. Delega en [`effective_threshold`], que es
+    /// la única implementación de la precedencia (la comparte la API del
+    /// catálogo y el arnés; no se duplica aquí).
+    pub fn effective_threshold(&self, spec: &SkillSpec) -> f32 {
+        effective_threshold(&self.config, spec)
     }
 
     /// Decide las skills del turno a partir del mensaje actual, los últimos
@@ -136,13 +176,28 @@ impl SkillRouter {
             "history": history_slice,
         });
 
+        // Criterios efectivos: la entrada de `settings` si existe, con cada
+        // campo cayendo al del catálogo cuando está vacío o en blanco. Así
+        // ninguna pregunta puede viajar sin instrucciones ni criterios.
         let questions: Vec<DecisionsQuestion> = routable
             .iter()
-            .map(|spec| DecisionsQuestion {
-                id: spec.id.to_string(),
-                instructions: spec.instructions.to_string(),
-                criteria_true: spec.criteria_true.to_string(),
-                criteria_false: spec.criteria_false.to_string(),
+            .map(|spec| {
+                let entry = self.criteria.get(spec.id);
+                DecisionsQuestion {
+                    id: spec.id.to_string(),
+                    instructions: effective_field(
+                        entry.map(|c| c.instructions.as_str()),
+                        spec.instructions,
+                    ),
+                    criteria_true: effective_field(
+                        entry.map(|c| c.criteria_true.as_str()),
+                        spec.criteria_true,
+                    ),
+                    criteria_false: effective_field(
+                        entry.map(|c| c.criteria_false.as_str()),
+                        spec.criteria_false,
+                    ),
+                }
             })
             .collect();
 
@@ -170,7 +225,7 @@ impl SkillRouter {
             };
             recognized += 1;
             probabilities.push((spec.skill, probability));
-            if probability >= self.config.threshold {
+            if probability >= self.effective_threshold(spec) {
                 selected.push(spec.skill);
             }
         }
@@ -202,6 +257,48 @@ impl SkillRouter {
             probabilities,
             source: SelectionSource::Router,
         }
+    }
+}
+
+/// Umbral efectivo de una skill, con esta precedencia:
+///
+/// 1. El override por skill `ROUTER_THRESHOLD_<ID>` si está presente y es
+///    válido (lo trae [`read_router_config`] en `threshold_overrides`).
+/// 2. El umbral global `ROUTER_THRESHOLD`.
+/// 3. El `spec.threshold` compilado en el catálogo.
+///
+/// El umbral global siempre está poblado ([`read_router_config`] cae a
+/// [`SkillRouterConfig::default`]), así que el paso 3 solo se alcanzaría con
+/// una configuración construida a mano sin global; se mantiene por
+/// completitud de la precedencia. Sin overrides y con el global por defecto
+/// el resultado es `0.10`; con el override sembrado de `widgets`, `0.20`.
+///
+/// Es una función libre para que la API del catálogo y el arnés reutilicen la
+/// misma precedencia que el router sin construir uno.
+pub fn effective_threshold(config: &SkillRouterConfig, spec: &SkillSpec) -> f32 {
+    if let Some(&override_threshold) = config.threshold_overrides.get(spec.id) {
+        return override_threshold;
+    }
+    if config.threshold.is_finite() && (0.0..=1.0).contains(&config.threshold) {
+        return config.threshold;
+    }
+    spec.threshold
+}
+
+/// El valor efectivo de un campo editable de skill: el de `settings` si tiene
+/// contenido, y si no el declarado en el catálogo. Un valor ausente o en blanco
+/// nunca produce un campo vacío.
+///
+/// El valor sobrescrito se **recorta**, que es exactamente lo que viaja al
+/// clasificador (`read_skill_criteria` lo obtiene de `trimmed()`). Así la API y
+/// el informe declaran lo mismo que se envía.
+///
+/// Es una función libre (no un `closure`) para que el router, la lectura de
+/// criterios y la API del catálogo compartan exactamente la misma regla.
+pub fn effective_field(overridden: Option<&str>, catalog: &str) -> String {
+    match overridden {
+        Some(text) if !text.trim().is_empty() => text.trim().to_string(),
+        _ => catalog.to_string(),
     }
 }
 
@@ -370,6 +467,51 @@ async fn read_history_turns(pool: &SqlitePool, default: usize) -> usize {
     }
 }
 
+/// Lee los overrides por skill `ROUTER_THRESHOLD_<ID>` en **una sola** lectura
+/// de la tabla, indexados por id de skill.
+///
+/// Un valor ausente **no** entra en el mapa: la skill usa el global. Un valor en
+/// blanco, no numérico, `NaN`/`inf` o fuera de `[0, 1]` tampoco entra y se
+/// registra un `warn!` (la skill cae al global y, si el global fuese ilegible,
+/// al `spec.threshold` del catálogo). Si la lectura falla, devuelve un mapa
+/// vacío tras registrarlo con `warn!`.
+async fn read_threshold_overrides(pool: &SqlitePool) -> HashMap<String, f32> {
+    let mut overrides = HashMap::new();
+
+    let all = match SettingsRepo::get_all(pool).await {
+        Ok(all) => all,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "failed to read per-skill router thresholds; using the global"
+            );
+            return overrides;
+        }
+    };
+
+    for spec in catalog() {
+        let key = format!("ROUTER_THRESHOLD_{}", spec.id.to_ascii_uppercase());
+        let Some(raw) = all.get(&key) else {
+            continue;
+        };
+        let raw = raw.trim();
+        match raw.parse::<f32>() {
+            Ok(value) if value.is_finite() && (0.0..=1.0).contains(&value) => {
+                overrides.insert(spec.id.to_string(), value);
+            }
+            _ => {
+                tracing::warn!(
+                    key = %key,
+                    value = %raw,
+                    "router per-skill threshold is not a finite value in [0, 1]; using the global"
+                );
+            }
+        }
+    }
+
+    overrides
+}
+
 /// Lee la configuración del enrutador desde `settings`.
 ///
 /// Lee en **cada** llamada (no cachea) para que editar los ajustes surta efecto
@@ -408,6 +550,7 @@ pub async fn read_router_config(pool: &SqlitePool) -> SkillRouterConfig {
     };
 
     let threshold = read_threshold(pool, defaults.threshold).await;
+    let threshold_overrides = read_threshold_overrides(pool).await;
     let timeout_ms = read_timeout_ms(pool, defaults.timeout_ms).await;
     let history_turns = read_history_turns(pool, defaults.history_turns).await;
 
@@ -415,6 +558,7 @@ pub async fn read_router_config(pool: &SqlitePool) -> SkillRouterConfig {
         enabled,
         model,
         threshold,
+        threshold_overrides,
         timeout_ms,
         history_turns,
     }
@@ -450,6 +594,60 @@ pub async fn read_skill_fragments(pool: &SqlitePool, skills: &[Skill]) -> HashMa
     fragments
 }
 
+/// Criterios **efectivos** de cada skill a partir de `settings`, indexados por
+/// id de skill.
+///
+/// Hace **una sola** lectura de la tabla ([`SettingsRepo::get_all`]). Para cada
+/// skill del catálogo recoge `SKILL_<ID>_QUESTION`, `SKILL_<ID>_CRITERIA_TRUE`
+/// y `SKILL_<ID>_CRITERIA_FALSE`.
+///
+/// Cada campo se recorta y se toma del override si tiene contenido; si falta o
+/// está en blanco, cae al valor declarado en el catálogo. Una skill solo entra
+/// en el mapa si **al menos uno** de sus tres campos está sobrescrito (si no,
+/// no aporta nada: el catálogo es equivalente). El resultado es que ninguna
+/// entrada puede llevar un criterio vacío.
+///
+/// Si la lectura falla, devuelve un mapa vacío tras registrarlo con `warn!`.
+pub async fn read_skill_criteria(pool: &SqlitePool) -> HashMap<String, SkillCriteria> {
+    let mut criteria = HashMap::new();
+
+    let all = match SettingsRepo::get_all(pool).await {
+        Ok(all) => all,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read skill criteria; using the catalog");
+            return criteria;
+        }
+    };
+
+    for spec in catalog() {
+        let id = spec.id.to_ascii_uppercase();
+        let question = trimmed(all.get(&format!("SKILL_{id}_QUESTION")));
+        let criteria_true = trimmed(all.get(&format!("SKILL_{id}_CRITERIA_TRUE")));
+        let criteria_false = trimmed(all.get(&format!("SKILL_{id}_CRITERIA_FALSE")));
+
+        if question.is_none() && criteria_true.is_none() && criteria_false.is_none() {
+            continue;
+        }
+
+        criteria.insert(
+            spec.id.to_string(),
+            SkillCriteria {
+                instructions: question.unwrap_or(spec.instructions).to_string(),
+                criteria_true: criteria_true.unwrap_or(spec.criteria_true).to_string(),
+                criteria_false: criteria_false.unwrap_or(spec.criteria_false).to_string(),
+            },
+        );
+    }
+
+    criteria
+}
+
+/// Recorta un valor de `settings` y lo devuelve solo si queda contenido: un
+/// campo ausente o en blanco significa «usa el valor del catálogo».
+fn trimmed(value: Option<&String>) -> Option<&str> {
+    value.map(|v| v.trim()).filter(|v| !v.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -459,6 +657,7 @@ mod tests {
     use crate::llm::provider::LLMError;
     use crate::orchestrator::skills::catalog;
     use async_trait::async_trait;
+    use std::sync::Mutex;
 
     /// Las trece herramientas del registry de producción.
     const ALL_TOOLS: &[&str] = &[
@@ -476,11 +675,12 @@ mod tests {
         "weather",
         "web_search",
     ];
-    const CORE: &[&str] = &["render_widget", "get_current_time"];
+    const CORE: &[&str] = &["get_current_time", "get_current_location"];
 
     const SKILL_AGENDA_KEY: &str = "SKILL_AGENDA_PROMPT";
-    const SKILL_TAREAS_KEY: &str = "SKILL_TAREAS_PROMPT";
-    const SKILL_CLIMA_KEY: &str = "SKILL_CLIMA_PROMPT";
+    const SKILL_PENDIENTES_KEY: &str = "SKILL_PENDIENTES_PROMPT";
+    const SKILL_ENTORNO_KEY: &str = "SKILL_ENTORNO_PROMPT";
+    const SKILL_WIDGETS_KEY: &str = "SKILL_WIDGETS_PROMPT";
 
     fn all_enabled() -> Vec<String> {
         ALL_TOOLS.iter().map(|s| s.to_string()).collect()
@@ -557,7 +757,8 @@ mod tests {
 
     #[tokio::test]
     async fn threshold_selects_only_skills_above_it() {
-        let provider = FakeDecisions::new(&[("agenda", 0.81), ("tareas", 0.08), ("clima", 0.12)]);
+        let provider =
+            FakeDecisions::new(&[("agenda", 0.81), ("pendientes", 0.08), ("entorno", 0.12)]);
         let router = SkillRouter::new(
             Some(provider),
             SkillRouterConfig {
@@ -585,7 +786,8 @@ mod tests {
 
     #[tokio::test]
     async fn all_below_threshold_is_empty_and_exposes_core_only() {
-        let provider = FakeDecisions::new(&[("agenda", 0.10), ("tareas", 0.05), ("clima", 0.20)]);
+        let provider =
+            FakeDecisions::new(&[("agenda", 0.10), ("pendientes", 0.05), ("entorno", 0.20)]);
         let router = SkillRouter::new(
             Some(provider),
             SkillRouterConfig {
@@ -612,7 +814,8 @@ mod tests {
 
     #[tokio::test]
     async fn multiskill_selects_every_skill_above_threshold() {
-        let provider = FakeDecisions::new(&[("lugares", 0.94), ("agenda", 0.81), ("tareas", 0.02)]);
+        let provider =
+            FakeDecisions::new(&[("entorno", 0.94), ("agenda", 0.81), ("pendientes", 0.02)]);
         let router = SkillRouter::new(
             Some(provider),
             SkillRouterConfig {
@@ -636,7 +839,7 @@ mod tests {
             "both skills are active: {:?}",
             sel.skills
         );
-        assert!(sel.skills.contains(&Skill::Lugares));
+        assert!(sel.skills.contains(&Skill::Entorno));
         assert!(sel.skills.contains(&Skill::Agenda));
     }
 
@@ -896,21 +1099,21 @@ mod tests {
             "non-selected skills do not appear: {agenda:?}"
         );
 
-        let agenda_clima = sorted(exposed_tools(
-            &selection(vec![Skill::Agenda, Skill::Clima]),
+        let agenda_entorno = sorted(exposed_tools(
+            &selection(vec![Skill::Agenda, Skill::Entorno]),
             &enabled,
         ));
         assert!(
-            agenda_clima.contains(&"weather".to_string()),
-            "clima adds weather: {agenda_clima:?}"
+            agenda_entorno.contains(&"weather".to_string()),
+            "entorno adds weather: {agenda_entorno:?}"
         );
         assert!(
-            agenda_clima.contains(&"geocode".to_string()),
-            "clima adds its prerequisite geocode: {agenda_clima:?}"
+            agenda_entorno.contains(&"geocode".to_string()),
+            "entorno adds its prerequisite geocode: {agenda_entorno:?}"
         );
         assert!(
-            !agenda_clima.contains(&"tasks".to_string()),
-            "non-selected skills do not appear: {agenda_clima:?}"
+            !agenda_entorno.contains(&"tasks".to_string()),
+            "non-selected skills do not appear: {agenda_entorno:?}"
         );
     }
 
@@ -937,12 +1140,12 @@ mod tests {
     fn composes_only_active_fragments_in_catalog_order() {
         let fragments = fragments_map(&[
             (SKILL_AGENDA_KEY, "FRAGMENTO_AGENDA"),
-            (SKILL_TAREAS_KEY, "FRAGMENTO_TAREAS"),
-            (SKILL_CLIMA_KEY, "FRAGMENTO_CLIMA"),
+            (SKILL_PENDIENTES_KEY, "FRAGMENTO_TAREAS"),
+            (SKILL_ENTORNO_KEY, "FRAGMENTO_CLIMA"),
         ]);
 
         let out = compose_skill_fragments(
-            &selection(vec![Skill::Agenda, Skill::Tareas]),
+            &selection(vec![Skill::Agenda, Skill::Pendientes]),
             "prompt base",
             &fragments,
         );
@@ -962,11 +1165,11 @@ mod tests {
     fn blank_fragments_leave_no_trace() {
         let fragments = fragments_map(&[
             (SKILL_AGENDA_KEY, "   \n  "),
-            (SKILL_TAREAS_KEY, "FRAGMENTO_TAREAS"),
+            (SKILL_PENDIENTES_KEY, "FRAGMENTO_TAREAS"),
         ]);
 
         let out = compose_skill_fragments(
-            &selection(vec![Skill::Agenda, Skill::Tareas]),
+            &selection(vec![Skill::Agenda, Skill::Pendientes]),
             "prompt base",
             &fragments,
         );
@@ -983,11 +1186,11 @@ mod tests {
 
         let fragments = fragments_map(&[
             (SKILL_AGENDA_KEY, agenda_fragment.as_str()),
-            (SKILL_TAREAS_KEY, "FRAGMENTO_TAREAS"),
+            (SKILL_PENDIENTES_KEY, "FRAGMENTO_TAREAS"),
         ]);
 
         let out = compose_skill_fragments(
-            &selection(vec![Skill::Agenda, Skill::Tareas]),
+            &selection(vec![Skill::Agenda, Skill::Pendientes]),
             &base,
             &fragments,
         );
@@ -1000,6 +1203,49 @@ mod tests {
             out.iter().any(|f| f.contains("FRAGMENTO_TAREAS")),
             "the rest of the active fragments are injected: {out:?}"
         );
+    }
+
+    #[test]
+    fn widget_guide_is_not_duplicated_when_the_base_prompt_already_carries_it() {
+        // The «edited» case: the base prompt carries the widget guide by its
+        // real content heading —the migration relocates the block verbatim and
+        // only removes it when it is byte-for-byte ours—, but the catalog's
+        // duplicate marker used to be the *old* `# SKILL ACTIVA: WIDGETS`, so
+        // the fragment was injected a second time. The test seeds the fragment
+        // exactly as the migration does: starting with the guide heading.
+        let guide_heading = "# Instrucciones de Interfaz y Widgets Interactivos";
+        let fragment =
+            format!("{guide_heading}\n\nDispones de la herramienta ejecutable `render_widget`.");
+        let fragments = fragments_map(&[(SKILL_WIDGETS_KEY, fragment.as_str())]);
+
+        let base_with_guide =
+            format!("prompt base\n{guide_heading}\ncontenido editado por el usuario");
+        let out = compose_skill_fragments(
+            &selection(vec![Skill::Widgets]),
+            &base_with_guide,
+            &fragments,
+        );
+        assert!(
+            out.is_empty(),
+            "la guía de widgets ya está en el prompt base y no puede viajar dos veces: {out:?}"
+        );
+
+        let out =
+            compose_skill_fragments(&selection(vec![Skill::Widgets]), "prompt base", &fragments);
+        assert_eq!(
+            out.len(),
+            1,
+            "sin el duplicado, la guía de widgets sí se inyecta: {out:?}"
+        );
+    }
+
+    #[test]
+    fn effective_field_trims_the_override() {
+        // The router sends the trimmed value (it comes from `trimmed()`); the
+        // API and the report must declare exactly what travels.
+        assert_eq!(effective_field(Some("  hola  "), "catalogo"), "hola");
+        assert_eq!(effective_field(Some("\t\n"), "catalogo"), "catalogo");
+        assert_eq!(effective_field(None, "catalogo"), "catalogo");
     }
 
     // ─── Lectura en caliente de la configuración (R7 / D9) ──────────────────
@@ -1158,13 +1404,15 @@ mod tests {
     #[tokio::test]
     async fn read_skill_fragments_returns_only_present_keys_of_requested_skills() {
         let pool = db().await;
-        // The migration seeds all eight fragments; drop one and customise another.
-        SettingsRepo::delete(&pool, SKILL_TAREAS_KEY).await.unwrap();
+        // Customise one key and drop another.
+        SettingsRepo::delete(&pool, SKILL_PENDIENTES_KEY)
+            .await
+            .unwrap();
         SettingsRepo::set(&pool, SKILL_AGENDA_KEY, "FRAGMENTO_AGENDA")
             .await
             .unwrap();
 
-        let fragments = read_skill_fragments(&pool, &[Skill::Agenda, Skill::Tareas]).await;
+        let fragments = read_skill_fragments(&pool, &[Skill::Agenda, Skill::Pendientes]).await;
 
         assert_eq!(
             fragments.get(SKILL_AGENDA_KEY).map(String::as_str),
@@ -1172,7 +1420,7 @@ mod tests {
             "a present key is returned verbatim"
         );
         assert_eq!(
-            fragments.get(SKILL_TAREAS_KEY),
+            fragments.get(SKILL_PENDIENTES_KEY),
             None,
             "a missing key must not be invented"
         );
@@ -1186,10 +1434,286 @@ mod tests {
     #[tokio::test]
     async fn read_skill_fragments_ignores_skills_not_requested() {
         let pool = db().await;
+        SettingsRepo::set(&pool, SKILL_ENTORNO_KEY, "FRAGMENTO_ENTORNO")
+            .await
+            .unwrap();
 
-        let fragments = read_skill_fragments(&pool, &[Skill::Clima]).await;
+        let fragments = read_skill_fragments(&pool, &[Skill::Entorno]).await;
 
         assert_eq!(fragments.len(), 1, "only the one requested skill is read");
-        assert!(fragments.contains_key("SKILL_CLIMA_PROMPT"));
+        assert!(fragments.contains_key(SKILL_ENTORNO_KEY));
+    }
+
+    // ─── RED: umbrales por defecto y override (skill-router-tuning 1.2) ──────
+
+    #[test]
+    fn router_config_defaults_match_the_measurement() {
+        let defaults = SkillRouterConfig::default();
+        assert!(
+            (defaults.threshold - 0.10).abs() < 1e-6,
+            "el umbral global por defecto debe ser 0.10, got {}",
+            defaults.threshold
+        );
+        assert_eq!(
+            defaults.history_turns, 6,
+            "el historial por defecto debe ser 6, got {}",
+            defaults.history_turns
+        );
+    }
+
+    /// La spec de una skill por su id, o `None` si aún no existe en el catálogo.
+    fn spec_by_id(id: &str) -> Option<&'static SkillSpec> {
+        catalog().iter().find(|spec| spec.id == id)
+    }
+
+    /// Umbral efectivo de una skill por su id, o `None` si no está el catálogo.
+    fn effective_for(router: &SkillRouter, id: &str) -> Option<f32> {
+        spec_by_id(id).map(|spec| router.effective_threshold(spec))
+    }
+
+    /// Porcentaje entero del umbral, para comparar sin ruido de coma flotante.
+    fn pct(t: f32) -> i32 {
+        (t * 100.0).round() as i32
+    }
+
+    #[tokio::test]
+    async fn effective_threshold_uses_the_widget_override_when_present() {
+        let pool = db().await;
+        // Pin the global so the domain expectation does not depend on the
+        // seeded value: the precedence is override → global → catalog default.
+        SettingsRepo::set(&pool, "ROUTER_THRESHOLD", "0.10")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "ROUTER_THRESHOLD_WIDGETS", "0.55")
+            .await
+            .unwrap();
+        let router = SkillRouter::new(None, read_router_config(&pool).await);
+
+        let widgets = effective_for(&router, "widgets");
+        assert_eq!(
+            widgets.map(pct),
+            Some(55),
+            "el override de widgets debe dar 0.55; got {widgets:?}"
+        );
+
+        for id in ["agenda", "pendientes", "recuerdos", "entorno", "web"] {
+            let t = effective_for(&router, id);
+            assert_eq!(
+                t.map(pct),
+                Some(10),
+                "el dominio `{id}` usa el global 0.10; got {t:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn effective_threshold_falls_back_to_the_global_when_override_absent() {
+        let pool = db().await;
+        SettingsRepo::delete(&pool, "ROUTER_THRESHOLD_WIDGETS")
+            .await
+            .unwrap();
+        SettingsRepo::delete(&pool, "ROUTER_THRESHOLD")
+            .await
+            .unwrap();
+        let router = SkillRouter::new(None, read_router_config(&pool).await);
+
+        let widgets = effective_for(&router, "widgets");
+        assert_eq!(
+            widgets.map(pct),
+            Some(10),
+            "sin override, widgets cae al global por defecto 0.10, no a su spec 0.20; got {widgets:?}"
+        );
+
+        let agenda = effective_for(&router, "agenda");
+        assert_eq!(
+            agenda.map(pct),
+            Some(10),
+            "sin override, agenda cae al global por defecto 0.10; got {agenda:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn effective_threshold_ignores_unreadable_widget_overrides() {
+        let pool = db().await;
+        SettingsRepo::set(&pool, "ROUTER_THRESHOLD", "0.10")
+            .await
+            .unwrap();
+        for bad in ["", "NaN", "inf", "-inf", "2.5", "-1", "alta"] {
+            SettingsRepo::set(&pool, "ROUTER_THRESHOLD_WIDGETS", bad)
+                .await
+                .unwrap();
+            let router = SkillRouter::new(None, read_router_config(&pool).await);
+            let widgets = effective_for(&router, "widgets");
+            assert_eq!(
+                widgets.map(pct),
+                Some(10),
+                "un override ilegible {bad:?} cae al global 0.10; got {widgets:?}"
+            );
+        }
+    }
+
+    // ─── RED: criterios efectivos (skill-router-tuning 1.3) ─────────────────
+
+    #[tokio::test]
+    async fn read_skill_criteria_is_empty_without_config_and_reads_question_overrides() {
+        let pool = db().await;
+        assert!(
+            read_skill_criteria(&pool).await.is_empty(),
+            "sin claves de criterios, el mapa debe estar vacío"
+        );
+
+        SettingsRepo::set(&pool, "SKILL_PENDIENTES_QUESTION", "¿pendientes?")
+            .await
+            .unwrap();
+        let map = read_skill_criteria(&pool).await;
+        assert_eq!(
+            map.get("pendientes").map(|c| c.instructions.as_str()),
+            Some("¿pendientes?"),
+            "debe recogerse el override de la pregunta; got {map:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_skill_criteria_drops_blank_values() {
+        let pool = db().await;
+        SettingsRepo::set(&pool, "SKILL_AGENDA_QUESTION", "¿agenda?")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "SKILL_PENDIENTES_QUESTION", "   ")
+            .await
+            .unwrap();
+
+        let map = read_skill_criteria(&pool).await;
+        assert_eq!(
+            map.get("agenda").map(|c| c.instructions.as_str()),
+            Some("¿agenda?"),
+            "una clave con contenido debe aparecer; got {map:?}"
+        );
+        assert!(
+            !map.contains_key("pendientes"),
+            "una clave solo con espacios no debe aportar un override; got {map:?}"
+        );
+    }
+
+    /// Doble que además **captura** la `DecisionsRequest` enviada.
+    struct CapturingDecisions {
+        answers: HashMap<String, f32>,
+        captured: Mutex<Option<DecisionsRequest>>,
+    }
+
+    impl CapturingDecisions {
+        #[allow(clippy::new_ret_no_self)]
+        fn new(answers: &[(&str, f32)]) -> Arc<Self> {
+            Arc::new(Self {
+                answers: answers.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+                captured: Mutex::new(None),
+            })
+        }
+
+        fn captured_request(&self) -> Option<DecisionsRequest> {
+            self.captured.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl DecisionsProvider for CapturingDecisions {
+        async fn decide(&self, request: DecisionsRequest) -> Result<DecisionsResponse, LLMError> {
+            *self.captured.lock().unwrap() = Some(request);
+            Ok(DecisionsResponse {
+                answers: self.answers.clone(),
+                input_tokens: 10,
+                output_tokens: 5,
+                cost: 0.00002,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn select_sends_overridden_criteria_and_falls_back_to_the_catalog() {
+        let provider = CapturingDecisions::new(&[("agenda", 0.9), ("entorno", 0.9)]);
+        let dyn_provider: Arc<dyn DecisionsProvider> = provider.clone();
+
+        let mut criteria = HashMap::new();
+        criteria.insert(
+            "agenda".to_string(),
+            SkillCriteria {
+                instructions: "INSTRUCCIONES_SOBRESCRITAS".to_string(),
+                criteria_true: "TRUE_SOBRESCRITO".to_string(),
+                criteria_false: "FALSE_SOBRESCRITO".to_string(),
+            },
+        );
+        // Override parcial: solo la pregunta; las criteria caen al catálogo.
+        criteria.insert(
+            "entorno".to_string(),
+            SkillCriteria {
+                instructions: "PREGUNTA_ENTORNO".to_string(),
+                criteria_true: String::new(),
+                criteria_false: String::new(),
+            },
+        );
+
+        let router = SkillRouter::new(
+            Some(dyn_provider),
+            SkillRouterConfig {
+                enabled: true,
+                threshold: 0.0,
+                ..Default::default()
+            },
+        )
+        .with_criteria(criteria);
+
+        let _ = router
+            .select("convoca una reunión y dime el tiempo", &[], &all_enabled())
+            .await;
+
+        let request = provider
+            .captured_request()
+            .expect("el doble debe capturar la petición enviada");
+
+        let agenda = request
+            .questions
+            .iter()
+            .find(|q| q.id == "agenda")
+            .expect("agenda debe preguntarse");
+        assert_eq!(
+            agenda.instructions, "INSTRUCCIONES_SOBRESCRITAS",
+            "la pregunta sobrescrita debe viajar al clasificador"
+        );
+        assert_eq!(agenda.criteria_true, "TRUE_SOBRESCRITO");
+        assert_eq!(agenda.criteria_false, "FALSE_SOBRESCRITO");
+
+        let entorno = request
+            .questions
+            .iter()
+            .find(|q| q.id == "entorno")
+            .expect("entorno debe preguntarse");
+        assert_eq!(
+            entorno.instructions, "PREGUNTA_ENTORNO",
+            "la pregunta sobrescrita de entorno debe viajar"
+        );
+        let entorno_spec = spec_by_id("entorno").expect("entorno debe estar en el catálogo");
+        assert_eq!(
+            entorno.criteria_true, entorno_spec.criteria_true,
+            "un override parcial no puede dejar una criteria vacía: cae al catálogo"
+        );
+        assert_eq!(
+            entorno.criteria_false, entorno_spec.criteria_false,
+            "un override parcial no puede dejar una criteria vacía: cae al catálogo"
+        );
+
+        for q in &request.questions {
+            assert!(
+                !q.instructions.trim().is_empty(),
+                "ninguna pregunta puede viajar sin instrucciones: {q:?}"
+            );
+            assert!(
+                !q.criteria_true.trim().is_empty(),
+                "ninguna pregunta puede viajar con criteria_true vacía: {q:?}"
+            );
+            assert!(
+                !q.criteria_false.trim().is_empty(),
+                "ninguna pregunta puede viajar con criteria_false vacía: {q:?}"
+            );
+        }
     }
 }
