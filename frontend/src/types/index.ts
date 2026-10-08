@@ -221,12 +221,36 @@ export interface Tool {
   enabled: boolean;
 }
 
+/**
+ * Campo de una skill que puede quedar sobrescrito por `settings`: la pregunta,
+ * los dos criterios o el umbral. El fragmento de prompt no se marca (su
+ * restauración equivale a vaciar su clave, no a un valor del catálogo).
+ */
+export type SkillOverrideField =
+  | "question"
+  | "criteria_true"
+  | "criteria_false"
+  | "threshold";
+
 /** Skill del catálogo cerrado del enrutador (`GET /api/skills`). */
 export interface SkillInfo {
   id: string;
   prompt_key: string;
   prompt_heading: string;
   tools: string[];
+  /** Pregunta efectiva (el valor de `settings` si lo tiene, si no el del catálogo). */
+  question: string;
+  /** Criterio del «sí» efectivo. */
+  criteria_true: string;
+  /** Criterio del «no» efectivo. */
+  criteria_false: string;
+  /** Umbral efectivo (override por skill si existe, si no el global). */
+  threshold: number;
+  /**
+   * Campos cuyo valor efectivo difiere del catálogo: `question`,
+   * `criteria_true`, `criteria_false` o `threshold`. Vacío si ninguno.
+   */
+  overridden: SkillOverrideField[];
 }
 
 /** Respuesta de `GET /api/skills`: skills enrutables + herramientas núcleo. */

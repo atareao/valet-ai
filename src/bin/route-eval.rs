@@ -24,7 +24,8 @@ use valet::llm::decisions::{
 };
 use valet::llm::provider::LLMError;
 use valet::orchestrator::skill_router::{
-    exposed_tools, read_router_config, SkillRouter, SkillRouterConfig,
+    effective_field, effective_threshold, exposed_tools, read_router_config, read_skill_criteria,
+    SkillCriteria, SkillRouter, SkillRouterConfig,
 };
 use valet::orchestrator::skills::{catalog, skill_of_tool, Skill, CORE_TOOLS};
 
@@ -109,6 +110,59 @@ fn covering_skill(tool: &str) -> String {
         None if CORE_TOOLS.contains(&tool) => "core".to_string(),
         None => "unknown".to_string(),
     }
+}
+
+/// `"yes"`/`"no"`, for the overridden flags of the configuration report.
+fn yes_no(value: bool) -> &'static str {
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+/// The effective-configuration report, one line per skill.
+///
+/// Pure (no I/O): it takes the resolved router configuration and the effective
+/// criteria map and returns the report lines, so the harness can print the
+/// configuration it actually used —the same in the dry run and in the measured
+/// run— and a table test can assert the composition without the network.
+///
+/// Each line carries the skill id, its effective threshold and whether its
+/// question and its criteria come from `settings` (they differ from the
+/// compiled default). The threshold precedence and the field rule are the
+/// router's ([`effective_threshold`] / [`effective_field`]); they are not
+/// reimplemented here.
+fn effective_config_rows(
+    config: &SkillRouterConfig,
+    criteria: &HashMap<String, SkillCriteria>,
+) -> Vec<String> {
+    catalog()
+        .iter()
+        .map(|spec| {
+            let entry = criteria.get(spec.id);
+            let question =
+                effective_field(entry.map(|c| c.instructions.as_str()), spec.instructions);
+            let criteria_true =
+                effective_field(entry.map(|c| c.criteria_true.as_str()), spec.criteria_true);
+            let criteria_false = effective_field(
+                entry.map(|c| c.criteria_false.as_str()),
+                spec.criteria_false,
+            );
+
+            let question_overridden = question != spec.instructions;
+            let criteria_overridden =
+                criteria_true != spec.criteria_true || criteria_false != spec.criteria_false;
+
+            format!(
+                "  {:<13} threshold={:.2}  question={:<3} criteria={:<3}",
+                spec.id,
+                effective_threshold(config, spec),
+                yes_no(question_overridden),
+                yes_no(criteria_overridden),
+            )
+        })
+        .collect()
 }
 
 /// Why a turn is or is not covered.
@@ -305,6 +359,16 @@ fn parse_args(raw: &[String]) -> Result<Args, String> {
     Ok(args)
 }
 
+/// Whether a CLI-supplied threshold is usable: **finite** and within `[0, 1]`.
+///
+/// Production protects this in `read_threshold`; the harness must apply the
+/// same guard, because `"NaN"`/`"inf"` parse successfully but would silence the
+/// router (`prob >= NaN` is always false). An invalid `--threshold` is ignored
+/// with a warning and the settings value is kept.
+fn valid_threshold(threshold: f32) -> bool {
+    threshold.is_finite() && (0.0..=1.0).contains(&threshold)
+}
+
 /// Whether `name` is in the enabled-tool set.
 fn is_enabled_tool(enabled: &[String], name: &str) -> bool {
     enabled.iter().any(|e| e.as_str() == name)
@@ -443,7 +507,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let enabled = enabled_tools(&pool).await;
     let turns = cap_turns(load_turns(&pool).await?, args.limit);
 
-    // Dry run: no classifier, no network. Print the catalog and the pairing.
+    // Resolve the effective configuration once, applying the CLI overrides, so
+    // both the dry run and the measured run publish exactly what they use.
+    let mut router_config: SkillRouterConfig = read_router_config(&pool).await;
+    if let Some(threshold) = args.threshold {
+        if valid_threshold(threshold) {
+            router_config.threshold = threshold;
+        } else {
+            tracing::warn!(
+                value = threshold,
+                uses = router_config.threshold,
+                "--threshold is not a finite value in [0, 1]; ignoring it and using the settings value"
+            );
+        }
+    }
+    if let Some(model) = &args.model {
+        router_config.model = model.clone();
+    }
+    // The criteria the router will send: the live `settings` values, falling
+    // back to the catalog. Read here so the measured run and the dry run agree.
+    let criteria = read_skill_criteria(&pool).await;
+    let config_rows = effective_config_rows(&router_config, &criteria);
+
+    // Dry run: no classifier, no network. Print the catalog, the pairing and the
+    // effective configuration that would be used.
     if args.dry_run {
         println!("DRY RUN — no network calls");
         println!();
@@ -482,19 +569,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             turns.len(),
             args.limit
         );
+        println!();
+        println!("Effective configuration (would be used):");
+        println!("  global threshold = {:.2}", router_config.threshold);
+        for row in &config_rows {
+            println!("{row}");
+        }
         return Ok(());
     }
 
-    // Evaluation: force the router on (we are not measuring the switch) and
-    // let `--threshold` / `--model` override the stored settings.
-    let mut router_config: SkillRouterConfig = read_router_config(&pool).await;
+    // Evaluation: force the router on (we are not measuring the switch). The
+    // `--threshold` / `--model` overrides were already applied above.
     router_config.enabled = true;
-    if let Some(threshold) = args.threshold {
-        router_config.threshold = threshold;
-    }
-    if let Some(model) = &args.model {
-        router_config.model = model.clone();
-    }
 
     let Some(jev) =
         JevDecisionsConfig::from_env(router_config.model.clone(), router_config.timeout_ms)
@@ -511,7 +597,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )));
     let provider: Option<Arc<dyn DecisionsProvider>> =
         Some(Arc::clone(&recording) as Arc<dyn DecisionsProvider>);
-    let router = SkillRouter::new(provider, router_config.clone());
+    // Build the router with the effective criteria, so the measured coverage
+    // reflects the live configuration, not the compiled one.
+    let router = SkillRouter::new(provider, router_config.clone()).with_criteria(criteria);
 
     let mut covered = 0usize;
     let mut latencies: Vec<u64> = Vec::with_capacity(turns.len());
@@ -555,13 +643,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("== Skill routing evaluation ==");
     println!("Model:           {}", router_config.model);
-    println!("Threshold:       {:.3}", router_config.threshold);
+    println!("Threshold (global): {:.3}", router_config.threshold);
     println!("Enabled tools:   {}", enabled.len());
     println!("Turns evaluated: {total}");
     println!(
         "Coverage:        {:.1}% ({covered}/{total})",
         coverage(covered, total) * 100.0
     );
+    println!();
+    println!("Effective configuration:");
+    for row in &config_rows {
+        println!("{row}");
+    }
     println!();
     println!("Classifier latency: p50={p50} ms  p95={p95} ms");
     println!(
@@ -666,6 +759,19 @@ mod tests {
     }
 
     #[test]
+    fn valid_threshold_accepts_only_finite_values_in_unit_range() {
+        // The CLI `--threshold` must obey the same guard as `read_threshold`:
+        // `NaN`/`inf` parse but would silence the router (`prob >= NaN` is
+        // always false) and values outside `[0, 1]` are meaningless.
+        for good in [0.0f32, 0.10, 0.5, 1.0] {
+            assert!(valid_threshold(good), "{good} is a finite value in [0, 1]");
+        }
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 1.1] {
+            assert!(!valid_threshold(bad), "{bad} must be rejected");
+        }
+    }
+
+    #[test]
     fn coverage_table() {
         assert_eq!(coverage(0, 0), 0.0, "an empty run must not panic");
         assert_eq!(coverage(0, 4), 0.0);
@@ -734,13 +840,17 @@ mod tests {
     #[test]
     fn covering_skill_table() {
         let cases: &[(&str, &str)] = &[
-            ("tasks", "tareas"),
+            ("tasks", "pendientes"),
+            ("reminders", "pendientes"),
+            ("notes", "recuerdos"),
+            ("unified_search", "recuerdos"),
             ("calendar", "agenda"),
-            ("weather", "clima"),
-            ("web_search", "busqueda_web"),
-            ("unified_search", "memoria"),
-            ("render_widget", "core"),
+            ("weather", "entorno"),
+            ("geocode", "entorno"),
+            ("web_search", "web"),
+            ("render_widget", "widgets"),
             ("get_current_time", "core"),
+            ("get_current_location", "core"),
             ("no_existe", "unknown"),
         ];
 
@@ -883,6 +993,136 @@ mod tests {
                 turns[0].parse_failed
             ),
             TurnOutcome::ParseFailed
+        );
+    }
+
+    // ─── Effective-configuration report (skill-router-tuning 7.1/7.2) ───────
+
+    /// The measured router config as production ships it: global 0.10 plus the
+    /// seeded widget override at 0.20.
+    fn measured_config() -> SkillRouterConfig {
+        let mut threshold_overrides = HashMap::new();
+        threshold_overrides.insert("widgets".to_string(), 0.20f32);
+        SkillRouterConfig {
+            threshold: 0.10,
+            threshold_overrides,
+            ..Default::default()
+        }
+    }
+
+    /// The report line for a skill, matched by its fixed-width id column.
+    fn row_for<'a>(rows: &'a [String], id: &str) -> &'a str {
+        let needle = format!("{id:<13}");
+        rows.iter()
+            .find(|row| row.contains(&needle))
+            .map(String::as_str)
+            .unwrap_or_else(|| panic!("no row for skill {id}: {rows:?}"))
+    }
+
+    #[test]
+    fn effective_config_rows_default_to_the_catalog() {
+        let rows = effective_config_rows(&measured_config(), &HashMap::new());
+
+        assert_eq!(rows.len(), catalog().len(), "one row per skill: {rows:?}");
+        for id in [
+            "agenda",
+            "pendientes",
+            "recuerdos",
+            "entorno",
+            "web",
+            "widgets",
+        ] {
+            let row = row_for(&rows, id);
+            assert!(
+                row.contains("question=no"),
+                "unset question must not be marked: {row}"
+            );
+            assert!(
+                row.contains("criteria=no"),
+                "unset criteria must not be marked: {row}"
+            );
+        }
+        assert!(
+            row_for(&rows, "agenda").contains("threshold=0.10"),
+            "domain skills use the global 0.10"
+        );
+        assert!(
+            row_for(&rows, "widgets").contains("threshold=0.20"),
+            "the seeded widget override is published"
+        );
+    }
+
+    #[test]
+    fn effective_config_rows_mark_overridden_question_and_criteria_per_skill() {
+        let mut criteria = HashMap::new();
+        criteria.insert(
+            "agenda".to_string(),
+            SkillCriteria {
+                instructions: "¿agenda sobrescrita?".to_string(),
+                criteria_true: String::new(),
+                criteria_false: String::new(),
+            },
+        );
+        criteria.insert(
+            "entorno".to_string(),
+            SkillCriteria {
+                instructions: String::new(),
+                criteria_true: "true sobrescrito".to_string(),
+                criteria_false: "false sobrescrito".to_string(),
+            },
+        );
+
+        let rows = effective_config_rows(&measured_config(), &criteria);
+
+        let agenda = row_for(&rows, "agenda");
+        assert!(
+            agenda.contains("question=yes"),
+            "overridden question: {agenda}"
+        );
+        assert!(
+            agenda.contains("criteria=no"),
+            "untouched criteria: {agenda}"
+        );
+
+        let entorno = row_for(&rows, "entorno");
+        assert!(
+            entorno.contains("question=no"),
+            "untouched question: {entorno}"
+        );
+        assert!(
+            entorno.contains("criteria=yes"),
+            "overridden criteria: {entorno}"
+        );
+
+        let web = row_for(&rows, "web");
+        assert!(
+            web.contains("question=no"),
+            "a skill without overrides: {web}"
+        );
+        assert!(
+            web.contains("criteria=no"),
+            "a skill without overrides: {web}"
+        );
+    }
+
+    #[test]
+    fn effective_config_rows_publish_the_threshold_override() {
+        let mut threshold_overrides = HashMap::new();
+        threshold_overrides.insert("widgets".to_string(), 0.55f32);
+        let config = SkillRouterConfig {
+            threshold: 0.10,
+            threshold_overrides,
+            ..Default::default()
+        };
+
+        let rows = effective_config_rows(&config, &HashMap::new());
+        assert!(
+            row_for(&rows, "widgets").contains("threshold=0.55"),
+            "the per-skill override is the effective threshold"
+        );
+        assert!(
+            row_for(&rows, "agenda").contains("threshold=0.10"),
+            "skills without override keep the global"
         );
     }
 }

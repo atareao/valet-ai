@@ -74,14 +74,15 @@ const defaultSettings: Record<string, string> = {
   ROUTER_TIMEOUT_MS: "800",
   ROUTER_HISTORY_TURNS: "2",
   SKILL_AGENDA_PROMPT: "Fragmento de agenda",
-  SKILL_TAREAS_PROMPT: "Fragmento de tareas",
+  SKILL_PENDIENTES_PROMPT: "Fragmento de pendientes",
 };
 
 let mockSettings: Record<string, string> = { ...defaultSettings };
 
-// Catálogo cerrado devuelto por `GET /api/skills` (forma real). Dos skills
-// bastan: `agenda`→`calendar` y `tareas`→`tasks`, con dos herramientas núcleo
-// que el enrutador nunca filtra.
+// Catálogo cerrado devuelto por `GET /api/skills` (forma real): las seis skills
+// del catálogo, con sus valores efectivos y, en `agenda`, una pregunta
+// sobrescrita. `render_widget` sigue en `core_tools` para no alterar las
+// aserciones del control del enrutador que ya existían.
 const skillsFixture: SkillsResponse = {
   skills: [
     {
@@ -89,12 +90,67 @@ const skillsFixture: SkillsResponse = {
       prompt_key: "SKILL_AGENDA_PROMPT",
       prompt_heading: "# SKILL ACTIVA: AGENDA",
       tools: ["calendar"],
+      question: "¿La respuesta requiere mirar o cambiar la agenda?",
+      criteria_true: "El mensaje se refiere a eventos o citas.",
+      criteria_false: "El mensaje no se refiere a nada programado.",
+      threshold: 0.1,
+      overridden: ["question"],
     },
     {
-      id: "tareas",
-      prompt_key: "SKILL_TAREAS_PROMPT",
-      prompt_heading: "# SKILL ACTIVA: TAREAS",
-      tools: ["tasks"],
+      id: "pendientes",
+      prompt_key: "SKILL_PENDIENTES_PROMPT",
+      prompt_heading: "# SKILL ACTIVA: PENDIENTES",
+      tools: ["tasks", "reminders"],
+      question: "¿La respuesta requiere gestionar tareas o recordatorios?",
+      criteria_true: "El mensaje se refiere a tareas o pendientes.",
+      criteria_false: "El mensaje no se refiere a pendientes.",
+      threshold: 0.1,
+      overridden: [],
+    },
+    {
+      id: "recuerdos",
+      prompt_key: "SKILL_RECUERDOS_PROMPT",
+      prompt_heading: "# SKILL ACTIVA: RECUERDOS",
+      tools: ["notes", "unified_search"],
+      question: "¿La respuesta requiere guardar o recuperar notas?",
+      criteria_true: "El mensaje pide apuntar o recuperar un texto.",
+      criteria_false: "El mensaje no pide guardar ni recuperar información.",
+      threshold: 0.1,
+      overridden: [],
+    },
+    {
+      id: "entorno",
+      prompt_key: "SKILL_ENTORNO_PROMPT",
+      prompt_heading: "# SKILL ACTIVA: ENTORNO",
+      tools: ["weather", "geocode", "reverse_geocode", "search_places"],
+      question: "¿La respuesta requiere el tiempo o un lugar?",
+      criteria_true: "El mensaje pregunta por el tiempo o por lugares.",
+      criteria_false: "El mensaje no pregunta por el tiempo ni por lugares.",
+      threshold: 0.1,
+      overridden: [],
+    },
+    {
+      id: "web",
+      prompt_key: "SKILL_WEB_PROMPT",
+      prompt_heading: "# SKILL ACTIVA: WEB",
+      tools: ["web_search"],
+      question: "¿La respuesta requiere información externa de internet?",
+      criteria_true:
+        "El mensaje pide información que no está en los datos del usuario.",
+      criteria_false: "El mensaje se responde con datos del propio usuario.",
+      threshold: 0.1,
+      overridden: [],
+    },
+    {
+      id: "widgets",
+      prompt_key: "SKILL_WIDGETS_PROMPT",
+      prompt_heading: "# SKILL ACTIVA: WIDGETS",
+      tools: ["render_widget"],
+      question: "¿La respuesta requiere mostrar algo interactivo?",
+      criteria_true: "El turno implica pedir varios datos a la vez.",
+      criteria_false: "El turno se resuelve con una explicación o un dato.",
+      threshold: 0.2,
+      overridden: [],
     },
   ],
   core_tools: ["render_widget", "get_current_time"],
@@ -199,8 +255,10 @@ vi.mock("../api/client", async () => {
       // spy cuando `RouterControl` invoca `api.getSettings()`.
       getSettings: () => mockGetSettings(),
       updateSettings: (data: Record<string, string>) => {
-        mockUpdateSettings(data);
-        return Promise.resolve(mockSettings);
+        // Propaga el resultado del spy: si un test lo hace rechazar, el
+        // guardado falla de verdad (camino de error de «Restaurar»).
+        const result = mockUpdateSettings(data);
+        return Promise.resolve(result).then(() => mockSettings);
       },
     },
   };
@@ -223,6 +281,10 @@ const renderDialog = (ui: ReactElement) => render(ui, { wrapper: AppWrapper });
 describe("SettingsDialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // El mock del cliente propaga el rechazo del spy: se reinicia la
+    // implementación de `mockUpdateSettings` para que un `mockRejectedValue`
+    // de un test no se filtre al siguiente.
+    mockUpdateSettings.mockReset();
     mockSettings = { ...defaultSettings };
     mockGetSkills.mockResolvedValue(skillsFixture);
     mockGetSettings.mockImplementation(() => Promise.resolve(mockSettings));
@@ -1519,8 +1581,8 @@ describe("SettingsDialog", () => {
 
     expect(await screen.findByText("agenda")).toBeInTheDocument();
     expect(screen.getByText("calendar")).toBeInTheDocument();
-    expect(screen.getByText("tareas")).toBeInTheDocument();
-    expect(screen.getByText("tasks")).toBeInTheDocument();
+    expect(screen.getByText("pendientes")).toBeInTheDocument();
+    expect(screen.getByText("tasks, reminders")).toBeInTheDocument();
 
     expect(
       screen.getByText("Herramientas núcleo: siempre expuestas, fuera del enrutado"),
@@ -1590,72 +1652,323 @@ describe("SettingsDialog", () => {
     },
   );
 
-  // R2 — sub-pestaña «Skills»: un área de texto por fragmento vigente.
-  it("muestra un área de texto por skill", async () => {
+  // R1 (change `skill-router-tuning`) — la relación de skills muestra el umbral
+  // efectivo de cada una y el campo editable solo donde difiere del global.
+  // Escenario: umbral global `0.1`, `widgets` con override en `0.2`.
+  it("la relación de skills muestra cada umbral efectivo y el campo solo donde difiere del global", async () => {
+    const user = userEvent.setup();
+    mockSettings = { ...mockSettings, ROUTER_THRESHOLD: "0.1" };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+    await screen.findByText("widgets");
+
+    // Las skills de dominio heredan el global (`0.10`): se muestra el umbral
+    // efectivo y NO se ofrece campo propio.
+    for (const id of ["agenda", "pendientes", "recuerdos", "entorno", "web"]) {
+      const item = screen.getByText(id).closest("li") as HTMLElement;
+      expect(within(item).getByText("Umbral: 0.10")).toBeInTheDocument();
+      expect(
+        within(item).queryByLabelText(`Umbral de ${id}`),
+      ).not.toBeInTheDocument();
+    }
+
+    // `widgets` difiere del global (`0.20`): muestra su umbral y un campo.
+    const widgets = screen.getByText("widgets").closest("li") as HTMLElement;
+    expect(within(widgets).getByText("Umbral: 0.20")).toBeInTheDocument();
+    expect(
+      within(widgets).getByLabelText("Umbral de widgets"),
+    ).toBeInTheDocument();
+  });
+
+  // R1 (change `skill-router-tuning`) — editar el umbral propio de `widgets`
+  // persiste `ROUTER_THRESHOLD_WIDGETS` junto a las tres claves del enrutador.
+  it("editar el umbral de widgets y guardar envía su clave junto a las del enrutador", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    mockSettings = { ...mockSettings, ROUTER_THRESHOLD: "0.1" };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Herramientas" }));
+
+    const widgetsThreshold = await screen.findByLabelText("Umbral de widgets");
+    await user.clear(widgetsThreshold);
+    await user.type(widgetsThreshold, "0.35");
+
+    const region = screen.getByRole("region", { name: "Enrutador de skills" });
+    await user.click(within(region).getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ROUTER_ENABLED: "false",
+          ROUTER_THRESHOLD: "0.1",
+          ROUTER_MODEL: "typesafe/jev-1.13",
+          ROUTER_THRESHOLD_WIDGETS: "0.35",
+        }),
+      );
+    });
+
+    const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, string>;
+    expect(payload.ROUTER_THRESHOLD_WIDGETS).toBe("0.35");
+    // Las skills de dominio, sin campo, no aportan clave propia.
+    expect(payload).not.toHaveProperty("ROUTER_THRESHOLD_AGENDA");
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // R2 — sub-pestaña «Skills» (change `skill-router-tuning` 8.2 y 8.3):
+  // una tarjeta por skill listada desde el catálogo, con sus cuatro campos
+  // (pregunta, dos criterios y fragmento), marca y «restaurar» en los campos
+  // sobrescritos, guardado por diff y aviso no bloqueante si un campo queda
+  // vacío.
+  // ════════════════════════════════════════════════════════════════
+
+  const SKILL_IDS = [
+    "agenda",
+    "pendientes",
+    "recuerdos",
+    "entorno",
+    "web",
+    "widgets",
+  ] as const;
+
+  const SKILL_FIELD_LABELS = [
+    "Pregunta",
+    "Criterio SÍ",
+    "Criterio NO",
+    "Fragmento de prompt",
+  ] as const;
+
+  // Nombres accesibles únicos: cada campo y cada botón incorpora el id de la
+  // skill para no colisionar entre las seis tarjetas.
+  const fieldLabel = (id: string, label: string) => `${label} (${id})`;
+  const restoreLabel = (id: string, label: string) =>
+    `Restaurar ${id} · ${label}`;
+
+  // Abre la pestaña superior «Prompts» y su sub-pestaña «Skills». El catálogo
+  // se resuelve en un microtask: espera a que las tarjetas existan antes de
+  // devolver el control (la degradación no usa este helper).
+  const openSkillsSubTab = async (
+    user: ReturnType<typeof userEvent.setup>,
+  ) => {
+    await user.click(screen.getByRole("tab", { name: "Prompts" }));
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    await screen.findAllByRole("group", { name: /^Skill / });
+  };
+
+  const skillGroup = (id: string) =>
+    screen.getByRole("group", { name: `Skill ${id}` });
+
+  // Escenario: los fragmentos vigentes se muestran.
+  it("lista las seis skills del catálogo con sus cuatro campos y el valor efectivo", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByRole("tab", { name: "Prompts" }));
-    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    await openSkillsSubTab(user);
 
-    expect(await screen.findByLabelText("agenda")).toHaveValue(
-      "Fragmento de agenda",
-    );
-    expect(screen.getByLabelText("tareas")).toHaveValue("Fragmento de tareas");
+    // Seis tarjetas, una por skill del catálogo (no por patrón de clave).
+    expect(
+      screen.getAllByRole("group", { name: /^Skill / }),
+    ).toHaveLength(SKILL_IDS.length);
+    for (const id of SKILL_IDS) {
+      const group = skillGroup(id);
+      for (const label of SKILL_FIELD_LABELS) {
+        expect(within(group).getByLabelText(fieldLabel(id, label))).toBeInTheDocument();
+      }
+    }
+
+    // Nombres accesibles únicos entre tarjetas: la etiqueta desnuda ya no
+    // existe y la etiquetada con el id aparece exactamente una vez.
+    expect(screen.queryByLabelText("Pregunta")).not.toBeInTheDocument();
+    expect(
+      screen.getAllByLabelText(fieldLabel("agenda", "Pregunta")),
+    ).toHaveLength(1);
+
+    // El valor efectivo: la pregunta sale del catálogo y el fragmento de
+    // settings (`SKILL_AGENDA_PROMPT`).
+    const agenda = skillGroup("agenda");
+    expect(
+      within(agenda).getByLabelText(fieldLabel("agenda", "Pregunta")),
+    ).toHaveValue("¿La respuesta requiere mirar o cambiar la agenda?");
+    expect(
+      within(agenda).getByLabelText(fieldLabel("agenda", "Fragmento de prompt")),
+    ).toHaveValue("Fragmento de agenda");
+    const pendientes = skillGroup("pendientes");
+    expect(
+      within(pendientes).getByLabelText(
+        fieldLabel("pendientes", "Fragmento de prompt"),
+      ),
+    ).toHaveValue("Fragmento de pendientes");
   });
 
-  // R2 — guardar un fragmento no altera el resto de settings.
-  it("guardar envía el fragmento editado sin alterar el resto", async () => {
+  // Escenario: un campo sobrescrito se marca.
+  it("marca el campo sobrescrito y ofrece restaurarlo", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await openSkillsSubTab(user);
+
+    // `agenda` trae su pregunta sobrescrita: se marca y se puede restaurar.
+    const agenda = skillGroup("agenda");
+    expect(within(agenda).getByText("Modificado")).toBeInTheDocument();
+    expect(
+      within(agenda).getByRole("button", {
+        name: restoreLabel("agenda", "Pregunta"),
+      }),
+    ).toBeInTheDocument();
+
+    // Una skill sin sobrescrituras no muestra marca ni acción.
+    const web = skillGroup("web");
+    expect(within(web).queryByText("Modificado")).not.toBeInTheDocument();
+    expect(
+      within(web).queryByRole("button", { name: /Restaurar/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  // Escenario: restaurar el valor por defecto vacía su clave en settings.
+  it("restaurar envía la clave con cadena vacía y relee el catálogo", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await openSkillsSubTab(user);
+    const readsBefore = mockGetSkills.mock.calls.length;
+
+    const agenda = skillGroup("agenda");
+    await user.click(
+      within(agenda).getByRole("button", {
+        name: restoreLabel("agenda", "Pregunta"),
+      }),
+    );
+
+    await waitFor(() => {
+      // Vaciar la clave equivale a restaurar el valor por defecto.
+      expect(mockUpdateSettings).toHaveBeenCalledWith({
+        SKILL_AGENDA_QUESTION: "",
+      });
+    });
+    await waitFor(() => {
+      expect(mockGetSkills.mock.calls.length).toBeGreaterThan(readsBefore);
+    });
+    expect(
+      await screen.findByText("Valor por defecto restaurado"),
+    ).toBeInTheDocument();
+  });
+
+  // Escenario: si el guardado falla, la UI no miente sobre el valor del campo.
+  it("mantiene el valor del campo y avisa si la restauración falla", async () => {
+    const user = userEvent.setup();
+    // El guardado de la restauración falla: `api.updateSettings` rechaza.
+    mockUpdateSettings.mockRejectedValueOnce(new Error("boom"));
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await openSkillsSubTab(user);
+
+    const agenda = skillGroup("agenda");
+    const question = within(agenda).getByLabelText(
+      fieldLabel("agenda", "Pregunta"),
+    );
+    const valueBefore = (question as HTMLTextAreaElement).value;
+
+    await user.click(
+      within(agenda).getByRole("button", {
+        name: restoreLabel("agenda", "Pregunta"),
+      }),
+    );
+
+    expect(
+      await screen.findByText("Error al restaurar el valor"),
+    ).toBeInTheDocument();
+    // El valor mostrado no se toca: sigue siendo el efectivo sobrescrito y la
+    // marca de «Modificado» permanece (la UI no refleja un guardado fallido).
+    expect(
+      within(agenda).getByLabelText(fieldLabel("agenda", "Pregunta")),
+    ).toHaveValue(valueBefore);
+    expect(within(agenda).getByText("Modificado")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Valor por defecto restaurado"),
+    ).not.toBeInTheDocument();
+  });
+
+  // Escenario: guardar un fragmento no toca el resto.
+  it("guardar envía solo el campo modificado", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByRole("tab", { name: "Prompts" }));
-    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    await openSkillsSubTab(user);
 
-    const area = await screen.findByLabelText("agenda");
-    await user.clear(area);
-    await user.type(area, "Nueva agenda");
+    const agenda = skillGroup("agenda");
+    const fragment = within(agenda).getByLabelText(
+      fieldLabel("agenda", "Fragmento de prompt"),
+    );
+    await user.clear(fragment);
+    await user.type(fragment, "Nuevo fragmento de agenda");
 
-    const form = area.closest("form") as HTMLFormElement;
+    const form = fragment.closest("form") as HTMLFormElement;
     await user.click(within(form).getByRole("button", { name: /guardar/i }));
 
     await waitFor(() => {
       expect(mockUpdateSettings).toHaveBeenCalledWith(
         expect.objectContaining({
-          SKILL_AGENDA_PROMPT: "Nueva agenda",
-          // El fragmento vecino conserva su valor vigente…
-          SKILL_TAREAS_PROMPT: "Fragmento de tareas",
-          // …y el prompt del sistema no se altera.
+          SKILL_AGENDA_PROMPT: "Nuevo fragmento de agenda",
+          // El resto de claves de settings sigue intacto.
           system_prompt: "Eres Valet",
         }),
       );
     });
+
+    const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, string>;
+    // Solo la clave del campo modificado: ni el campo vecino ni los demás.
+    expect(Object.keys(payload).filter((k) => k.startsWith("SKILL_"))).toEqual([
+      "SKILL_AGENDA_PROMPT",
+    ]);
   });
 
-  // R2 — si el catálogo falla, el formulario cae a las claves crudas y guarda.
-  it("si el catálogo de skills falla, el formulario sigue renderizando", async () => {
+  // Escenario: aviso al guardar un campo vacío.
+  it("avisa sin bloquear al guardar un campo de skill vacío", async () => {
     const user = userEvent.setup();
     mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await openSkillsSubTab(user);
+
+    const agenda = skillGroup("agenda");
+    const question = within(agenda).getByLabelText(
+      fieldLabel("agenda", "Pregunta"),
+    );
+    await user.clear(question);
+
+    const form = question.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    // El guardado no se bloquea: se envía la clave vacía y avisa.
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ SKILL_AGENDA_QUESTION: "" }),
+      );
+    });
+    expect(await screen.findByText(/campos de skill vacíos/i)).toBeInTheDocument();
+    expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
+  });
+
+  // Escenario: la vista degrada si el catálogo falla.
+  it("degrada con un aviso si el catálogo de skills falla, sin romper el formulario", async () => {
+    const user = userEvent.setup();
     mockGetSkills.mockRejectedValue(new Error("boom"));
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
+    // Sin catálogo no hay tarjetas: se abren las pestañas directamente en
+    // lugar de esperar a `openSkillsSubTab`.
     await user.click(screen.getByRole("tab", { name: "Prompts" }));
     await user.click(screen.getByRole("tab", { name: "Skills" }));
 
-    // Sin catálogo, la etiqueta cae a la propia clave de settings.
-    const area = screen.getByLabelText("SKILL_AGENDA_PROMPT");
-    await user.clear(area);
-    await user.type(area, "Otro texto");
-
-    const form = area.closest("form") as HTMLFormElement;
-    await user.click(within(form).getByRole("button", { name: /guardar/i }));
-
-    await waitFor(() => {
-      expect(mockUpdateSettings).toHaveBeenCalledWith(
-        expect.objectContaining({ SKILL_AGENDA_PROMPT: "Otro texto" }),
-      );
-    });
+    expect(
+      await screen.findByText("No se pudieron cargar las skills"),
+    ).toBeInTheDocument();
+    // El formulario compartido sigue renderizando: sus prompts y su guardado.
+    expect(screen.getByLabelText("System Prompt")).toBeInTheDocument();
+    const form = screen.getByLabelText("System Prompt").closest("form") as HTMLFormElement;
+    expect(within(form).getByRole("button", { name: /guardar/i })).toBeInTheDocument();
   });
 
   // R1 — regresión: el borrador del enrutador se descarta al remontar el
@@ -1679,7 +1992,14 @@ describe("SettingsDialog", () => {
           <button type="button" onClick={() => setMountKey((k) => k + 1)}>
             remount
           </button>
-          <RouterControl key={mountKey} />
+          <RouterControl
+            key={mountKey}
+            skills={skillsFixture.skills}
+            coreTools={[]}
+            loading={false}
+            error={null}
+            refetch={() => Promise.resolve(skillsFixture)}
+          />
         </>
       );
     }

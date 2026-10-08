@@ -339,10 +339,23 @@ async fn test_migration_respects_custom_system_prompt() {
 
 // ── Widget prompt guidance (20261004000001_widget_prompt_guidance.sql) ─────
 
-/// The migration appends the widget-guidance section to the `system_prompt`.
+/// The guidance migration appends the widget-guidance section to a base prompt
+/// that does not already carry it. The tuning migration later relocates that
+/// section to `SKILL_WIDGETS_PROMPT`, so this exercises the append in isolation.
 #[tokio::test]
 async fn test_migration_appends_widget_guidance_section() {
     let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = 'base' WHERE key = 'system_prompt'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_guidance_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let value = setting_value(&pool, "system_prompt").await;
     assert!(
@@ -769,9 +782,11 @@ async fn test_skill_router_settings_seeded_with_defaults() {
     let router_defaults = [
         ("ROUTER_ENABLED", "false"),
         ("ROUTER_MODEL", "typesafe/jev-1.13"),
-        ("ROUTER_THRESHOLD", "0.3"),
+        // Bumped from 0.3 by 20261008000001_skill_router_tuning.sql (measured).
+        ("ROUTER_THRESHOLD", "0.10"),
         ("ROUTER_TIMEOUT_MS", "800"),
-        ("ROUTER_HISTORY_TURNS", "2"),
+        // Bumped from 2 by 20261008000001_skill_router_tuning.sql (measured).
+        ("ROUTER_HISTORY_TURNS", "6"),
     ];
     for (key, value) in router_defaults {
         assert_eq!(
@@ -821,5 +836,179 @@ async fn test_skill_router_migration_respects_edited_value() {
         setting_value(&pool, "ROUTER_THRESHOLD").await,
         "0.9",
         "a hand-edited, non-empty value must not be overwritten by the upsert"
+    );
+}
+
+// ── Skill-router tuning (20261008000001_skill_router_tuning.sql) ────────────
+
+/// Reads the skill-router-tuning migration SQL from disk.
+fn skill_router_tuning_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261008000001_skill_router_tuning.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// After migrating, the measured global threshold, the measured history window
+/// and the widget's own threshold hold their new defaults.
+#[tokio::test]
+async fn test_skill_router_tuning_seeds_defaults() {
+    let pool = setup().await;
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD").await,
+        "0.10",
+        "the measured global threshold must be 0.10"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_HISTORY_TURNS").await,
+        "6",
+        "the measured history window must be 6"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+        "0.20",
+        "the widget override must be 0.20"
+    );
+}
+
+/// A user value is never overwritten: the bump only touches our own default.
+#[tokio::test]
+async fn test_skill_router_tuning_respects_user_values() {
+    let pool = setup().await;
+
+    for (key, value) in [
+        ("ROUTER_THRESHOLD", "0.42"),
+        ("ROUTER_HISTORY_TURNS", "9"),
+        ("ROUTER_THRESHOLD_WIDGETS", "0.77"),
+    ] {
+        sqlx::query("UPDATE settings SET value = ?1 WHERE key = ?2")
+            .bind(value)
+            .bind(key)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let sql = skill_router_tuning_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD").await,
+        "0.42",
+        "a user-tuned global threshold must not be overwritten"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_HISTORY_TURNS").await,
+        "9",
+        "a user-tuned history window must not be overwritten"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+        "0.77",
+        "a user-tuned widget threshold must not be overwritten"
+    );
+}
+
+/// The widget guide leaves the base prompt and lands in the widgets fragment.
+#[tokio::test]
+async fn test_skill_router_tuning_moves_widget_guide_out_of_system_prompt() {
+    let pool = setup().await;
+
+    let system_prompt = setting_value(&pool, "system_prompt").await;
+    assert!(
+        !system_prompt.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "the base prompt must no longer carry the widget guide"
+    );
+
+    let fragment = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+    assert!(
+        !fragment.trim().is_empty(),
+        "SKILL_WIDGETS_PROMPT must not be empty"
+    );
+    assert!(
+        fragment.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "the fragment must carry the relocated guide header"
+    );
+    assert!(
+        fragment.contains("render_widget"),
+        "the fragment must carry the relocated guide body"
+    );
+}
+
+/// An edited widget block is left where it is; nothing of the user's is removed.
+#[tokio::test]
+async fn test_skill_router_tuning_keeps_edited_widget_block() {
+    let pool = setup().await;
+
+    let edited = "Mi prompt personalizado\n\n# Instrucciones de Interfaz y Widgets Interactivos\n\n(editado por el usuario)";
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'system_prompt'")
+        .bind(edited)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = skill_router_tuning_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "system_prompt").await,
+        edited,
+        "an edited widget block must not be removed"
+    );
+}
+
+/// The five regrouped/new fragments exist and are non-empty.
+#[tokio::test]
+async fn test_skill_router_tuning_seeds_new_fragments() {
+    let pool = setup().await;
+
+    for key in [
+        "SKILL_PENDIENTES_PROMPT",
+        "SKILL_RECUERDOS_PROMPT",
+        "SKILL_ENTORNO_PROMPT",
+        "SKILL_WEB_PROMPT",
+        "SKILL_WIDGETS_PROMPT",
+    ] {
+        let value = setting_value(&pool, key).await;
+        assert!(!value.trim().is_empty(), "fragment {key} must not be empty");
+    }
+}
+
+/// Applying the migration twice leaves the same state.
+#[tokio::test]
+async fn test_skill_router_tuning_is_idempotent() {
+    let pool = setup().await;
+
+    let snapshot = |pool: SqlitePool| async move {
+        (
+            setting_value(&pool, "ROUTER_THRESHOLD").await,
+            setting_value(&pool, "ROUTER_HISTORY_TURNS").await,
+            setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+            setting_value(&pool, "system_prompt").await,
+            setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
+        )
+    };
+
+    let before = snapshot(pool.clone()).await;
+
+    let sql = skill_router_tuning_migration_sql();
+    for _ in 0..2 {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let after = snapshot(pool.clone()).await;
+    assert_eq!(
+        before, after,
+        "re-applying the migration must leave the same state"
     );
 }
