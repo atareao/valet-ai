@@ -25,7 +25,7 @@ use valet::llm::decisions::{
 use valet::llm::provider::{LLMError, ToolDef};
 use valet::orchestrator::skill_router::{
     effective_field, effective_threshold, exposed_tools, read_router_config, read_skill_criteria,
-    SkillCriteria, SkillRouter, SkillRouterConfig,
+    Selection, SelectionSource, SkillCriteria, SkillRouter, SkillRouterConfig,
 };
 use valet::orchestrator::skills::{catalog, skill_of_tool, Skill, CORE_TOOLS};
 use valet::token_estimate::estimate_json_tokens;
@@ -39,6 +39,12 @@ const MAX_WINDOW_TOKENS_DEFAULT: usize = 10000;
 /// Same per-turn character budget the orchestrator uses when it hands the
 /// conversational state to the classifier (`ROUTER_HISTORY_TURN_MAX_CHARS`).
 const HISTORY_TURN_MAX_CHARS: usize = 400;
+
+/// The proximity bands the report aggregates near misses over: how many
+/// classified-but-unselected skills were left within each **distance to their
+/// effective threshold** (`threshold - prob`). Cumulative and closed on the
+/// upper bound (`0 <= d <= band`).
+const NEAR_MISS_BANDS: &[f32] = &[0.01, 0.02, 0.05, 0.10];
 
 const USAGE: &str = "\
 valet-route-eval — measure the coverage of the per-turn skill router
@@ -55,6 +61,8 @@ OPTIONS:
     --repeat <N>       Repeat the whole sweep N times and report the variance (default 1).
     --threshold <F>    Override the router threshold (e.g. 0.4).
     --model <ID>       Override the decisions model (e.g. typesafe/jev-1.13).
+    --overrides <PATH> Read thresholds (global + per skill) and criteria from a JSON file
+                       (precedence: CLI > file > settings).
     --db <URL>         Database URL; defaults to DATABASE_URL / config.
     --dry-run          Print the catalog and the pairing without any network call.
     -h, --help         Print this help and exit.
@@ -65,6 +73,8 @@ struct Args {
     limit: usize,
     threshold: Option<f32>,
     model: Option<String>,
+    /// Path to a JSON overrides file (`--overrides`), if any.
+    overrides: Option<String>,
     /// Number of times to repeat the whole sweep (`--repeat`).
     repeat: usize,
     dry_run: bool,
@@ -135,6 +145,12 @@ fn skill_id(skill: Skill) -> &'static str {
         .find(|spec| spec.skill == skill)
         .map(|spec| spec.id)
         .unwrap_or("?")
+}
+
+/// Whether `id` is a catalog skill id — the only ids a per-skill override can
+/// target. `"global"` is deliberately **not** a skill id.
+fn is_known_skill_id(id: &str) -> bool {
+    catalog().iter().any(|spec| spec.id == id)
 }
 
 /// Human-readable coverage of a tool that the exposed set lacked: the id of the
@@ -232,6 +248,8 @@ struct UncoveredTurn {
     assistant_id: String,
     used_tools: Vec<String>,
     missing_tools: Vec<String>,
+    /// One diagnostic per missing tool that maps to a routable skill.
+    diagnostics: Vec<MissingTool>,
     parse_failed: bool,
 }
 
@@ -353,6 +371,7 @@ fn parse_args(raw: &[String]) -> Result<Args, String> {
         limit: DEFAULT_LIMIT,
         threshold: None,
         model: None,
+        overrides: None,
         repeat: 1,
         dry_run: false,
         db: None,
@@ -392,6 +411,11 @@ fn parse_args(raw: &[String]) -> Result<Args, String> {
                 i += 1;
                 let value = raw.get(i).ok_or("--model requires a value")?;
                 args.model = Some(value.clone());
+            }
+            "--overrides" => {
+                i += 1;
+                let value = raw.get(i).ok_or("--overrides requires a value")?;
+                args.overrides = Some(value.clone());
             }
             "--db" => {
                 i += 1;
@@ -714,24 +738,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Resolve the effective configuration once, applying the CLI overrides, so
     // both the dry run and the measured run publish exactly what they use.
     let mut router_config: SkillRouterConfig = read_router_config(&pool).await;
-    if let Some(threshold) = args.threshold {
-        if valid_threshold(threshold) {
-            router_config.threshold = threshold;
-        } else {
-            tracing::warn!(
-                value = threshold,
-                uses = router_config.threshold,
-                "--threshold is not a finite value in [0, 1]; ignoring it and using the settings value"
-            );
-        }
-    }
     if let Some(model) = &args.model {
         router_config.model = model.clone();
     }
+
+    // Overrides file (if declared): an absent or unreadable file is a loud, hard
+    // failure. Measuring with the wrong configuration silently is forbidden.
+    let overrides = match &args.overrides {
+        Some(path) => match load_overrides(path) {
+            Ok(overrides) => Some(overrides),
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+
+    // Global threshold precedence: CLI > file > settings. The `--threshold`
+    // guard is kept: an invalid CLI value is discarded, never silences the
+    // router. The effective value is resolved by precedence, so an invalid CLI
+    // threshold may still end up being the file's global, not the settings one.
+    let cli_threshold = match args.threshold {
+        Some(threshold) if valid_threshold(threshold) => Some(threshold),
+        Some(threshold) => {
+            tracing::warn!(
+                value = threshold,
+                "--threshold is not a finite value in [0, 1]; discarding it and resolving the \
+                 effective value by precedence (CLI > file > settings)"
+            );
+            None
+        }
+        None => None,
+    };
+    let file_global_threshold = overrides
+        .as_ref()
+        .and_then(|overrides| overrides.thresholds.get("global").copied());
+    router_config.threshold = resolve_threshold(
+        cli_threshold,
+        file_global_threshold,
+        router_config.threshold,
+    );
+
     // The criteria the router will send: the live `settings` values, falling
-    // back to the catalog. Read here so the measured run and the dry run agree.
-    let criteria = read_skill_criteria(&pool).await;
+    // back to the catalog, with the file overrides on top. Read here so the
+    // measured run and the dry run agree.
+    let mut criteria = read_skill_criteria(&pool).await;
+    if let Some(overrides) = &overrides {
+        // Per-skill thresholds and criteria: the file sits above settings. The
+        // merge returns new maps, so the settings maps are never mutated, and
+        // the `"global"` threshold is deliberately not part of the per-skill
+        // map (it was already resolved into `router_config.threshold` above).
+        router_config.threshold_overrides =
+            effective_thresholds(&router_config.threshold_overrides, overrides);
+        criteria = effective_criteria(&criteria, overrides);
+    }
+
     let config_rows = effective_config_rows(&router_config, &criteria);
+
+    // Attribute every effective override to its origin: the CLI `--threshold`
+    // (only when it survived the guard) and `--model`, then the file. The CLI
+    // sits above the file, so it is listed first.
+    let mut cli_thresholds: HashMap<String, f32> = HashMap::new();
+    if let Some(threshold) = cli_threshold {
+        cli_thresholds.insert("global".to_string(), threshold);
+    }
+    let no_criteria: HashMap<String, SkillCriteria> = HashMap::new();
+    let mut overrides_rows = Vec::new();
+    if !cli_thresholds.is_empty() || args.model.is_some() {
+        overrides_rows.extend(overrides_report(
+            "cli",
+            &cli_thresholds,
+            &no_criteria,
+            args.model.as_deref(),
+        ));
+    }
+    if let Some(overrides) = &overrides {
+        overrides_rows.extend(overrides_report(
+            "file",
+            &overrides.thresholds,
+            &overrides.criteria,
+            None,
+        ));
+    }
 
     // Dry run: no classifier, no network. Print the catalog, the pairing and the
     // effective configuration that would be used.
@@ -780,6 +869,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for row in &config_rows {
             println!("{row}");
         }
+        if !overrides_rows.is_empty() {
+            println!();
+            println!("Active overrides (would be applied):");
+            for row in &overrides_rows {
+                println!("{row}");
+            }
+        }
         return Ok(());
     }
 
@@ -813,6 +909,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut first_uncovered: Vec<UncoveredTurn> = Vec::new();
     let mut coverages: Vec<f32> = Vec::with_capacity(args.repeat);
     let mut leverage = Leverage::default();
+    let mut all_diags: Vec<MissingTool> = Vec::new();
 
     for repetition in 0..args.repeat {
         let mut rep_covered = 0usize;
@@ -848,16 +945,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             match turn_outcome(&turn.used_tools, &exposed, turn.parse_failed) {
                 TurnOutcome::Covered => rep_covered += 1,
-                TurnOutcome::Missing(missing) => rep_uncovered.push(UncoveredTurn {
-                    assistant_id: turn.assistant_id.clone(),
-                    used_tools: turn.used_tools.clone(),
-                    missing_tools: missing,
-                    parse_failed: false,
-                }),
+                TurnOutcome::Missing(missing) => {
+                    let diagnostics =
+                        missing_diagnostics(&turn.used_tools, &selection, &enabled, &router_config);
+                    rep_uncovered.push(UncoveredTurn {
+                        assistant_id: turn.assistant_id.clone(),
+                        used_tools: turn.used_tools.clone(),
+                        missing_tools: missing,
+                        diagnostics,
+                        parse_failed: false,
+                    });
+                }
                 TurnOutcome::ParseFailed => rep_uncovered.push(UncoveredTurn {
                     assistant_id: turn.assistant_id.clone(),
                     used_tools: turn.used_tools.clone(),
                     missing_tools: Vec::new(),
+                    diagnostics: Vec::new(),
                     parse_failed: true,
                 }),
             }
@@ -866,6 +969,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         covered += rep_covered;
         total_turns += turns.len();
         coverages.push(coverage(rep_covered, turns.len()));
+        all_diags.extend(
+            rep_uncovered
+                .iter()
+                .flat_map(|turn| turn.diagnostics.iter().cloned()),
+        );
         if repetition == 0 {
             first_uncovered = rep_uncovered;
         }
@@ -903,6 +1011,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Effective configuration:");
     for row in &config_rows {
         println!("{row}");
+    }
+    if !overrides_rows.is_empty() {
+        println!();
+        println!("Active overrides:");
+        for row in &overrides_rows {
+            println!("{row}");
+        }
     }
     println!();
     println!(
@@ -961,10 +1076,295 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for tool in &turn.missing_tools {
                 println!("      '{tool}' would need skill '{}'", covering_skill(tool));
             }
+            for diag in &turn.diagnostics {
+                let probability = match diag.probability {
+                    Some(probability) => format!("{probability:.2}"),
+                    None => "none".to_string(),
+                };
+                println!(
+                    "      '{}' → skill={} prob={} threshold={:.2} source={:?}",
+                    diag.tool,
+                    skill_id(diag.skill),
+                    probability,
+                    diag.threshold,
+                    diag.source,
+                );
+            }
+        }
+    }
+
+    if !all_diags.is_empty() {
+        println!();
+        println!(
+            "Proximity to threshold (failures within each distance){}:",
+            all_repetitions_label(args.repeat)
+        );
+        for (band, count) in near_miss_bands(&all_diags, NEAR_MISS_BANDS) {
+            println!("  <= {band:.2}: {count}");
         }
     }
 
     Ok(())
+}
+
+// ─── Diagnóstico de los turnos no cubiertos (route-eval-campaign-support) ───
+
+/// Un fallo explicado: una herramienta usada que no se expuso, la skill que la
+/// habría cubierto, la probabilidad que el clasificador le dio, el umbral
+/// efectivo con el que se comparó y de dónde salió la selección.
+#[derive(Debug, Clone, PartialEq)]
+struct MissingTool {
+    tool: String,
+    skill: Skill,
+    /// Probabilidad de «sí» de la skill, o `None` si el clasificador no la
+    /// puntuó (fallo abierto o skill no preguntada).
+    probability: Option<f32>,
+    /// Umbral efectivo con el que se comparó esa probabilidad.
+    threshold: f32,
+    /// Fuente de la selección (`Router` / `Disabled` / `NoRoutableSkills` / `Error`).
+    source: SelectionSource,
+}
+
+/// Por cada herramienta usada que NO figure en el conjunto expuesto
+/// (`exposed_tools(selection, enabled)`), resuelve el diagnóstico: la skill que
+/// la habría cubierto (`skill_of_tool`), su probabilidad en la `Selection`
+/// (`None` si no está) y el umbral efectivo del config, más la fuente.
+///
+/// `enabled` es necesario porque el conjunto expuesto es
+/// `exposed_tools(selection, enabled)`.
+fn missing_diagnostics(
+    used: &[String],
+    selection: &Selection,
+    enabled: &[String],
+    config: &SkillRouterConfig,
+) -> Vec<MissingTool> {
+    let exposed = exposed_tools(selection, enabled);
+    used.iter()
+        .filter(|tool| !exposed.iter().any(|e| e.as_str() == tool.as_str()))
+        .filter_map(|tool| {
+            let skill = skill_of_tool(tool)?;
+            let spec = catalog().iter().find(|spec| spec.skill == skill)?;
+            let probability = selection
+                .probabilities
+                .iter()
+                .find(|(selected, _)| *selected == skill)
+                .map(|(_, probability)| *probability);
+            Some(MissingTool {
+                tool: tool.clone(),
+                skill,
+                probability,
+                threshold: effective_threshold(config, spec),
+                source: selection.source.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Proximidad al umbral en bandas: para cada banda `b`, cuántos diagnósticos
+/// tienen probabilidad presente y quedan a una **distancia al umbral efectivo**
+/// de a lo sumo `b` (`d = threshold - prob` con `d` en `[0, b]`, extremo superior
+/// inclusivo, coherente con la etiqueta `<=`). Acumulativo: una banda mayor nunca
+/// cuenta menos que una menor.
+///
+/// La distancia se mide contra el `threshold` **efectivo** guardado en cada
+/// diagnóstico, no contra la probabilidad cruda: dos fallos con la misma
+/// probabilidad pueden quedar a distinta distancia si sus umbrales difieren.
+/// Los diagnósticos sin probabilidad se ignoran.
+///
+/// El borde se compara con una tolerancia `1e-6`: en `f32`, `0.10 - 0.08` da
+/// `0.020000003`, que un `<= 0.02` estricto dejaría fuera aunque la etiqueta
+/// promete `<=`. La tolerancia no rompe la monotonicidad acumulativa (sigue
+/// creciendo con la banda).
+fn near_miss_bands(diags: &[MissingTool], bands: &[f32]) -> Vec<(f32, usize)> {
+    const EDGE_EPSILON: f32 = 1e-6;
+    bands
+        .iter()
+        .map(|&band| {
+            let count = diags
+                .iter()
+                .filter(|diag| {
+                    diag.probability.is_some_and(|probability| {
+                        let distance = diag.threshold - probability;
+                        distance >= 0.0 && distance <= band + EDGE_EPSILON
+                    })
+                })
+                .count();
+            (band, count)
+        })
+        .collect()
+}
+
+// ─── Overrides desde fichero (route-eval-campaign-support) ──────────────────
+
+/// Overrides declarados en un fichero: umbrales (con la clave `"global"` y los
+/// ids de skill como claves) y criterios por id de skill.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Overrides {
+    thresholds: HashMap<String, f32>,
+    criteria: HashMap<String, SkillCriteria>,
+}
+
+/// Parsea el JSON de overrides. Devuelve `Err` con un mensaje explícito si el
+/// JSON no es válido, no tiene la forma esperada o trae un umbral fuera de rango
+/// (no finito o fuera de `[0, 1]`): un umbral inválido silenciaría (nunca/todas
+/// las veces) al router y mediría en falso. Las claves desconocidas solo avisan
+/// con `warn!`, nunca fallan.
+fn parse_overrides(json: &str) -> Result<Overrides, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid overrides JSON: {e}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "overrides JSON must be an object".to_string())?;
+
+    let mut overrides = Overrides::default();
+
+    for key in object.keys() {
+        if key != "thresholds" && key != "criteria" {
+            tracing::warn!(
+                key = %key,
+                "unknown overrides top-level key; ignoring it"
+            );
+        }
+    }
+
+    if let Some(thresholds) = object.get("thresholds") {
+        let map = thresholds
+            .as_object()
+            .ok_or_else(|| "overrides.thresholds must be an object".to_string())?;
+        for (id, value) in map {
+            let number = value
+                .as_f64()
+                .ok_or_else(|| format!("override threshold '{id}' must be a number"))?;
+            let threshold = number as f32;
+            if !valid_threshold(threshold) {
+                return Err(format!("threshold '{id}' out of range: {value}"));
+            }
+            // `global` is the file-global threshold, not a skill id.
+            if id != "global" && !is_known_skill_id(id) {
+                tracing::warn!(
+                    skill = %id,
+                    "override threshold for an unknown skill id; it matches no catalog skill"
+                );
+            }
+            overrides.thresholds.insert(id.clone(), threshold);
+        }
+    }
+
+    if let Some(criteria) = object.get("criteria") {
+        let map = criteria
+            .as_object()
+            .ok_or_else(|| "overrides.criteria must be an object".to_string())?;
+        for (id, value) in map {
+            let entry = value
+                .as_object()
+                .ok_or_else(|| format!("override criteria '{id}' must be an object"))?;
+            if !is_known_skill_id(id) {
+                tracing::warn!(
+                    skill = %id,
+                    "override criteria for an unknown skill id; it matches no catalog skill"
+                );
+            }
+            // A missing field falls back to the empty string so that
+            // `with_criteria` applies the catalog default, exactly as an
+            // absent `settings` value would.
+            let field = |key: &str| -> Result<String, String> {
+                match entry.get(key) {
+                    None => Ok(String::new()),
+                    Some(value) => value
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| format!("override criteria '{id}.{key}' must be a string")),
+                }
+            };
+            overrides.criteria.insert(
+                id.clone(),
+                SkillCriteria {
+                    instructions: field("instructions")?,
+                    criteria_true: field("criteria_true")?,
+                    criteria_false: field("criteria_false")?,
+                },
+            );
+        }
+    }
+
+    Ok(overrides)
+}
+
+/// Lee y parsea el fichero de overrides. Un fichero declarado y ausente o
+/// ilegible devuelve `Err` explícito: nunca se mide en silencio con la
+/// configuración equivocada.
+fn load_overrides(path: &str) -> Result<Overrides, String> {
+    let json = std::fs::read_to_string(path)
+        .map_err(|e| format!("cannot read overrides file '{path}': {e}"))?;
+    parse_overrides(&json)
+}
+
+/// Precedencia del umbral global: CLI > fichero > settings.
+fn resolve_threshold(cli: Option<f32>, file: Option<f32>, settings: f32) -> f32 {
+    cli.or(file).unwrap_or(settings)
+}
+
+/// Umbrales efectivos: los de `settings` con los del fichero por encima, **sin
+/// mutar** el mapa de `settings`. La clave `"global"` nunca entra en el
+/// resultado: el umbral global se resuelve aparte (`resolve_threshold` en
+/// `router_config.threshold`), así que `threshold_overrides` solo lleva overrides
+/// por skill.
+fn effective_thresholds(
+    settings: &HashMap<String, f32>,
+    overrides: &Overrides,
+) -> HashMap<String, f32> {
+    let mut merged = settings.clone();
+    merged.remove("global");
+    for (id, value) in &overrides.thresholds {
+        if id == "global" {
+            continue;
+        }
+        merged.insert(id.clone(), *value);
+    }
+    merged
+}
+
+/// Criterios efectivos: los de `settings` con los del fichero por encima, **sin
+/// mutar** el mapa de `settings`.
+fn effective_criteria(
+    settings: &HashMap<String, SkillCriteria>,
+    overrides: &Overrides,
+) -> HashMap<String, SkillCriteria> {
+    let mut merged = settings.clone();
+    for (id, value) in &overrides.criteria {
+        merged.insert(id.clone(), value.clone());
+    }
+    merged
+}
+
+/// Bloque del informe con los overrides activos y su origen: cada línea declara
+/// un modelo, un umbral o unos criterios y de dónde vino el valor (`origin`).
+fn overrides_report(
+    origin: &str,
+    thresholds: &HashMap<String, f32>,
+    criteria: &HashMap<String, SkillCriteria>,
+    model: Option<&str>,
+) -> Vec<String> {
+    let mut rows = Vec::new();
+
+    if let Some(model) = model {
+        rows.push(format!("  model = {model} (from {origin})"));
+    }
+
+    let mut threshold_ids: Vec<&String> = thresholds.keys().collect();
+    threshold_ids.sort();
+    for id in threshold_ids {
+        let value = thresholds.get(id).copied().unwrap_or_default();
+        rows.push(format!("  threshold[{id}] = {value:.2} (from {origin})"));
+    }
+
+    let mut criteria_ids: Vec<&String> = criteria.keys().collect();
+    criteria_ids.sort();
+    for id in criteria_ids {
+        rows.push(format!("  criteria[{id}] overridden (from {origin})"));
+    }
+
+    rows
 }
 
 #[cfg(test)]
@@ -1370,8 +1770,7 @@ mod tests {
     #[test]
     fn history_window_is_fixed_by_the_token_budget() {
         // `u1` is oversized: a tight budget must drop it and a generous one must
-        // keep it. Both sides are checked because the marker scaffolding passes
-        // the generous side.
+        // keep it. Both sides are checked so neither can regress silently.
         let messages = vec![
             raw_full("user", "antiguo", None, "u1", None, 5_000, 5_000),
             raw_full("assistant", "r1", None, "a1", None, 100, 100),
@@ -1742,6 +2141,351 @@ mod tests {
         assert!(
             row_for(&rows, "agenda").contains("threshold=0.10"),
             "skills without override keep the global"
+        );
+    }
+
+    // ─── Diagnóstico del fallo (route-eval-campaign-support 1.1–1.3) ────────
+
+    /// Un diagnóstico mínimo, para los tests de bandas: probabilidad y umbral
+    /// efectivo explícitos, porque la banda mide la **distancia** entre ambos.
+    fn diag(prob: Option<f32>, threshold: f32) -> MissingTool {
+        MissingTool {
+            tool: "x".to_string(),
+            skill: Skill::Agenda,
+            probability: prob,
+            threshold,
+            source: SelectionSource::Router,
+        }
+    }
+
+    #[test]
+    fn missing_tool_diagnostic_reports_skill_probability_and_threshold() {
+        // A turn that used `tasks` while the router exposed only the core set:
+        // `tasks` is missing and `pendientes` is the skill that would cover it.
+        let selection = Selection {
+            skills: Vec::new(),
+            probabilities: vec![(Skill::Pendientes, 0.08), (Skill::Agenda, 0.30)],
+            source: SelectionSource::Router,
+        };
+        let config = SkillRouterConfig {
+            threshold: 0.10,
+            ..Default::default()
+        };
+        let enabled = vec![
+            "get_current_time".to_string(),
+            "get_current_location".to_string(),
+            "tasks".to_string(),
+        ];
+
+        let diags = missing_diagnostics(&["tasks".to_string()], &selection, &enabled, &config);
+
+        assert_eq!(
+            diags.len(),
+            1,
+            "one missing tool, one diagnostic: {diags:?}"
+        );
+        assert_eq!(diags[0].tool, "tasks");
+        assert_eq!(
+            diags[0].skill,
+            Skill::Pendientes,
+            "the diagnostic must name the skill that would cover the tool"
+        );
+        assert_eq!(
+            diags[0].probability,
+            Some(0.08),
+            "the diagnostic must carry the probability the classifier gave the skill"
+        );
+        assert_eq!(
+            diags[0].threshold, 0.10,
+            "the diagnostic must carry the effective threshold it was compared against"
+        );
+    }
+
+    #[test]
+    fn near_miss_proximity_is_aggregated_in_bands() {
+        // Distances, not raw probabilities: the two ruled-out diagnostics below
+        // share similar raw probabilities (0.06 vs 0.09) but sit at very
+        // different distances because their thresholds differ (0.10 vs 0.20).
+        let diags = vec![
+            diag(Some(0.06), 0.10), // distance 0.04
+            diag(Some(0.09), 0.20), // distance 0.11
+            diag(None, 0.10),       // no probability: never counted as a near miss
+        ];
+
+        let bands = near_miss_bands(&diags, &[0.05, 0.15]);
+
+        assert_eq!(
+            bands,
+            vec![(0.05, 1), (0.15, 2)],
+            "each band counts the diagnostics within that distance of their threshold"
+        );
+    }
+
+    #[test]
+    fn uncovered_turn_reports_the_selection_source() {
+        let config = SkillRouterConfig {
+            threshold: 0.10,
+            ..Default::default()
+        };
+        let enabled = vec![
+            "get_current_time".to_string(),
+            "get_current_location".to_string(),
+            "weather".to_string(),
+        ];
+
+        // A router decision that did not select `entorno`: `weather` is used but
+        // not exposed, and the source is the router.
+        let router_selection = Selection {
+            skills: Vec::new(),
+            probabilities: vec![(Skill::Entorno, 0.05)],
+            source: SelectionSource::Router,
+        };
+        let router_diags = missing_diagnostics(
+            &["weather".to_string()],
+            &router_selection,
+            &enabled,
+            &config,
+        );
+        assert_eq!(router_diags.len(), 1);
+        assert_eq!(router_diags[0].source, SelectionSource::Router);
+        assert_eq!(router_diags[0].skill, Skill::Entorno);
+
+        // A fall-open selection (`Error`) exposes every enabled tool, so only a
+        // used tool that is NOT enabled can be missing — and it must report the
+        // `Error` source.
+        let error_selection = Selection {
+            skills: Vec::new(),
+            probabilities: Vec::new(),
+            source: SelectionSource::Error,
+        };
+        let error_diags =
+            missing_diagnostics(&["tasks".to_string()], &error_selection, &enabled, &config);
+        assert_eq!(error_diags.len(), 1);
+        assert_eq!(error_diags[0].source, SelectionSource::Error);
+        assert_eq!(
+            error_diags[0].probability, None,
+            "an unprompted skill has no probability"
+        );
+    }
+
+    // ─── Overrides desde fichero (route-eval-campaign-support 2.1–2.4) ──────
+
+    const OVERRIDES_JSON: &str = r#"{
+        "thresholds": {"global": 0.30, "widgets": 0.25},
+        "criteria": {
+            "agenda": {
+                "instructions": "¿agenda sobrescrita?",
+                "criteria_true": "sí",
+                "criteria_false": "no"
+            }
+        }
+    }"#;
+
+    #[test]
+    fn overrides_file_changes_thresholds_and_criteria_without_mutating_settings() {
+        let overrides = parse_overrides(OVERRIDES_JSON).expect("valid overrides file");
+
+        assert_eq!(overrides.thresholds.get("global"), Some(&0.30));
+        assert_eq!(overrides.thresholds.get("widgets"), Some(&0.25));
+        assert_eq!(
+            overrides
+                .criteria
+                .get("agenda")
+                .map(|c| c.instructions.as_str()),
+            Some("¿agenda sobrescrita?")
+        );
+
+        // Merging the file over the settings returns new maps; the settings map
+        // handed in must not be mutated.
+        let mut settings_thresholds: HashMap<String, f32> = HashMap::new();
+        settings_thresholds.insert("global".to_string(), 0.10);
+        settings_thresholds.insert("widgets".to_string(), 0.20);
+        let thresholds_before = settings_thresholds.clone();
+
+        let merged = effective_thresholds(&settings_thresholds, &overrides);
+        assert_eq!(
+            merged.get("global"),
+            None,
+            "the global threshold is resolved separately, never merged into threshold_overrides"
+        );
+        assert_eq!(merged.get("widgets"), Some(&0.25));
+        assert_eq!(
+            settings_thresholds, thresholds_before,
+            "the settings map must not be mutated"
+        );
+
+        let settings_criteria: HashMap<String, SkillCriteria> = HashMap::new();
+        let criteria_before = settings_criteria.clone();
+        let merged_criteria = effective_criteria(&settings_criteria, &overrides);
+        assert!(merged_criteria.contains_key("agenda"));
+        assert_eq!(
+            settings_criteria, criteria_before,
+            "the settings criteria must not be mutated"
+        );
+    }
+
+    #[test]
+    fn override_precedence_is_cli_over_file_over_settings() {
+        assert_eq!(
+            resolve_threshold(Some(0.90), Some(0.50), 0.10),
+            0.90,
+            "the CLI wins over the file and settings"
+        );
+        assert_eq!(
+            resolve_threshold(None, Some(0.50), 0.10),
+            0.50,
+            "without a CLI value the file wins over settings"
+        );
+        assert_eq!(
+            resolve_threshold(None, None, 0.10),
+            0.10,
+            "without CLI nor file, settings is used"
+        );
+    }
+
+    #[test]
+    fn missing_overrides_file_fails_loudly() {
+        let err = load_overrides("/nonexistent/valet-route-eval-overrides.json")
+            .expect_err("a declared but missing file must fail");
+        assert!(
+            !err.is_empty(),
+            "the error must be explicit and non-empty: {err:?}"
+        );
+    }
+
+    #[test]
+    fn report_declares_active_overrides_and_their_origin() {
+        let overrides = parse_overrides(OVERRIDES_JSON).expect("valid overrides file");
+        let rows = overrides_report("file", &overrides.thresholds, &overrides.criteria, None);
+        let joined = rows.join("\n");
+
+        assert!(!rows.is_empty(), "the active overrides must be reported");
+        for needle in ["global", "widgets", "agenda", "file"] {
+            assert!(
+                joined.contains(needle),
+                "the report must declare {needle}: {joined}"
+            );
+        }
+    }
+
+    #[test]
+    fn report_declares_cli_overrides_with_the_cli_origin() {
+        let thresholds: HashMap<String, f32> =
+            [("global".to_string(), 0.90f32)].into_iter().collect();
+        let criteria: HashMap<String, SkillCriteria> = HashMap::new();
+
+        let rows = overrides_report("cli", &thresholds, &criteria, Some("typesafe/jev-2.0"));
+        let joined = rows.join("\n");
+
+        assert!(
+            joined.contains("threshold[global] = 0.90 (from cli)"),
+            "the CLI threshold and its origin must be declared: {joined}"
+        );
+        assert!(
+            joined.contains("model = typesafe/jev-2.0 (from cli)"),
+            "the CLI model and its origin must be declared: {joined}"
+        );
+    }
+
+    #[test]
+    fn parse_overrides_rejects_out_of_range_thresholds() {
+        // A threshold outside `[0, 1]` — or one that overflows f32 to infinity —
+        // must be a hard error that names the culprit key: measuring with it
+        // would silently mislabel the router (never/always selected).
+        let high = parse_overrides(r#"{"thresholds": {"widgets": 100}}"#)
+            .expect_err("an out-of-range threshold must be rejected");
+        assert!(
+            high.contains("widgets"),
+            "the error must name the culprit key: {high}"
+        );
+        assert!(
+            high.contains("100"),
+            "the error must show the value: {high}"
+        );
+
+        let negative = parse_overrides(r#"{"thresholds": {"global": -1}}"#)
+            .expect_err("a negative threshold must be rejected");
+        assert!(
+            negative.contains("global"),
+            "the error must name the culprit key: {negative}"
+        );
+
+        let infinite = parse_overrides(r#"{"thresholds": {"web": 1e40}}"#)
+            .expect_err("a value that overflows to infinity must be rejected");
+        assert!(
+            infinite.contains("web"),
+            "the error must name the culprit key: {infinite}"
+        );
+    }
+
+    #[test]
+    fn parse_overrides_rejects_malformed_json_and_wrong_types() {
+        assert!(
+            parse_overrides("{ not json").is_err(),
+            "malformed JSON must be rejected"
+        );
+        assert!(
+            parse_overrides("[1, 2, 3]").is_err(),
+            "a non-object JSON must be rejected"
+        );
+        assert!(
+            parse_overrides(r#"{"thresholds": 5}"#).is_err(),
+            "non-object thresholds must be rejected"
+        );
+        assert!(
+            parse_overrides(r#"{"criteria": 5}"#).is_err(),
+            "non-object criteria must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_args_reads_overrides() {
+        let parsed = parse_args(&["--overrides".to_string(), "overrides.json".to_string()])
+            .expect("--overrides must be accepted");
+        assert_eq!(parsed.overrides.as_deref(), Some("overrides.json"));
+
+        assert!(
+            parse_args(&["--overrides".to_string()]).is_err(),
+            "--overrides without a value must be rejected"
+        );
+    }
+
+    #[test]
+    fn effective_thresholds_drops_the_global_threshold() {
+        // The file global lives in `router_config.threshold` (via
+        // `resolve_threshold`), so the per-skill map must not carry it.
+        let mut settings: HashMap<String, f32> = HashMap::new();
+        settings.insert("global".to_string(), 0.10);
+        settings.insert("widgets".to_string(), 0.20);
+
+        let overrides = Overrides {
+            thresholds: [
+                ("global".to_string(), 0.30f32),
+                ("widgets".to_string(), 0.25),
+            ]
+            .into_iter()
+            .collect(),
+            criteria: HashMap::new(),
+        };
+
+        let merged = effective_thresholds(&settings, &overrides);
+        assert_eq!(
+            merged.get("global"),
+            None,
+            "the file global must not remain in threshold_overrides after the merge"
+        );
+        assert_eq!(merged.get("widgets"), Some(&0.25));
+    }
+
+    #[test]
+    fn near_miss_band_includes_the_exact_upper_boundary() {
+        // In f32 `0.10 - 0.08 = 0.020000003 > 0.02`, so a strict `<=` would miss
+        // the boundary the label promises. The tolerance must keep it counted.
+        let diags = vec![diag(Some(0.08), 0.10)];
+        assert_eq!(
+            near_miss_bands(&diags, &[0.02]),
+            vec![(0.02, 1)],
+            "a near miss exactly on the band edge must be counted"
         );
     }
 }
