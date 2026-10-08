@@ -203,7 +203,7 @@ Cada decisión SHALL registrarse con `tracing`, incluyendo las skills selecciona
 
 ### Requirement: El arnés de evaluación SHALL medir la cobertura de las herramientas realmente usadas
 
-El arnés SHALL recorrer los turnos históricos cuyo mensaje de asistente registra herramientas usadas, ejecutar el enrutador sobre el mensaje del usuario y calcular la **cobertura**: la proporción de turnos en los que **toda** herramienta realmente usada figura en el conjunto que el enrutador habría expuesto. SHALL usar los **valores efectivos** de `settings` —criterios, umbrales y número de turnos de historial—, de modo que el bucle de ajuste sea «editar y medir». SHALL **publicar la configuración efectiva** con la que ha medido (las skills, sus umbrales y qué campos están sobrescritos), para que cada cifra sea atribuible. SHALL reportar además las activaciones por skill, la latencia p50 y p95, los tokens y el coste, y SHALL aceptar `--limit`, `--threshold`, `--model` y `--dry-run` (catálogo sin red).
+El arnés SHALL recorrer los turnos históricos cuyo mensaje de asistente registra herramientas usadas, ejecutar el enrutador sobre el mensaje del usuario y calcular la **cobertura**: la proporción de turnos en los que **toda** herramienta realmente usada figura en el conjunto que el enrutador habría expuesto. SHALL usar los **valores efectivos** de `settings` —criterios, umbrales y número de turnos de historial—, de modo que el bucle de ajuste sea «editar y medir». SHALL **publicar la configuración efectiva** con la que ha medido (las skills, sus umbrales y qué campos están sobrescritos), para que cada cifra sea atribuible. SHALL reportar además las activaciones por skill, la latencia p50 y p95, los tokens y el coste, y SHALL aceptar `--limit`, `--threshold`, `--model`, `--overrides` y `--dry-run` (catálogo sin red).
 
 El arnés SHALL medir además sobre el **estado que el clasificador recibe en producción**, y SHALL publicar la **palanca** que el enrutado mueve y la **varianza** de la medida:
 
@@ -211,6 +211,10 @@ El arnés SHALL medir además sobre el **estado que el clasificador recibe en pr
 - La ventana SHALL ser el presupuesto de tokens de `settings.max_window_tokens` (por defecto `10000`) contado hacia atrás desde el turno, y SHALL NOT reiniciarse cuando dos turnos consecutivos no emparejen: un contexto que producción sí tendría no puede descartarse.
 - SHALL instrumentar las **herramientas por turno** y el tamaño —en bytes y en tokens estimados con el estimador del propio proyecto— del bloque de definiciones expuesto frente al conjunto completo habilitado, y SHALL publicar el **ahorro** resultante. La medida SHALL tomarse de las **mismas definiciones** que viajan en la petición, no de una tabla de tamaños escrita a mano.
 - `--repeat <N>` SHALL repetir la medición y publicar la cobertura de cada repetición junto al mínimo, la media y el máximo, de modo que la varianza se lea como rango.
+
+El arnés SHALL además **explicar** cada turno no cubierto: por cada herramienta realmente usada que no se expuso, SHALL publicar la skill que la habría cubierto, la **probabilidad** que el clasificador le asignó, el **umbral efectivo** con el que se comparó y la **fuente** de la selección, y SHALL agregar la **proximidad al umbral** de los fallos para distinguir un near-miss de un miss semántico.
+
+El arnés SHALL aceptar un **fichero de overrides** con umbrales (global y por skill) y criterios por skill, de modo que una variante de la campaña sea un artefacto versionado y reproducible que SHALL NOT requerir mutar `settings`. La precedencia SHALL ser la CLI por encima del fichero y el fichero por encima de `settings`, y el informe SHALL declarar qué overrides estaban activos. Un fichero declarado y ausente o ilegible SHALL fallar de forma ruidosa.
 
 #### Scenario: El arnés mide con los criterios vigentes
 - **Given** un criterio sobrescrito en `settings`
@@ -250,6 +254,28 @@ El arnés SHALL medir además sobre el **estado que el clasificador recibe en pr
 - **When** mide
 - **Then** repite la medición tres veces
 - **And** publica la cobertura de cada repetición y el mínimo, la media y el máximo
+
+#### Scenario: Un fallo se explica con su probabilidad y su umbral
+- **Given** un turno no cubierto cuya herramienta faltante habría necesitado una skill
+- **When** el arnés informa
+- **Then** publica esa skill, la probabilidad que el clasificador le dio, el umbral efectivo aplicado y la fuente de la selección
+
+#### Scenario: La proximidad al umbral se agrega
+- **Given** varios turnos no cubiertos con distinta distancia al umbral
+- **When** el arnés agrega el diagnóstico
+- **Then** cuenta cuántos fallos quedaron a menos de cada distancia declarada
+
+#### Scenario: Una variante de overrides no toca la base de datos
+- **Given** un fichero de overrides con umbrales y criterios
+- **When** se ejecuta el arnés
+- **Then** la medición usa esos valores
+- **And** `settings` no se modifica
+
+#### Scenario: La precedencia de overrides es CLI > fichero > settings
+- **Given** un umbral presente en la CLI, en el fichero y en `settings` con valores distintos
+- **When** se resuelve el umbral efectivo
+- **Then** se usa el de la CLI
+- **And** sin flag, se usa el del fichero; y sin fichero, el de `settings`
 
 ### Requirement: Las preguntas del clasificador SHALL ser editables desde settings con el valor compilado como respaldo
 
