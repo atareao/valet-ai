@@ -59,7 +59,7 @@ static CATALOG: [SkillSpec; 6] = [
         skill: Skill::Agenda,
         id: "agenda",
         instructions: "¿La respuesta requiere mirar o cambiar la agenda (eventos, citas, reuniones, cumpleaños, disponibilidad)?",
-        criteria_true: "El mensaje se refiere a eventos, citas, reuniones, cumpleaños, calendario, disponibilidad o huecos libres, o a qué tiene el usuario en un momento o un día.",
+        criteria_true: "El mensaje se refiere a eventos, citas, reuniones, cumpleaños, calendario, disponibilidad o huecos libres, o a qué tiene el usuario en un momento o un día. Cuenta también un saludo de apertura del día («buenos días», «¿qué tal?»), que en este asistente abre un resumen del día.",
         criteria_false: "El mensaje no se refiere a nada programado en el tiempo ni pide planificar nada en una fecha.",
         threshold: 0.10,
         tools: &["calendar"],
@@ -70,7 +70,7 @@ static CATALOG: [SkillSpec; 6] = [
         skill: Skill::Pendientes,
         id: "pendientes",
         instructions: "¿La respuesta requiere gestionar tareas por hacer, recordatorios o alarmas?",
-        criteria_true: "El mensaje se refiere a tareas, pendientes, cosas por hacer, prioridades, recordatorios, alarmas o avisos a una hora.",
+        criteria_true: "El mensaje se refiere a tareas, pendientes, cosas por hacer, prioridades, recordatorios, alarmas o avisos a una hora. Cuenta también un saludo de apertura del día, que abre un repaso de lo que hay pendiente.",
         criteria_false: "El mensaje no se refiere a pendientes ni a ningún aviso.",
         threshold: 0.10,
         tools: &["tasks", "reminders"],
@@ -92,7 +92,7 @@ static CATALOG: [SkillSpec; 6] = [
         skill: Skill::Entorno,
         id: "entorno",
         instructions: "¿La respuesta requiere el tiempo, un lugar, una dirección o unas coordenadas?",
-        criteria_true: "El mensaje pregunta por el tiempo o la previsión, busca dónde hay algo o dónde está algo, o pide resolver una dirección o unas coordenadas.",
+        criteria_true: "El mensaje pregunta por el tiempo o la previsión, busca dónde hay algo o dónde está algo, o pide resolver una dirección o unas coordenadas. Cuenta también un saludo de apertura del día, que abre la previsión del tiempo.",
         criteria_false: "El mensaje no pregunta por el tiempo ni por lugares, direcciones o coordenadas.",
         threshold: 0.10,
         tools: &["weather", "geocode", "reverse_geocode", "search_places"],
@@ -114,7 +114,7 @@ static CATALOG: [SkillSpec; 6] = [
         skill: Skill::Widgets,
         id: "widgets",
         instructions: "¿La respuesta requiere mostrar algo interactivo en pantalla (formulario, lista para marcar, opciones, mapa o datos geográficos)?",
-        criteria_true: "El turno implica pedir varios datos a la vez, dar una lista para marcar, ofrecer una elección entre opciones, presentar un plan con pasos, o mostrar direcciones, un mapa, una tabla de datos geográficos o estadísticas. Cuenta también si el usuario pide expresamente un widget, un formulario, un checklist, un plano o un mapa.",
+        criteria_true: "El turno implica pedir varios datos a la vez, dar una lista para marcar, ofrecer una elección entre opciones, presentar un plan con pasos, o mostrar direcciones, un mapa, una tabla de datos geográficos o estadísticas. Cuenta también si el usuario pide expresamente un widget, un formulario, un checklist, un plano o un mapa. Cuenta también un saludo de apertura del día, que abre un panel con los datos del día.",
         criteria_false: "El turno se resuelve con una explicación, un dato o una lista de texto.",
         threshold: 0.20,
         tools: &["render_widget"],
@@ -594,5 +594,51 @@ mod tests {
                 "widgets ({widgets}) debe superar el umbral de `{id}` ({domain})"
             );
         }
+    }
+
+    // ─── RED: saludo de apertura del día (morning-briefing-criteria) ─────────
+    //
+    // El «briefing» matinal se reconoce por un marcador textual exacto en la
+    // criteria del «sí»: solo las skills del briefing (`agenda`, `pendientes`,
+    // `entorno` y `widgets`) deben declararlo, y `recuerdos` y `web` NO. Estas
+    // pruebas describen ese contrato y **fallan** con el catálogo actual, en el
+    // que ninguna skill menciona el saludo de apertura del día.
+
+    /// Marcador textual exacto que identifica el saludo de apertura del día.
+    const MORNING_OPENING_GREETING: &str = "saludo de apertura del día";
+
+    /// `criteria_true` de una skill por su id, o `None` si el id no existe
+    /// todavía (para que el test falle por aserción y no por pánico).
+    fn criteria_true_of(id: &str) -> Option<&'static str> {
+        catalog()
+            .iter()
+            .find(|spec| spec.id == id)
+            .map(|spec| spec.criteria_true)
+    }
+
+    #[test]
+    fn briefing_skills_declare_the_morning_opening_greeting() {
+        for id in ["agenda", "pendientes", "entorno", "widgets"] {
+            let criteria = criteria_true_of(id).unwrap_or("");
+            assert!(
+                criteria.contains(MORNING_OPENING_GREETING),
+                "la skill `{id}` debe declarar el saludo de apertura del día en criteria_true; tiene: {criteria:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_briefing_skills_declare_the_morning_opening_greeting() {
+        let declaring: Vec<&str> = catalog()
+            .iter()
+            .filter(|spec| spec.criteria_true.contains(MORNING_OPENING_GREETING))
+            .map(|spec| spec.id)
+            .collect();
+
+        assert_eq!(
+            declaring,
+            vec!["agenda", "pendientes", "entorno", "widgets"],
+            "solo las skills del briefing deben declarar el saludo de apertura del día; declaran: {declaring:?}"
+        );
     }
 }
