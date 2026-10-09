@@ -179,6 +179,8 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
   un plan se complete.
 - **Plan completado:** se renombra a `plans/PLAN-XXX-COMPLETED.md`. El cuerpo del plan
   **no se reescribe**: es un registro histórico de lo que se decidió e hizo.
+- **Plan parado / backlog:** se renombra a `plans/PLAN-XXX-PENDING.md`. No está activo ni se
+  trabaja en él ahora: queda aparcado, para retomarlo o cerrarlo más adelante.
 - Un plan completado **no se reabre**. El trabajo nuevo —aunque sea un ajuste sobre algo ya
   cerrado— genera un `plans/PLAN-XXX.md` nuevo.
 
@@ -188,7 +190,8 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 |:---|:---|:---:|
 | `plans/PLAN-001-COMPLETED.md` | Plan maestro original (`PLAN.md`): fases F0–F4 | ✅ Completado |
 | `plans/PLAN-002-COMPLETED.md` | OIDC (PocketID), producción tras Traefik y cierres (`PLAN-PENDIENTE.md`) | ✅ Completado |
-| `plans/PLAN-003.md` | Roadmap v2 (`v2-ROADMAP.md`) | 🟢 Activo |
+| `plans/PLAN-003.md` | (por definir — temas a acordar) | 🟢 Activo |
+| `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log, observabilidad | ⏸️ Pending |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
