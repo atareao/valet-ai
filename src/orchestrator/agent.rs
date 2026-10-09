@@ -610,6 +610,32 @@ impl Orchestrator {
             .select(user_message, &history_for_router, &enabled_tools)
             .await;
 
+        // D4/D5: when the router actually called the classifier (source `Router`
+        // or `Error`) it exposes telemetry; persist it as a `kind='router'` row.
+        // Sources without a classifier call (`Disabled`, `NoRoutableSkills`)
+        // expose no usage and write nothing. `last_api_call` stays untouched.
+        if let Some(usage) = &selection.usage {
+            let _ = StatsRepo::record_request(
+                &self.db,
+                CallKind::Router,
+                &Uuid::new_v4().to_string(),
+                &usage.model,
+                Some(profile_id),
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.input_tokens + usage.output_tokens,
+                0,
+                0,
+                usage.cost,
+                Some(usage.duration_ms),
+                &usage.status,
+                None,
+                None,
+                None,
+            )
+            .await;
+        }
+
         // `core ∪ skills_seleccionadas ∩ habilitadas`. Computed once, outside
         // the loop: every iteration advertises the same set and never decides
         // again nor re-reads settings.

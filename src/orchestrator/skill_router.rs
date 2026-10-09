@@ -152,7 +152,7 @@ impl SkillRouter {
         history: &[String],
         enabled_tools: &[String],
     ) -> Selection {
-        let fallback = |source: SelectionSource| {
+        let fallback = |source: SelectionSource, usage: Option<RouterUsage>| {
             tracing::warn!(
                 source = ?source,
                 "skill routing fell open; exposing every enabled tool"
@@ -161,16 +161,16 @@ impl SkillRouter {
                 skills: Vec::new(),
                 probabilities: Vec::new(),
                 source,
-                usage: None,
+                usage,
             }
         };
 
         if !self.config.enabled {
-            return fallback(SelectionSource::Disabled);
+            return fallback(SelectionSource::Disabled, None);
         }
 
         let Some(provider) = self.provider.as_ref() else {
-            return fallback(SelectionSource::Disabled);
+            return fallback(SelectionSource::Disabled, None);
         };
 
         // Solo se pregunta por lo que se puede ofrecer: una skill es enrutable
@@ -187,7 +187,7 @@ impl SkillRouter {
             .collect();
 
         if routable.is_empty() {
-            return fallback(SelectionSource::NoRoutableSkills);
+            return fallback(SelectionSource::NoRoutableSkills, None);
         }
 
         // Estado: mensaje actual + los últimos `history_turns` turnos.
@@ -236,7 +236,19 @@ impl SkillRouter {
         let timeout = Duration::from_millis(self.config.timeout_ms);
         let response = match tokio::time::timeout(timeout, provider.decide(request)).await {
             Ok(Ok(response)) => response,
-            Ok(Err(_)) | Err(_) => return fallback(SelectionSource::Error),
+            Ok(Err(_)) | Err(_) => {
+                return fallback(
+                    SelectionSource::Error,
+                    Some(RouterUsage {
+                        model: self.config.model.clone(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cost: 0.0,
+                        duration_ms: started.elapsed().as_millis() as i64,
+                        status: "error".to_string(),
+                    }),
+                );
+            }
         };
 
         // Probabilidades de todas las skills preguntadas (orden del catálogo);
@@ -262,7 +274,17 @@ impl SkillRouter {
         // suyo. Se falla abierto. Una respuesta parcial (algunas reconocidas y
         // otras no) sí se aplica con lo reconocido.
         if recognized == 0 {
-            return fallback(SelectionSource::Error);
+            return fallback(
+                SelectionSource::Error,
+                Some(RouterUsage {
+                    model: self.config.model.clone(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost: 0.0,
+                    duration_ms: started.elapsed().as_millis() as i64,
+                    status: "error".to_string(),
+                }),
+            );
         }
 
         // R8/D10: la decisión se registra por log, incluyendo su coste y su
@@ -281,7 +303,14 @@ impl SkillRouter {
             skills: selected,
             probabilities,
             source: SelectionSource::Router,
-            usage: None,
+            usage: Some(RouterUsage {
+                model: self.config.model.clone(),
+                input_tokens: response.input_tokens as i64,
+                output_tokens: response.output_tokens as i64,
+                cost: response.cost,
+                duration_ms: started.elapsed().as_millis() as i64,
+                status: "success".to_string(),
+            }),
         }
     }
 }

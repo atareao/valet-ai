@@ -25,6 +25,7 @@ impl StatsRepo {
                 COALESCE(SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END), 0) AS total_errors,
                 AVG(duration_ms)                                       AS avg_duration_ms
             FROM llm_requests
+            WHERE kind = 'chat'
             "#,
         )
         .fetch_one(pool)
@@ -56,6 +57,7 @@ impl StatsRepo {
                 SUM(cached_tokens)              AS total_cached_tokens,
                 SUM(reasoning_tokens)           AS total_reasoning_tokens
             FROM llm_requests
+            WHERE kind = 'chat'
             GROUP BY model
             ORDER BY total_cost DESC
             "#,
@@ -92,6 +94,7 @@ impl StatsRepo {
                 SUM(reasoning_tokens)           AS total_reasoning_tokens
             FROM llm_requests
             WHERE created_at >= datetime('now', '-' || ?1 || ' days')
+              AND kind = 'chat'
             GROUP BY DATE(created_at)
             ORDER BY date ASC
             "#,
@@ -120,10 +123,11 @@ impl StatsRepo {
     /// Parses the `tool_calls` JSON column (an array of objects with a `name`
     /// field, e.g. `[{"name":"get_weather"}, {"name":"search_web"}]`).
     pub async fn tools_summary(pool: &SqlitePool) -> Result<Vec<ToolStats>, sqlx::Error> {
-        let rows: Vec<String> =
-            sqlx::query_scalar("SELECT tool_calls FROM llm_requests WHERE tool_calls IS NOT NULL")
-                .fetch_all(pool)
-                .await?;
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT tool_calls FROM llm_requests WHERE tool_calls IS NOT NULL AND kind = 'chat'",
+        )
+        .fetch_all(pool)
+        .await?;
 
         let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
@@ -195,7 +199,7 @@ impl StatsRepo {
                 prompt_tokens, completion_tokens, total_tokens,
                 cached_tokens, reasoning_tokens,
                 cost, is_byok, duration_ms, cache_hit,
-                status, error_message, tool_calls, created_at
+                status, error_message, tool_calls, kind, created_at
             FROM llm_requests
             ORDER BY created_at ASC
             "#,
@@ -207,7 +211,7 @@ impl StatsRepo {
             "id,model,provider,profile_id,prompt_tokens,completion_tokens,total_tokens,",
         );
         csv.push_str("cached_tokens,reasoning_tokens,cost,is_byok,duration_ms,cache_hit,");
-        csv.push_str("status,error_message,tool_calls,created_at\n");
+        csv.push_str("status,error_message,tool_calls,kind,created_at\n");
 
         for r in &rows {
             // Helper to quote a value for CSV
@@ -235,10 +239,11 @@ impl StatsRepo {
             let status: String = r.get(13);
             let error_message: Option<String> = r.get(14);
             let tool_calls: Option<String> = r.get(15);
-            let created_at: String = r.get(16);
+            let kind: String = r.get(16);
+            let created_at: String = r.get(17);
 
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 quote(&id),
                 quote(&model),
                 provider.as_deref().unwrap_or(""),
@@ -255,6 +260,7 @@ impl StatsRepo {
                 quote(&status),
                 quote(error_message.as_deref().unwrap_or("")),
                 quote(tool_calls.as_deref().unwrap_or("")),
+                quote(&kind),
                 quote(&created_at),
             ));
         }
@@ -322,8 +328,56 @@ impl StatsRepo {
     pub async fn background_summary(
         pool: &SqlitePool,
     ) -> Result<Vec<BackgroundStats>, sqlx::Error> {
-        let _ = pool;
-        Ok(Vec::new())
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                kind,
+                COUNT(*)                                        AS calls,
+                COALESCE(SUM(prompt_tokens), 0)                 AS input_tokens,
+                COALESCE(SUM(completion_tokens), 0)             AS output_tokens,
+                COALESCE(SUM(total_tokens), 0)                  AS total_tokens,
+                COALESCE(SUM(cost), 0.0)                        AS total_cost,
+                COALESCE(SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END), 0) AS total_errors,
+                AVG(duration_ms)                                AS avg_duration_ms
+            FROM llm_requests
+            WHERE kind != 'chat'
+            GROUP BY kind
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+
+        // One entry per background origin, in the canonical order, so origins
+        // with no rows still appear at zero.
+        let mut stats: Vec<BackgroundStats> = ["router", "archivist", "consolidator", "collapse"]
+            .iter()
+            .map(|kind| BackgroundStats {
+                kind: (*kind).to_string(),
+                calls: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                total_cost: 0.0,
+                total_errors: 0,
+                avg_duration_ms: None,
+            })
+            .collect();
+
+        for row in &rows {
+            let kind: String = row.get(0);
+            let Some(entry) = stats.iter_mut().find(|s| s.kind == kind) else {
+                continue;
+            };
+            entry.calls = row.get::<i64, _>(1) as u64;
+            entry.input_tokens = row.get::<i64, _>(2) as u64;
+            entry.output_tokens = row.get::<i64, _>(3) as u64;
+            entry.total_tokens = row.get::<i64, _>(4) as u64;
+            entry.total_cost = row.get::<f64, _>(5);
+            entry.total_errors = row.get::<i64, _>(6) as u64;
+            entry.avg_duration_ms = row.get::<Option<f64>, _>(7);
+        }
+
+        Ok(stats)
     }
 
     /// Purge LLM request records older than `days` days.
