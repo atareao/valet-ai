@@ -3,6 +3,7 @@
 **Proyecto:** Valet (Rust/Axum + React + SQLite)
 **Estado:** 🟢 Activo
 **Tema 1:** ✅ Cerrado (PR #155, merge `d109f8d`)
+**Tema 2:** ✅ Cerrado (PR #159, merge `bd2892e`)
 **Fecha:** 2026-10-09
 **Metodología:** OpenSpec (SDD) + TDD (Red-Green-Refactor)
 
@@ -140,6 +141,8 @@ Frontend:
 
 ## Tema 2 — Conciencia temporal
 
+**Estado:** ✅ Completado en el PR #159 (merge `bd2892e`). Implementado y archivado en OpenSpec como `2026-10-09-temporal-awareness`.
+
 ### Objetivo
 
 Que el modelo sepa **qué hora es realmente** en cada turno y **cuándo** se dijo cada mensaje del historial, de modo que resuelva «hoy», «ayer» y «mañana» contra la fecha real y no contra una que leyó turnos atrás y ya caducó.
@@ -162,14 +165,14 @@ Que el modelo sepa **qué hora es realmente** en cada turno y **cuándo** se dij
 
 ### Tareas técnicas (TDD — checklist)
 
-- [ ] F0 — Change OpenSpec `temporal-awareness` (aprobado antes de codificar).
-- [ ] F1 — RED: formateadores y ensamblado (sección temporal siempre presente y cierra; ubicación sin fecha; prefijos del historial y del turno).
-- [ ] F2 — GREEN: `time_format.rs` + `agent.rs`.
-- [ ] F3 — REFACTOR: `cargo fmt`, `clippy -D warnings`, código muerto del formato antiguo.
-- [ ] F4 — VERIFY: `cargo test`, review y archivo del change.
+- [x] F0 — Change OpenSpec `temporal-awareness` (aprobado antes de codificar).
+- [x] F1 — RED: formateadores y ensamblado (sección temporal siempre presente y cierra; ubicación sin fecha; prefijos del historial y del turno).
+- [x] F2 — GREEN: `time_format.rs` + `agent.rs`.
+- [x] F3 — REFACTOR: `cargo fmt`, `clippy -D warnings`, código muerto del formato antiguo.
+- [x] F4 — VERIFY: `cargo test`, review y archivo del change.
 
 ---
 
 ## Temas pendientes
 
-Tema 1 cerrado (PR #155). **Tema 2** (conciencia temporal) definido: change `temporal-awareness` propuesto, pendiente de aprobación.
+Temas 1 y 2 cerrados (PR #155 y #159). Pendiente de definir el **Tema 3** y siguientes.
