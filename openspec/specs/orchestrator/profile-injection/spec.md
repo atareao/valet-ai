@@ -55,11 +55,8 @@ fn parameters(&self) -> Value {
 |------|--------------------|--------------------|
 | calendar | "Gestión de agenda: eventos, disponibilidad y calendario" | "Agenda y calendario — eventos, citas, reuniones, cumpleaños, disponibilidad y huecos libres" |
 | tasks | "Gestión de tareas: listar, crear, actualizar y completar tareas" | "Tareas por hacer — pendientes, próximas acciones, quehaceres, proyectos y cosas pendientes" |
-| habits | "Seguimiento de hábitos y rachas diarias/semanales" | "Hábitos y rachas — rutinas diarias, seguimiento de costumbres, registro de actividades" |
 | reminders | (actual) | "Recordatorios — alarmas, avisos, alarmas temporales, posponer y descartar" |
-| contacts | (actual) | "Contactos y agenda de personas — amigos, familia, conocidos, números y direcciones" |
 | knowledge | (actual) | "Notas y bloc de ideas — apuntes, información para recordar, hechos y referencias" |
-| meals | (actual) | "Comidas y planificación de menús — dieta, cocina, lista de la compra y recetas" |
 
 **Scenarios:**
 

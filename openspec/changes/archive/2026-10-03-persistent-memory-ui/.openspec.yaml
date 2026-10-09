@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-10-03
+goal: >-
+  Exponer por HTTP y en una pestaña de ajustes el estado persistente de la Capa C para
+  verlo, editarlo con validación, vaciarlo y ajustar su presupuesto sin vivir solo en la BD.

@@ -11,10 +11,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     seed_events(&pool).await?;
     seed_tasks(&pool).await?;
     seed_notes(&pool).await?;
-    seed_contacts(&pool).await?;
-    seed_habits(&pool).await?;
-    seed_meal_plans(&pool).await?;
-    seed_shopping_list(&pool).await?;
 
     println!("✅ Seed data created in {}", db_path);
     Ok(())
@@ -140,108 +136,5 @@ async fn seed_notes(db: &SqlitePool) -> Result<(), sqlx::Error> {
     .await?;
 
     println!("  📝 Notas: Idea app, Journal");
-    Ok(())
-}
-
-async fn seed_contacts(db: &SqlitePool) -> Result<(), sqlx::Error> {
-    for (name, phone, email) in &[
-        ("María García", "+34 612 345 678", "maria@example.com"),
-        ("Carlos López", "+34 698 765 432", "carlos@example.com"),
-        ("Laura Martínez", "+34 655 123 456", "laura@example.com"),
-    ] {
-        sqlx::query(
-            "INSERT OR IGNORE INTO contacts (id, profile_id, name, phone, email)
-             VALUES (?1, 'profile-ana', ?2, ?3, ?4)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(name)
-        .bind(phone)
-        .bind(email)
-        .execute(db)
-        .await?;
-    }
-    println!("  👥 Contactos: María, Carlos, Laura");
-    Ok(())
-}
-
-async fn seed_habits(db: &SqlitePool) -> Result<(), sqlx::Error> {
-    let habit_id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT OR IGNORE INTO habits (id, profile_id, name, frequency, target)
-         VALUES (?1, 'profile-ana', 'Leer 20 minutos', 'daily', 20)",
-    )
-    .bind(&habit_id)
-    .execute(db)
-    .await?;
-
-    // Log for today
-    let today = Utc::now().format("%Y-%m-%d").to_string();
-    sqlx::query(
-        "INSERT OR IGNORE INTO habit_logs (habit_id, date, completed)
-         VALUES (?1, ?2, 1)",
-    )
-    .bind(&habit_id)
-    .bind(&today)
-    .execute(db)
-    .await?;
-
-    // Weekly habit
-    let weekly_habit_id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT OR IGNORE INTO habits (id, profile_id, name, frequency, target)
-         VALUES (?1, 'profile-ana', 'Hacer ejercicio', 'weekly', 3)",
-    )
-    .bind(&weekly_habit_id)
-    .execute(db)
-    .await?;
-
-    println!("  🏃 Hábitos: Leer (daily), Ejercicio (weekly)");
-    Ok(())
-}
-
-async fn seed_meal_plans(db: &SqlitePool) -> Result<(), sqlx::Error> {
-    let week_start = Utc::now().format("%Y-%m-%d").to_string();
-    let meals = serde_json::json!({
-        "monday": { "lunch": "Lentejas con verduras", "dinner": "Crema de calabaza" },
-        "tuesday": { "lunch": "Pollo al horno", "dinner": "Tortilla francesa" },
-        "wednesday": { "lunch": "Ensalada de garbanzos", "dinner": "Pescado al vapor" },
-        "thursday": { "lunch": "Arroz con verduras", "dinner": "Revuelto de setas" },
-        "friday": { "lunch": "Pasta integral", "dinner": "Pizza casera" },
-    });
-
-    sqlx::query(
-        "INSERT OR IGNORE INTO meal_plans (id, profile_id, week_start, meals)
-         VALUES (?1, 'profile-ana', ?2, ?3)",
-    )
-    .bind(Uuid::new_v4().to_string())
-    .bind(&week_start)
-    .bind(meals.to_string())
-    .execute(db)
-    .await?;
-    println!("  🍽️  Menú semanal: 5 días planificados");
-    Ok(())
-}
-
-async fn seed_shopping_list(db: &SqlitePool) -> Result<(), sqlx::Error> {
-    for (item, quantity, category) in &[
-        ("Leche", "1L", "lácteos"),
-        ("Pan integral", "1 barra", "despensa"),
-        ("Huevos", "12 uds", "huevos"),
-        ("Espinacas", "200g", "verduras"),
-        ("Pechuga de pollo", "500g", "carne"),
-        ("Arroz integral", "1kg", "despensa"),
-    ] {
-        sqlx::query(
-            "INSERT OR IGNORE INTO shopping_list (id, profile_id, item, quantity, category)
-             VALUES (?1, 'profile-ana', ?2, ?3, ?4)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(item)
-        .bind(quantity)
-        .bind(category)
-        .execute(db)
-        .await?;
-    }
-    println!("  🛒 Lista de la compra: 6 artículos");
     Ok(())
 }

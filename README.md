@@ -13,8 +13,6 @@ Self-hosted and local-first: your data lives in SQLite on your own machine, and 
 - **🫖 Chat with AI**: Orchestrator with a ReAct loop and layered memory (session, episodic, profile)
 - **🕰️ Calendar and Tasks**: Events, tasks and reminders with `shared`/`personal` scope
 - **🗺️ Weather and Geo**: Weather by coordinates, geocoding (Nominatim), place search (Overpass OSM)
-- **🍽️ Meals**: Weekly menu planning and shopping list
-- **🎯 Habits**: Daily and weekly streak tracking
 - **🧐 Unified Search**: FTS5 across every dimension
 - **🗝️ Private**: Local SQLite data, self-hosted, optional PocketID auth
 - **🔔 Proactive**: Morning briefing, conflict detection, travel preparation
@@ -106,11 +104,12 @@ Environment variables are read once at startup (see `src/config.rs`) with sensib
 | `OLLAMA_BASE_URL` | Ollama fallback base URL | `http://localhost:11434` |
 | `OLLAMA_MODEL` | Ollama fallback model | `llama3.2:3b` |
 | `AUTH_ENABLED` | Enable PocketID authentication | `false` |
-| `AUTH_ISSUER_URL` | OIDC issuer URL | `http://localhost:8080` |
-| `AUTH_CLIENT_ID` | OIDC client ID | — |
-| `AUTH_CLIENT_SECRET` | OIDC client secret | — |
-| `AUTH_REDIRECT_URL` | OIDC redirect URL | `http://localhost:3000/auth/callback` |
-| `JWT_SECRET` | Secret for signing session tokens | — |
+| `AUTH_ISSUER_URL` | OIDC issuer URL (required when `AUTH_ENABLED=true`) | — |
+| `AUTH_CLIENT_ID` | OIDC client ID (required when `AUTH_ENABLED=true`) | — |
+| `AUTH_CLIENT_SECRET` | OIDC client secret (required when `AUTH_ENABLED=true`) | — |
+| `AUTH_REDIRECT_URL` | OIDC redirect URL — the PocketID client Redirect URI (`https://YOUR_DOMAIN/api/auth/callback`); required when `AUTH_ENABLED=true` | — |
+| `AUTH_POST_LOGOUT_REDIRECT_URL` | Post-logout redirect URI sent to the provider (optional) | — |
+| `JWT_SECRET` | Secret for signing session tokens (required when `AUTH_ENABLED=true`) | — |
 | `OPENWEATHER_API_KEY` | OpenWeather API key | — |
 | `GOOGLE_PLACES_API_KEY` | Google Places API key | — |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API key | — |
@@ -125,19 +124,48 @@ Environment variables are read once at startup (see `src/config.rs`) with sensib
 
 ## 🏭 Production
 
-`docker-compose.prod.yml` splits the stack into backend, a standalone nginx frontend, and PocketID.
+`docker-compose.prod.yml` deploys a **single service** `valet`, built from the repo's monolithic `Dockerfile` (multi-stage: the Vite SPA is compiled into `/app/static` and served by the Rust binary itself on `:3000`, together with `/api` — the same `Dockerfile` used by `docker-compose.yml` in development). **Nothing is published to the host**: the service joins an **existing Traefik** external network and is routed by labels; Traefik terminates TLS.
+
+### The app behind Traefik
+
+You need **one DNS name** pointing at the VPS (`APP_HOST`, **without scheme**). Traefik's external network must already exist (or point `TRAEFIK_NETWORK` at yours):
+
+```bash
+podman network create traefik
+```
 
 ```bash
 # Required variables
 export OPENROUTER_API_KEY="sk-..."
-export AUTH_ISSUER_URL="https://auth.example.com"
+export APP_HOST="valet.example.com"                       # app DNS name, NO scheme
+export TRAEFIK_NETWORK="traefik"                          # external Traefik network
+export TRAEFIK_CERT_RESOLVER="letsencrypt"                # ACME resolver configured in Traefik
+export AUTH_ISSUER_URL="https://auth.example.com"         # public issuer of the existing PocketID (matches the id_token `iss` claim)
 export AUTH_CLIENT_ID="valet"
 export AUTH_CLIENT_SECRET="..."
+export AUTH_REDIRECT_URL="https://valet.example.com/api/auth/callback"
+export AUTH_POST_LOGOUT_REDIRECT_URL="https://valet.example.com"
 export JWT_SECRET="change-me-in-production"
 
-# Start
-docker compose -f docker-compose.prod.yml up -d
+# Start (auth is enabled by default; export AUTH_ENABLED=false to bring the stack up without auth)
+podman compose -f docker-compose.prod.yml up -d
+# App: https://valet.example.com/
 ```
+
+Traefik picks the container up from the labels and issues the certificate via `TRAEFIK_CERT_RESOLVER`; no `ports:` are exposed. The database is persisted in the `valet_data` volume mounted at `/app/data`.
+
+### PocketID (already deployed, external)
+
+PocketID is **not** part of this stack — it is an OIDC provider already running on the VPS. The app consumes it through `AUTH_ISSUER_URL`, which must be the **public issuer**: the value that appears in the ID token `iss` claim and is reachable by both the browser and the backend (discovery, code exchange and JWKS all resolve against it). In the existing PocketID, register the OIDC client with:
+
+- **Redirect URI** = `https://${APP_HOST}/api/auth/callback` (i.e. `AUTH_REDIRECT_URL`)
+- **Post-logout URI** = `https://${APP_HOST}` (i.e. `AUTH_POST_LOGOUT_REDIRECT_URL`)
+
+No PocketID container, volume or DNS name is created by this repo.
+
+### Data volume
+
+The database lives in the named volume `valet_data` mounted at `/app/data` (see `DATABASE_URL`). On a fresh volume Podman seeds its ownership from the image. The app runs with whatever user the image defines — the monolithic `Dockerfile` runs as `root`, matching the development image.
 
 **Known gap: the container does not survive a host reboot.** `docker-compose.yml` omits `restart:`, so if the machine goes down the service stays down until it is started by hand — on 2026-10-01 that meant about 9.5 hours of downtime. Enabling auto-start is deliberately deferred; the verified fix is in `AGENTS.md` § V.
 
@@ -163,7 +191,9 @@ docker compose -f docker-compose.prod.yml up -d
 └──────────────────────────────────────────────────┘
 ```
 
-The orchestrator exposes 14 tools from `src/tools/`: `calendar`, `contacts`, `current_location`, `current_time`, `geo`, `google_places`, `habits`, `knowledge`, `meals`, `reminders`, `tasks`, `unified_search`, `weather`, `web_search`.
+The orchestrator exposes 12 tools from `src/tools/`: `calendar`, `geocode`, `get_current_location`, `get_current_time`, `notes`, `reminders`, `reverse_geocode`, `search_places`, `tasks`, `unified_search`, `weather`, `web_search`.
+
+Multi-operation tools (`calendar`, `tasks`) declare their permission per operation: reads run directly, creates and updates notify, while destructive deletes (`delete_event`, `delete_task`) pause the turn and require explicit user confirmation before running. A confirmation is resolved via `POST /api/approval/{request_id}`; if none arrives, the operation times out and is not executed.
 
 Background workers in `src/workers/`: `briefing`, `collapse`, `conflict_detector`, `episodic_memory`, `memory_worker`, `pool`, `stats_cleanup`, `travel_prep`.
 

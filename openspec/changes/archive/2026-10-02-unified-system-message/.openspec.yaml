@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-10-02
+goal: Reagrupar prompt, memoria episodica y fecha/hora/ubicacion en un unico
+  mensaje de sistema, con hueco reservado (sin texto) para la memoria
+  persistente

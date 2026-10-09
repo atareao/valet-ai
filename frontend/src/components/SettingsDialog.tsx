@@ -5,13 +5,22 @@ import {
   Form,
   Input,
   InputNumber,
+  Select,
   Button,
   App as AntdApp,
   Space,
   Spin,
+  Alert,
+  Divider,
 } from "antd";
 import { useSettings } from "../hooks/useSettings";
+import { useSkills } from "../hooks/useSkills";
 import { useProfileContext } from "../contexts/ProfileContext";
+import { PersistentMemoryPanel } from "./PersistentMemoryPanel";
+import { ToolsTab } from "./ToolsTab";
+import { RouterControl } from "./RouterControl";
+import { SkillPromptFields } from "./SkillPromptFields";
+import { changedSkillFields } from "./skillRouter";
 
 const { TextArea } = Input;
 
@@ -40,12 +49,53 @@ function isAllowedAvatarUrl(value: string | null | undefined): boolean {
   return false;
 }
 
+// La comparación es EXACTA (incluidos los espacios internos) a propósito:
+// replica el contrato de placeholders que exige el worker en Rust. No
+// normalizar espacios ni el espaciado interior de las llaves.
+const CONSOLIDATOR_PLACEHOLDERS = [
+  "{{ ESTADO_ACTUAL }}",
+  "{{ BLOQUE_DE_MENSAJES }}",
+] as const;
+
+function getMissingConsolidatorPlaceholders(
+  value: string | undefined,
+): string[] {
+  const text = value ?? "";
+  return CONSOLIDATOR_PLACEHOLDERS.filter((placeholder) =>
+    !text.includes(placeholder),
+  );
+}
+
+// Los cuatro roles de generación y el prefijo de sus tres claves en `settings`.
+// El `heading` es la etiqueta de la sub-pestaña; el `key` es su identificador
+// estable; el `prefix` compone los `name`/`id` del form (que son la clave cruda,
+// como en la pestaña "Memoria").
+const GENERATION_BLOCKS = [
+  { key: "chat", heading: "Chat", prefix: "GENERATION_CHAT" },
+  { key: "collapse", heading: "Colapso", prefix: "GENERATION_COLLAPSE" },
+  { key: "memory", heading: "Fichas", prefix: "GENERATION_MEMORY" },
+  { key: "semantic", heading: "Consolidación", prefix: "GENERATION_SEMANTIC" },
+] as const;
+
+// `default` (vacío) significa "no enviar razonamiento" y deja decidir al modelo.
+const GENERATION_REASONING_OPTIONS = [
+  { value: "", label: "default" },
+  { value: "off", label: "off" },
+  { value: "minimal", label: "minimal" },
+  { value: "low", label: "low" },
+  { value: "medium", label: "medium" },
+  { value: "high", label: "high" },
+  { value: "xhigh", label: "xhigh" },
+  { value: "max", label: "max" },
+];
+
 export interface SettingsFormValues {
   font_size: number;
   max_window_tokens: number;
   system_prompt: string;
   archivist_prompt: string;
   collapse_prompt: string;
+  consolidator_prompt: string;
   message_page_size: number;
   openweather_api_key: string;
   google_places_api_key: string;
@@ -54,6 +104,18 @@ export interface SettingsFormValues {
   SIMILARITY_THRESHOLD: number;
   RAG_BUDGET_TOKENS: number;
   MEMORY_KNN_CANDIDATES: number;
+  GENERATION_CHAT_TEMPERATURE: number;
+  GENERATION_CHAT_REASONING: string;
+  GENERATION_CHAT_MAX_TOKENS: number;
+  GENERATION_COLLAPSE_TEMPERATURE: number;
+  GENERATION_COLLAPSE_REASONING: string;
+  GENERATION_COLLAPSE_MAX_TOKENS: number;
+  GENERATION_MEMORY_TEMPERATURE: number;
+  GENERATION_MEMORY_REASONING: string;
+  GENERATION_MEMORY_MAX_TOKENS: number;
+  GENERATION_SEMANTIC_TEMPERATURE: number;
+  GENERATION_SEMANTIC_REASONING: string;
+  GENERATION_SEMANTIC_MAX_TOKENS: number;
 }
 
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({
@@ -69,11 +131,32 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     updateSettings,
     resetToDefaults,
   } = useSettings();
+  // El catálogo lo posee el diálogo: lo comparten la sub-pestaña «Skills» (lo
+  // lista), el control del enrutador (lo recibe por props) y el submit (para
+  // guardar solo lo que cambie respecto al efectivo). Un único `GET /api/skills`
+  // por apertura del diálogo.
+  const {
+    skills,
+    coreTools,
+    loading: skillsLoading,
+    error: skillsError,
+    refetch: refetchSkills,
+  } = useSkills();
 
   const [profileForm] = Form.useForm();
   const [settingsForm] = Form.useForm();
+  const consolidatorPrompt = Form.useWatch<string>(
+    "consolidator_prompt",
+    settingsForm,
+  );
+  const missingConsolidatorPlaceholders =
+    getMissingConsolidatorPlaceholders(consolidatorPrompt);
   const [resetting, setResetting] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
+  // Contador de aperturas: el `Modal` no se desmonta al cerrar y las panes de
+  // `Tabs` siguen montadas, así que `RouterControl` se remonta en cada apertura
+  // (patrón `statsOpenKey` de `AppLayout`) para que siempre relea lo persistido.
+  const [routerOpenKey, setRouterOpenKey] = useState(0);
 
   // Load settings into form when visible changes
   useEffect(() => {
@@ -84,6 +167,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         system_prompt: settings.system_prompt || "",
         archivist_prompt: settings.archivist_prompt || "",
         collapse_prompt: settings.collapse_prompt || "",
+        consolidator_prompt: settings.consolidator_prompt || "",
         message_page_size: parseInt(settings.message_page_size || "50"),
         openweather_api_key: settings.openweather_api_key || "",
         google_places_api_key: settings.google_places_api_key || "",
@@ -97,6 +181,38 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         RAG_BUDGET_TOKENS: parseInt(settings.RAG_BUDGET_TOKENS || "800"),
         MEMORY_KNN_CANDIDATES: parseInt(
           settings.MEMORY_KNN_CANDIDATES || "20",
+        ),
+        GENERATION_CHAT_TEMPERATURE: parseFloat(
+          settings.GENERATION_CHAT_TEMPERATURE || "0.7",
+        ),
+        GENERATION_CHAT_REASONING:
+          settings.GENERATION_CHAT_REASONING || "",
+        GENERATION_CHAT_MAX_TOKENS: parseInt(
+          settings.GENERATION_CHAT_MAX_TOKENS || "4096",
+        ),
+        GENERATION_COLLAPSE_TEMPERATURE: parseFloat(
+          settings.GENERATION_COLLAPSE_TEMPERATURE || "0.2",
+        ),
+        GENERATION_COLLAPSE_REASONING:
+          settings.GENERATION_COLLAPSE_REASONING || "off",
+        GENERATION_COLLAPSE_MAX_TOKENS: parseInt(
+          settings.GENERATION_COLLAPSE_MAX_TOKENS || "1024",
+        ),
+        GENERATION_MEMORY_TEMPERATURE: parseFloat(
+          settings.GENERATION_MEMORY_TEMPERATURE || "0.3",
+        ),
+        GENERATION_MEMORY_REASONING:
+          settings.GENERATION_MEMORY_REASONING || "off",
+        GENERATION_MEMORY_MAX_TOKENS: parseInt(
+          settings.GENERATION_MEMORY_MAX_TOKENS || "1024",
+        ),
+        GENERATION_SEMANTIC_TEMPERATURE: parseFloat(
+          settings.GENERATION_SEMANTIC_TEMPERATURE || "0.1",
+        ),
+        GENERATION_SEMANTIC_REASONING:
+          settings.GENERATION_SEMANTIC_REASONING || "low",
+        GENERATION_SEMANTIC_MAX_TOKENS: parseInt(
+          settings.GENERATION_SEMANTIC_MAX_TOKENS || "2048",
         ),
       });
     }
@@ -135,7 +251,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     values: Partial<SettingsFormValues>,
   ) => {
     try {
-      await updateSettings({
+      const payload: Record<string, string> = {
         font_size: (
           values.font_size ?? parseInt(settings?.font_size || "16")
         ).toString(),
@@ -145,6 +261,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         system_prompt: values.system_prompt ?? settings?.system_prompt ?? "",
         archivist_prompt: values.archivist_prompt ?? settings?.archivist_prompt ?? "",
         collapse_prompt: values.collapse_prompt ?? settings?.collapse_prompt ?? "",
+        consolidator_prompt:
+          values.consolidator_prompt ?? settings?.consolidator_prompt ?? "",
         message_page_size: (
           values.message_page_size ?? parseInt(settings?.message_page_size || "50")
         ).toString(),
@@ -167,7 +285,72 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           values.MEMORY_KNN_CANDIDATES ??
           parseInt(settings?.MEMORY_KNN_CANDIDATES || "20")
         ).toString(),
-      });
+        GENERATION_CHAT_TEMPERATURE: (
+          values.GENERATION_CHAT_TEMPERATURE ??
+          parseFloat(settings?.GENERATION_CHAT_TEMPERATURE || "0.7")
+        ).toString(),
+        GENERATION_CHAT_REASONING:
+          values.GENERATION_CHAT_REASONING ??
+          settings?.GENERATION_CHAT_REASONING ??
+          "",
+        GENERATION_CHAT_MAX_TOKENS: (
+          values.GENERATION_CHAT_MAX_TOKENS ??
+          parseInt(settings?.GENERATION_CHAT_MAX_TOKENS || "4096")
+        ).toString(),
+        GENERATION_COLLAPSE_TEMPERATURE: (
+          values.GENERATION_COLLAPSE_TEMPERATURE ??
+          parseFloat(settings?.GENERATION_COLLAPSE_TEMPERATURE || "0.2")
+        ).toString(),
+        GENERATION_COLLAPSE_REASONING:
+          values.GENERATION_COLLAPSE_REASONING ??
+          settings?.GENERATION_COLLAPSE_REASONING ??
+          "off",
+        GENERATION_COLLAPSE_MAX_TOKENS: (
+          values.GENERATION_COLLAPSE_MAX_TOKENS ??
+          parseInt(settings?.GENERATION_COLLAPSE_MAX_TOKENS || "1024")
+        ).toString(),
+        GENERATION_MEMORY_TEMPERATURE: (
+          values.GENERATION_MEMORY_TEMPERATURE ??
+          parseFloat(settings?.GENERATION_MEMORY_TEMPERATURE || "0.3")
+        ).toString(),
+        GENERATION_MEMORY_REASONING:
+          values.GENERATION_MEMORY_REASONING ??
+          settings?.GENERATION_MEMORY_REASONING ??
+          "off",
+        GENERATION_MEMORY_MAX_TOKENS: (
+          values.GENERATION_MEMORY_MAX_TOKENS ??
+          parseInt(settings?.GENERATION_MEMORY_MAX_TOKENS || "1024")
+        ).toString(),
+        GENERATION_SEMANTIC_TEMPERATURE: (
+          values.GENERATION_SEMANTIC_TEMPERATURE ??
+          parseFloat(settings?.GENERATION_SEMANTIC_TEMPERATURE || "0.1")
+        ).toString(),
+        GENERATION_SEMANTIC_REASONING:
+          values.GENERATION_SEMANTIC_REASONING ??
+          settings?.GENERATION_SEMANTIC_REASONING ??
+          "low",
+        GENERATION_SEMANTIC_MAX_TOKENS: (
+          values.GENERATION_SEMANTIC_MAX_TOKENS ??
+          parseInt(settings?.GENERATION_SEMANTIC_MAX_TOKENS || "2048")
+        ).toString(),
+      };
+      // Los campos por skill van en el mismo submit y solo si cambian respecto
+      // al valor efectivo vigente: comparar evita crear sobrescrituras
+      // redundantes y deja «sin tocar» un campo que no se ha editado. Un campo
+      // que el usuario deje vacío no bloquea el guardado: avisa y se usará el
+      // valor por defecto del catálogo (enviar `""` equivale a restaurarlo).
+      const skillChanges = changedSkillFields(
+        values as Record<string, unknown>,
+        skills,
+        settings,
+      );
+      if (Object.values(skillChanges).some((value) => value === "")) {
+        messageApi.warning(
+          "Hay campos de skill vacíos: se usará el valor por defecto del catálogo",
+        );
+      }
+      Object.assign(payload, skillChanges);
+      await updateSettings(payload);
       messageApi.success("Ajustes guardados");
       onClose();
     } catch {
@@ -219,7 +402,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       onCancel={onClose}
       closable={false}
       footer={null}
-      width={600}
+      width={1000}
+      afterOpenChange={(open) => {
+        if (open) setRouterOpenKey((k) => k + 1);
+      }}
     >
       <Tabs
         items={[
@@ -370,8 +556,44 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                         </Form.Item>
                       ),
                     },
+                    {
+                      key: "consolidator",
+                      label: "Consolidator",
+                      forceRender: true,
+                      children: (
+                        <Form.Item
+                          label="Consolidator Prompt"
+                          name="consolidator_prompt"
+                        >
+                          <TextArea rows={10} />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      key: "skills",
+                      label: "Skills",
+                      forceRender: true,
+                      children: (
+                        <SkillPromptFields
+                          key={routerOpenKey}
+                          settings={settings}
+                          skills={skills}
+                          loading={skillsLoading}
+                          error={skillsError}
+                          onRestore={refetchSkills}
+                        />
+                      ),
+                    },
                   ]}
                 />
+                {missingConsolidatorPlaceholders.length > 0 && (
+                  <Alert
+                    type="warning"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message={`Faltan placeholders en el prompt del consolidador: ${missingConsolidatorPlaceholders.join(", ")}`}
+                  />
+                )}
                 <Button type="primary" htmlType="submit" loading={saving}>
                   Guardar
                 </Button>
@@ -419,39 +641,140 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             children: settingsLoading ? (
               renderSettingsLoading()
             ) : (
+              <section aria-label="Tipo de memoria">
+                <Tabs
+                  items={[
+                    {
+                      key: "episodic",
+                      label: "Episódica",
+                      children: (
+                        <Form
+                          form={settingsForm}
+                          layout="vertical"
+                          onFinish={handleSettingsSubmit}
+                        >
+                          <Form.Item
+                            label="MEMORY_HALF_LIFE_DAYS"
+                            name="MEMORY_HALF_LIFE_DAYS"
+                          >
+                            <InputNumber min={1} max={3650} step={1} style={{ width: "100%" }} />
+                          </Form.Item>
+                          <Form.Item
+                            label="SIMILARITY_THRESHOLD"
+                            name="SIMILARITY_THRESHOLD"
+                          >
+                            <InputNumber min={0} max={1} step={0.05} style={{ width: "100%" }} />
+                          </Form.Item>
+                          <Form.Item
+                            label="RAG_BUDGET_TOKENS"
+                            name="RAG_BUDGET_TOKENS"
+                          >
+                            <InputNumber min={0} max={100000} step={100} style={{ width: "100%" }} />
+                          </Form.Item>
+                          <Form.Item
+                            label="MEMORY_KNN_CANDIDATES"
+                            name="MEMORY_KNN_CANDIDATES"
+                          >
+                            <InputNumber min={1} max={1000} step={1} style={{ width: "100%" }} />
+                          </Form.Item>
+                          <Button type="primary" htmlType="submit" loading={saving}>
+                            Guardar
+                          </Button>
+                        </Form>
+                      ),
+                    },
+                    {
+                      key: "persistent",
+                      label: "Persistente",
+                      children: (
+                        <PersistentMemoryPanel
+                          settings={settings}
+                          updateSettings={updateSettings}
+                          savingSettings={saving}
+                        />
+                      ),
+                    },
+                  ]}
+                />
+              </section>
+            ),
+          },
+          {
+            key: "generation",
+            label: "Generación",
+            children: settingsLoading ? (
+              renderSettingsLoading()
+            ) : (
               <Form
                 form={settingsForm}
                 layout="vertical"
                 onFinish={handleSettingsSubmit}
               >
-                <Form.Item
-                  label="MEMORY_HALF_LIFE_DAYS"
-                  name="MEMORY_HALF_LIFE_DAYS"
-                >
-                  <InputNumber min={1} max={3650} step={1} style={{ width: "100%" }} />
-                </Form.Item>
-                <Form.Item
-                  label="SIMILARITY_THRESHOLD"
-                  name="SIMILARITY_THRESHOLD"
-                >
-                  <InputNumber min={0} max={1} step={0.05} style={{ width: "100%" }} />
-                </Form.Item>
-                <Form.Item
-                  label="RAG_BUDGET_TOKENS"
-                  name="RAG_BUDGET_TOKENS"
-                >
-                  <InputNumber min={0} max={100000} step={100} style={{ width: "100%" }} />
-                </Form.Item>
-                <Form.Item
-                  label="MEMORY_KNN_CANDIDATES"
-                  name="MEMORY_KNN_CANDIDATES"
-                >
-                  <InputNumber min={1} max={1000} step={1} style={{ width: "100%" }} />
-                </Form.Item>
+                <Tabs
+                  aria-label="Rol de generación"
+                  items={GENERATION_BLOCKS.map((block) => ({
+                    key: block.key,
+                    label: block.heading,
+                    forceRender: true,
+                    children: (
+                      <>
+                        <Form.Item
+                          label={`${block.prefix}_TEMPERATURE`}
+                          name={`${block.prefix}_TEMPERATURE`}
+                        >
+                          <InputNumber
+                            min={0}
+                            max={2}
+                            step={0.05}
+                            style={{ width: "100%" }}
+                          />
+                        </Form.Item>
+                        <Form.Item
+                          label={`${block.prefix}_REASONING`}
+                          name={`${block.prefix}_REASONING`}
+                        >
+                          <Select
+                            virtual={false}
+                            options={GENERATION_REASONING_OPTIONS}
+                          />
+                        </Form.Item>
+                        <Form.Item
+                          label={`${block.prefix}_MAX_TOKENS`}
+                          name={`${block.prefix}_MAX_TOKENS`}
+                        >
+                          <InputNumber
+                            min={1}
+                            max={1000000}
+                            step={1}
+                            style={{ width: "100%" }}
+                          />
+                        </Form.Item>
+                      </>
+                    ),
+                  }))}
+                />
                 <Button type="primary" htmlType="submit" loading={saving}>
                   Guardar
                 </Button>
               </Form>
+            ),
+          },
+          {
+            key: "tools",
+            label: "Herramientas",
+            children: (
+              <>
+                <RouterControl
+                  key={routerOpenKey}
+                  skills={skills}
+                  coreTools={coreTools}
+                  loading={skillsLoading}
+                  error={skillsError}
+                  refetch={refetchSkills}
+                />
+                <Divider />
+                <ToolsTab />
+              </>
             ),
           },
         ]}

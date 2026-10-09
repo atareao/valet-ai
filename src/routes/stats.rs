@@ -18,4 +18,5 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/stats/memory", get(stats::memory_handler))
         .route("/api/stats/llm/last-call", get(stats::last_call_handler))
+        .route("/api/stats/llm/background", get(stats::background_handler))
 }

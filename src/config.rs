@@ -25,6 +25,7 @@ pub struct Config {
     pub auth_client_id: String,
     pub auth_client_secret: String,
     pub auth_redirect_url: String,
+    pub auth_post_logout_redirect_url: String,
     pub jwt_secret: String,
 
     // Weather
@@ -47,6 +48,9 @@ pub struct Config {
     pub memory_overlap: i64,
     pub memory_poll_interval_minutes: u64,
     pub memory_model: String,
+    /// Model used by the persistent-memory consolidator. Reads `SEMANTIC_MODEL`
+    /// and falls back to `MEMORY_MODEL` (and, in turn, to its default).
+    pub semantic_model: String,
     pub rag_budget_tokens: usize,
 
     // Embeddings (RAG)
@@ -59,6 +63,12 @@ impl Config {
     /// Build a [`Config`] from environment variables, applying sensible
     /// defaults whenever a variable is not set or cannot be parsed.
     pub fn from_env() -> Self {
+        // `SEMANTIC_MODEL` is the consolidator's model; when it is not set it
+        // falls back to `MEMORY_MODEL` (which in turn has its own default).
+        let memory_model = env::var("MEMORY_MODEL")
+            .unwrap_or_else(|_| "mistralai/mistral-small-24b-instruct-2501".into());
+        let semantic_model = env::var("SEMANTIC_MODEL").unwrap_or_else(|_| memory_model.clone());
+
         Self {
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into()),
             port: env::var("PORT")
@@ -80,12 +90,16 @@ impl Config {
             auth_enabled: env::var("AUTH_ENABLED")
                 .map(|v| v == "true" || v == "1")
                 .unwrap_or(false),
-            auth_issuer_url: env::var("AUTH_ISSUER_URL")
-                .unwrap_or_else(|_| "http://localhost:8080".into()),
+            auth_issuer_url: env::var("AUTH_ISSUER_URL").unwrap_or_default(),
             auth_client_id: env::var("AUTH_CLIENT_ID").unwrap_or_default(),
             auth_client_secret: env::var("AUTH_CLIENT_SECRET").unwrap_or_default(),
-            auth_redirect_url: env::var("AUTH_REDIRECT_URL")
-                .unwrap_or_else(|_| "http://localhost:3000/auth/callback".into()),
+            // Fail-closed: no non-empty default. With `AUTH_ENABLED=true` and
+            // these unset, `AuthConfig::validate()` aborts startup rather than
+            // pointing the callback at an inexistent route or injecting a stray
+            // origin into the credentialed CORS allow-list.
+            auth_redirect_url: env::var("AUTH_REDIRECT_URL").unwrap_or_default(),
+            auth_post_logout_redirect_url: env::var("AUTH_POST_LOGOUT_REDIRECT_URL")
+                .unwrap_or_default(),
             jwt_secret: env::var("JWT_SECRET").unwrap_or_default(),
 
             openweather_api_key: env::var("OPENWEATHER_API_KEY").ok(),
@@ -116,8 +130,8 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
-            memory_model: env::var("MEMORY_MODEL")
-                .unwrap_or_else(|_| "mistralai/mistral-small-24b-instruct-2501".into()),
+            memory_model,
+            semantic_model,
             rag_budget_tokens: env::var("RAG_BUDGET_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -169,6 +183,7 @@ mod tests {
             "AUTH_CLIENT_ID",
             "AUTH_CLIENT_SECRET",
             "AUTH_REDIRECT_URL",
+            "AUTH_POST_LOGOUT_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
@@ -180,6 +195,7 @@ mod tests {
             "MEMORY_OVERLAP",
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
+            "SEMANTIC_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -202,10 +218,13 @@ mod tests {
         assert_eq!(cfg.ollama_model, "llama3.2:3b");
 
         assert!(!cfg.auth_enabled);
-        assert_eq!(cfg.auth_issuer_url, "http://localhost:8080");
+        assert_eq!(cfg.auth_issuer_url, "");
         assert_eq!(cfg.auth_client_id, "");
         assert_eq!(cfg.auth_client_secret, "");
-        assert_eq!(cfg.auth_redirect_url, "http://localhost:3000/auth/callback");
+        // Fail-closed: an unset redirect URL must default to empty so that
+        // enabling auth without configuring it aborts startup.
+        assert_eq!(cfg.auth_redirect_url, "");
+        assert_eq!(cfg.auth_post_logout_redirect_url, "");
         assert_eq!(cfg.jwt_secret, "");
 
         assert!(cfg.openweather_api_key.is_none());
@@ -227,6 +246,10 @@ mod tests {
             "mistralai/mistral-small-24b-instruct-2501"
         );
         assert_eq!(cfg.rag_budget_tokens, 800);
+        assert_eq!(
+            cfg.semantic_model, "mistralai/mistral-small-24b-instruct-2501",
+            "without SEMANTIC_MODEL, semantic_model falls back to the MEMORY_MODEL default"
+        );
 
         assert!(cfg.embedding_provider.is_none());
         assert!(cfg.embedding_model.is_none());
@@ -238,6 +261,10 @@ mod tests {
     #[test]
     #[serial]
     fn test_config_custom_values() {
+        // The test asserts the SEMANTIC_MODEL fallback, so it must start from a
+        // clean slate: an ambient SEMANTIC_MODEL would otherwise override it.
+        env::remove_var("SEMANTIC_MODEL");
+
         // Set custom values
         env::set_var("HOST", "127.0.0.1");
         env::set_var("PORT", "9090");
@@ -307,6 +334,10 @@ mod tests {
         assert_eq!(cfg.memory_poll_interval_minutes, 10);
         assert_eq!(cfg.memory_model, "google/gemini-2.0-flash-lite");
         assert_eq!(cfg.rag_budget_tokens, 4000);
+        assert_eq!(
+            cfg.semantic_model, "google/gemini-2.0-flash-lite",
+            "without SEMANTIC_MODEL, semantic_model falls back to MEMORY_MODEL"
+        );
 
         assert_eq!(cfg.embedding_provider.as_deref(), Some("openrouter"));
         assert_eq!(
@@ -331,6 +362,7 @@ mod tests {
             "AUTH_CLIENT_ID",
             "AUTH_CLIENT_SECRET",
             "AUTH_REDIRECT_URL",
+            "AUTH_POST_LOGOUT_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
@@ -342,6 +374,7 @@ mod tests {
             "MEMORY_OVERLAP",
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
+            "SEMANTIC_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -370,6 +403,7 @@ mod tests {
             "AUTH_CLIENT_ID",
             "AUTH_CLIENT_SECRET",
             "AUTH_REDIRECT_URL",
+            "AUTH_POST_LOGOUT_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
@@ -381,6 +415,7 @@ mod tests {
             "MEMORY_OVERLAP",
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
+            "SEMANTIC_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -412,6 +447,7 @@ mod tests {
             "AUTH_CLIENT_ID",
             "AUTH_CLIENT_SECRET",
             "AUTH_REDIRECT_URL",
+            "AUTH_POST_LOGOUT_REDIRECT_URL",
             "JWT_SECRET",
             "OPENWEATHER_API_KEY",
             "GOOGLE_PLACES_API_KEY",
@@ -423,6 +459,7 @@ mod tests {
             "MEMORY_OVERLAP",
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
+            "SEMANTIC_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -449,5 +486,47 @@ mod tests {
         assert!(cfg.embedding_dimension.is_none());
 
         env::remove_var("EMBEDDING_DIMENSION");
+    }
+
+    /// `SEMANTIC_MODEL` overrides `MEMORY_MODEL` when both are set.
+    #[test]
+    #[serial]
+    fn test_config_semantic_model_overrides_memory_model() {
+        env::set_var("MEMORY_MODEL", "memory/model");
+        env::set_var("SEMANTIC_MODEL", "semantic/model");
+
+        let cfg = Config::from_env();
+        assert_eq!(cfg.semantic_model, "semantic/model");
+        assert_eq!(cfg.memory_model, "memory/model");
+
+        env::remove_var("MEMORY_MODEL");
+        env::remove_var("SEMANTIC_MODEL");
+    }
+
+    /// Without `SEMANTIC_MODEL`, `semantic_model` falls back to `MEMORY_MODEL`.
+    #[test]
+    #[serial]
+    fn test_config_semantic_model_falls_back_to_memory_model() {
+        env::remove_var("SEMANTIC_MODEL");
+        env::set_var("MEMORY_MODEL", "memory/only");
+
+        let cfg = Config::from_env();
+        assert_eq!(cfg.semantic_model, "memory/only");
+
+        env::remove_var("MEMORY_MODEL");
+    }
+
+    /// With neither set, `semantic_model` uses the shared default.
+    #[test]
+    #[serial]
+    fn test_config_semantic_model_default() {
+        env::remove_var("MEMORY_MODEL");
+        env::remove_var("SEMANTIC_MODEL");
+
+        let cfg = Config::from_env();
+        assert_eq!(
+            cfg.semantic_model,
+            "mistralai/mistral-small-24b-instruct-2501"
+        );
     }
 }

@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { BASE_URL } from "../api/client";
+import { BASE_URL, UNAUTHORIZED_EVENT } from "../api/client";
 import type { SSEStreamEvent, BrowserContext } from "../types";
 
 export interface UseSSEOptions {
@@ -7,12 +7,14 @@ export interface UseSSEOptions {
   onDone?: (messageId: string, userMessageId?: string, location?: string | null, tools_used?: string, user_location?: string, user_created_at?: string) => void;
   onToolCall?: (name: string, args: unknown) => void;
   onToolResult?: (name: string, success: boolean) => void;
+  onWidget?: (id: string, name: string, data: unknown) => void;
   onError?: (message: string) => void;
   onApprovalRequired?: (
     requestId: string,
     toolName: string,
     reason: string,
   ) => void;
+  onApprovalResult?: (requestId: string, approved: boolean) => void;
 }
 
 export function useSSE() {
@@ -46,6 +48,7 @@ export function useSSE() {
 
         const response = await fetch(`${BASE_URL}/chat/stream`, {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
           signal: abortRef.current.signal,
@@ -57,6 +60,10 @@ export function useSSE() {
             response.status,
             response.statusText,
           );
+          // Igual que el cliente HTTP: un 401 de streaming corta la sesión.
+          if (response.status === 401) {
+            window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+          }
           const errorBody = await response.json().catch(() => null);
           options.onError?.(errorBody?.error || `HTTP ${response.status}`);
           setConnected(false);
@@ -115,11 +122,27 @@ export function useSSE() {
                       event.success ?? false,
                     );
                     break;
+                  case "widget":
+                    if (!event.id) {
+                      console.warn(
+                        "[useSSE] Ignoring widget event without id",
+                        event,
+                      );
+                      break;
+                    }
+                    options.onWidget?.(event.id, event.name || "", event.data);
+                    break;
                   case "approval_required":
                     options.onApprovalRequired?.(
                       event.request_id || "",
                       event.tool_name || "",
                       event.reason || "",
+                    );
+                    break;
+                  case "approval_result":
+                    options.onApprovalResult?.(
+                      event.request_id || "",
+                      event.approved ?? false,
                     );
                     break;
                   default:

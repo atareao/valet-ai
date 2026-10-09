@@ -52,6 +52,7 @@ vi.mock("../api/client", () => ({
     getStatsTools: vi.fn(),
     getDbSizes: vi.fn(),
     getMemoryStats: vi.fn(),
+    getStatsBackground: vi.fn(),
     getLastApiCall: vi.fn(),
     getRetention: vi.fn(),
     setRetention: vi.fn(),
@@ -107,6 +108,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
     vi.mocked(api.getRetention).mockResolvedValue({ days: 30 });
     vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getStatsBackground).mockResolvedValue([]);
     vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
     renderDashboard(<StatsDashboard />);
@@ -127,6 +129,34 @@ describe("StatsDashboard", () => {
     expect(await screen.findByText("Data Retention")).toBeInTheDocument();
   });
 
+  it("renders the background processes card when background usage exists", async () => {
+    vi.mocked(api.getStatsSummary).mockResolvedValue(mockSummary);
+    vi.mocked(api.getStatsByModel).mockResolvedValue(mockByModel);
+    vi.mocked(api.getStatsByDay).mockResolvedValue(mockByDay);
+    vi.mocked(api.getStatsTools).mockResolvedValue(mockTools);
+    vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
+    vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getStatsBackground).mockResolvedValue([
+      {
+        kind: "router",
+        calls: 5,
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        total_cost: 0.001234,
+        total_errors: 0,
+        avg_duration_ms: 120,
+      },
+    ]);
+    vi.mocked(api.getLastApiCall).mockResolvedValue(null);
+
+    renderDashboard(<StatsDashboard />);
+
+    fireEvent.click(await screen.findByText("🤖 Modelos"));
+
+    expect(await screen.findByText("Procesos de fondo")).toBeInTheDocument();
+  });
+
   it("renders empty state when no data", async () => {
     const emptySummary = {
       total_calls: 0,
@@ -145,6 +175,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsByDay).mockResolvedValue([]);
     vi.mocked(api.getStatsTools).mockResolvedValue([]);
     vi.mocked(api.getDbSizes).mockResolvedValue([]);
+    vi.mocked(api.getStatsBackground).mockResolvedValue([]);
     vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
     renderDashboard(<StatsDashboard />);
@@ -176,6 +207,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getRetention).mockResolvedValue({ days: 30 });
     vi.mocked(api.setRetention).mockResolvedValue({ days: 30 });
     vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getStatsBackground).mockResolvedValue([]);
     vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
     renderDashboard(<StatsDashboard />);
@@ -202,6 +234,7 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
     vi.mocked(api.getRetention).mockRejectedValue(new Error("boom"));
     vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getStatsBackground).mockResolvedValue([]);
     vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
     renderDashboard(<StatsDashboard />);

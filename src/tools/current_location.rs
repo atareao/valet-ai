@@ -25,7 +25,7 @@ impl Tool for CurrentLocationTool {
     }
 
     fn description(&self) -> &'static str {
-        "Obtener la ubicación actual del usuario. Devuelve la dirección con calle, ciudad, región y coordenadas."
+        "Obtiene la ubicación actual del usuario a partir de sus coordenadas guardadas. Devuelve la dirección con calle, ciudad y región, además de las propias coordenadas."
     }
 
     fn parameters(&self) -> Value {
@@ -35,7 +35,7 @@ impl Tool for CurrentLocationTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -120,6 +120,24 @@ mod tests {
     async fn test_tool_permission_no_confirm() {
         let pool = setup_pool().await;
         let tool = CurrentLocationTool::new(pool);
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Language guard — description in Spanish
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_current_location_description_is_spanish() {
+        let pool = setup_pool().await;
+        let tool = CurrentLocationTool::new(pool);
+        let desc = tool.description();
+        assert!(
+            desc.contains("ubicación"),
+            "get_current_location description must be in Spanish (must contain 'ubicación'), got: {desc}"
+        );
     }
 }

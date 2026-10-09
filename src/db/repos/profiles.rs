@@ -7,6 +7,13 @@ use crate::models::Profile;
 
 pub struct ProfilesRepo;
 
+/// Default profile name assigned when a profile is created on first use.
+///
+/// It is the single source of truth for the default value: `get_or_create`
+/// binds it and the orchestrator treats a profile still carrying it as
+/// unnamed, so it is never injected as the user's name.
+pub const DEFAULT_PROFILE_NAME: &str = "Valet User";
+
 impl ProfilesRepo {
     pub async fn get_or_create(pool: &SqlitePool) -> Result<Profile, sqlx::Error> {
         let row = sqlx::query(
@@ -37,7 +44,7 @@ impl ProfilesRepo {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
         .bind(&id)
-        .bind("Valet User")
+        .bind(DEFAULT_PROFILE_NAME)
         .bind(Option::<String>::None)
         .bind(&default_prefs)
         .bind(&now)
@@ -47,12 +54,39 @@ impl ProfilesRepo {
 
         Ok(Profile {
             id,
-            name: "Valet User".to_string(),
+            name: DEFAULT_PROFILE_NAME.to_string(),
             avatar_url: None,
             preferences: json!({}),
             created_at: now.clone(),
             updated_at: now,
         })
+    }
+
+    /// Fetch the profile whose `id` matches, or `None` if it does not exist.
+    ///
+    /// This is a pure read: it never inserts or updates any row. An unparseable
+    /// `preferences` value falls back to an empty JSON object, matching
+    /// [`Self::get_or_create`].
+    pub async fn get_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Profile>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT id, name, avatar_url, preferences, created_at, updated_at \
+             FROM profiles WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(row.map(|row| {
+            let prefs: String = row.get("preferences");
+            Profile {
+                id: row.get("id"),
+                name: row.get("name"),
+                avatar_url: row.get("avatar_url"),
+                preferences: serde_json::from_str(&prefs).unwrap_or(json!({})),
+                created_at: row.get("created_at"),
+                updated_at: row.get("updated_at"),
+            }
+        }))
     }
 
     pub async fn update(
@@ -156,6 +190,37 @@ mod tests {
         let profile = ProfilesRepo::update(&pool, None, None, Some(&json!({"lang": "es"}))).await?;
         assert_eq!(profile.name, "Valet User");
         assert_eq!(profile.preferences["lang"], "es");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_by_id_returns_some_for_existing() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        sqlx::query("INSERT INTO profiles (id, name, preferences) VALUES ('p1','Lorenzo','{}')")
+            .execute(&pool)
+            .await?;
+
+        let profile = ProfilesRepo::get_by_id(&pool, "p1").await.unwrap();
+
+        let profile = profile.expect("an existing profile must be returned");
+        assert_eq!(profile.name, "Lorenzo");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_by_id_returns_none_without_inserting(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+
+        let profile = ProfilesRepo::get_by_id(&pool, "nope").await.unwrap();
+        assert!(profile.is_none(), "a missing profile must yield None");
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM profiles")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(count, 0, "get_by_id must not insert a row");
 
         Ok(())
     }

@@ -15,6 +15,9 @@ body {
   overflow: hidden;
   font-family: var(--font-family);
   font-size: var(--font-size-base);
+  /* El tema es oscuro: fija el fondo para evitar el destello blanco antes de
+     que monte React (el bundle inicial ya no trae antd ni su Reset). */
+  background-color: #000000;
 }
 
 /* WebKit scrollbar */
@@ -39,4 +42,97 @@ body {
 * {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+/* Región desplazable de la lista de herramientas: foco visible para uso con teclado */
+.tools-scroll-region:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.4);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Oculta visualmente manteniendo el contenido accesible a lectores de pantalla. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Spinner nativo del bundle inicial (sustituye al Spin de antd en AppLoader). */
+.valet-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #1677ff;
+  border-radius: 50%;
+  animation: valet-spin 0.8s linear infinite;
+}
+
+@keyframes valet-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .valet-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+/* Botón nativo de la pantalla de login (sin antd).
+   El fondo base usa #0958d9 en lugar de #1677ff: blanco sobre #1677ff da
+   4.10:1, por debajo de 4.5:1 exigido para texto de 16 px (WCAG AA). #0958d9
+   alcanza ~6.1:1 con texto blanco. */
+.login-button {
+  padding: 10px 24px;
+  font: inherit;
+  font-size: var(--font-size-base, 16px);
+  font-weight: 500;
+  color: #fff;
+  background: #0958d9;
+  border: 1px solid #0958d9;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.login-button:hover {
+  background: #1677ff;
+  border-color: #1677ff;
+}
+
+.login-button:active {
+  background: #003eb3;
+  border-color: #003eb3;
+}
+
+.login-button:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
+/* Aviso recuperable de la frontera de error del bundle inicial (change
+   `lazy-app-bundle`): si falla la carga de un chunk diferido, se muestra a
+   pantalla completa en lugar de dejar la app en blanco. */
+.error-boundary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: 100vh;
+  background: #000000;
+  color: #fff;
+  text-align: center;
+  padding: 24px;
+}
+
+.error-boundary__message {
+  margin: 0;
 }

@@ -269,8 +269,9 @@ El repositorio SHALL leer `stats_retention_days` de settings y usar 30 como valo
 **And** `system_prompt` SHALL contener el prompt de personalidad de Valet (con "asistente personal británico", "Modo Conciso (Predeterminado)", "Expandido" y "Emojis")
 **And** `archivist_prompt` SHALL contener el prompt del archivista (con "archivista de memoria" y el placeholder `{{ BLOQUE_DE_MENSAJES }}`)
 **And** `collapse_prompt` SHALL contener el prompt de resumen (con "Resume el siguiente texto")
-**And** la migración SHALL NOT sobreescribir valores existentes no vacíos (personalizaciones del usuario)
-**And** la migración SHALL rellenar valores ausentes o vacíos
+**And** la migración de siembra SHALL NOT sobreescribir valores existentes no vacíos (personalizaciones del usuario)
+**And** la migración de siembra SHALL rellenar valores ausentes o vacíos
+**And** una migración aditiva posterior MAY anexar contenido nuevo al final del `system_prompt` sin eliminar el texto existente del usuario
 
 #### Scenario: Base de datos nueva recibe los tres prompts
 - **WHEN** se ejecuta `run_migrations()` sobre una base de datos vacía
@@ -326,3 +327,127 @@ La migración SHALL crear `vec_memory` como tabla virtual `vec0` con la columna 
 **Given** `EMBEDDING_DIMENSION = 1024`  
 **When** se ejecuta `run_migrations()`  
 **Then** `vec_memory` declara `embedding float[1024]`
+
+### Requirement: db/schema SHALL define the reminders table
+
+La tabla `reminders` SHALL tener las columnas `id` (PK), `profile_id` (FK a `profiles(id)`), `text`,
+`datetime`, `status` (enum `pending`/`dismissed`/`snoozed`, por defecto `pending`) y `created_at`.
+
+**Given** la migración inicial aplicada
+**When** se inspecciona el esquema
+**Then** DEBE existir la tabla `reminders` con esas columnas y el CHECK de `status`
+
+#### Scenario: El CHECK de status restringe los valores
+**Given** la tabla `reminders`
+**When** se intenta insertar `status` distinto de `pending`/`dismissed`/`snoozed`
+**Then** la inserción DEBE fallar por el CHECK
+
+### Requirement: db/schema SHALL define the tasks table with GTD statuses
+
+La tabla `tasks` SHALL tener `id` (PK), `profile_id` (FK), `content`, `status` (enum GTD
+`inbox`/`todo`/`doing`/`waiting`/`someday`/`done`, por defecto `inbox`), `priority`
+(`low`/`medium`/`high`, por defecto `medium`), `project`, `due_date`, `scope`
+(`shared`/`personal`, por defecto `shared`), `created_at` y `updated_at`. El estado final proviene de
+la migración `20260926000001_gtd_statuses`, que recrea la tabla y mapea los estados antiguos.
+
+**Given** las migraciones aplicadas
+**When** se inspecciona `tasks`
+**Then** DEBE tener el CHECK GTD y `DEFAULT 'inbox'`
+
+#### Scenario: El CHECK GTD admite los seis estados
+**Given** la tabla `tasks`
+**When** se inserta con `status` en `inbox`/`todo`/`doing`/`waiting`/`someday`/`done`
+**Then** la inserción DEBE aceptarse
+
+#### Scenario: La migración GTD mapea estados antiguos
+**Given** una fila previa con `status = 'completed'`
+**When** se aplica `20260926000001_gtd_statuses`
+**Then** su `status` DEBE quedar como `done`
+
+### Requirement: db/schema SHALL define the notes table
+
+La tabla `notes` SHALL tener `id` (PK), `profile_id` (FK), `content`, `category`
+(`idea`/`journal`/`fact`/`todo`, por defecto `idea`), `tags`, `created_at` y `updated_at`, y SHALL
+mantener los triggers FTS (`notes_ai`/`notes_ad`/`notes_au`) sobre `notes_fts`.
+
+**Given** las migraciones aplicadas
+**When** se inspecciona `notes`
+**Then** DEBE tener el CHECK de `category` y los triggers FTS
+
+#### Scenario: El CHECK de category restringe los valores
+**Given** la tabla `notes`
+**When** se inserta una `category` fuera del enum
+**Then** la inserción DEBE fallar
+
+#### Scenario: Los triggers mantienen el índice FTS
+**Given** la tabla `notes` y `notes_fts`
+**When** se inserta, actualiza o borra una nota
+**Then** los triggers DEBEN sincronizar `notes_fts`
+
+### Requirement: settings SHALL store the timezone and location keys
+
+La tabla `settings` (clave/valor con `updated_at`) SHALL almacenar, entre otras, las claves
+`timezone` (zona IANA para `get_current_time`), `latitude` y `longitude` (coordenadas para
+`get_current_location`).
+
+**Given** la tabla `settings`
+**When** se leen `timezone`, `latitude` y `longitude`
+**Then** DEBEN existir como claves con valor textual cuando estén configuradas
+
+#### Scenario: Lectura de las claves de hora y ubicación
+**Given** `settings` con `timezone`, `latitude` y `longitude`
+**When** se consultan esas claves
+**Then** DEBE devolverse su valor textual
+
+### Requirement: La guía de uso de widgets SHALL anexarse al `system_prompt` por una migración aditiva e idempotente
+
+Una migración SHALL anexar al final del valor de `settings.system_prompt` la sección
+`# Instrucciones de Interfaz y Widgets Interactivos`, con estas reglas: un widget solo se muestra si se
+**ejecuta** la llamada a `render_widget` (nunca se afirma haberlo mostrado sin invocarla); criterios de
+activación (decisión entre 2 o más opciones, recolección de más de un dato, flujos paso a paso, datos
+complejos o geográficos); restricción de texto simple (no invocar para explicaciones o datos directos); y
+procesamiento de la respuesta del usuario sin volver a renderizar el widget salvo modificación explícita.
+La migración SHALL anexar solo si la sección aún no está presente, SHALL preservar íntegro el texto
+existente del usuario y SHALL NOT fallar ni crear la clave si `system_prompt` no existe o está vacío.
+
+#### Scenario: Instalación nueva recibe la sección de widgets
+
+**Given** una base de datos vacía
+**When** se ejecuta `run_migrations()`
+**Then** `settings.system_prompt` contiene la cabecera `# Instrucciones de Interfaz y Widgets Interactivos`
+**And** menciona `render_widget`
+**And** indica que un widget solo se muestra si se ejecuta la llamada a la herramienta
+**And** enumera los criterios de activación (decisiones, recolección de datos, flujos paso a paso, datos complejos o geográficos)
+**And** indica que para una explicación o un dato directo NO se invoca la herramienta
+
+#### Scenario: Personalización existente se conserva y se le anexa la sección
+
+**Given** una base de datos con `settings.system_prompt = 'Mi prompt personalizado'`
+**When** se ejecuta la migración de guía de widgets
+**Then** `settings.system_prompt` contiene `'Mi prompt personalizado'`
+**And** también contiene la cabecera `# Instrucciones de Interfaz y Widgets Interactivos`
+**And** el texto del usuario aparece antes que la sección
+
+#### Scenario: Idempotente: la sección no se duplica
+
+**When** se ejecuta `run_migrations()` dos veces seguidas
+**Then** `settings.system_prompt` contiene una sola aparición de `# Instrucciones de Interfaz y Widgets Interactivos`
+
+### Requirement: Migration SHALL add a kind column to llm_requests
+
+La migración `20261009000001_llm_requests_kind.sql` SHALL añadir a `llm_requests` una columna `kind` de tipo `TEXT`, `NOT NULL`, con `DEFAULT 'chat'` y `CHECK (kind IN ('chat','router','archivist','consolidator','collapse'))`. Las filas existentes SHALL quedar con `kind = 'chat'`.
+
+#### Scenario: La columna kind existe tras migrar
+- **Given** una base de datos recién migrada
+- **When** se inspeccionan las columnas de `llm_requests`
+- **Then** existe `kind` de tipo `TEXT`, NOT NULL, con `CHECK (kind IN ('chat','router','archivist','consolidator','collapse'))` y DEFAULT `'chat'`
+
+#### Scenario: Las filas previas quedan como chat
+- **Given** filas de `llm_requests` insertadas antes de la migración
+- **When** se ejecuta la migración
+- **Then** todas ellas tienen `kind = 'chat'`
+
+#### Scenario: La migración es idempotente
+- **Given** las migraciones ya aplicadas
+- **When** se vuelven a ejecutar
+- **Then** no falla y la columna `kind` sigue presente

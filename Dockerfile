@@ -19,15 +19,16 @@ WORKDIR /build
 # a `-D` only defines a preprocessor macro.
 ENV CFLAGS="-Du_int8_t=uint8_t -Du_int16_t=uint16_t -Du_int64_t=uint64_t"
 
-# Cache dependencies (avoid recompiling every time)
+# Cache dependencies (avoid recompiling every time). We build only the library
+# target on purpose: it pulls in every declared dependency, while a plain
+# `cargo build` would require every declared `[[bin]]` source to exist at this
+# point — forcing us to stub each one, and breaking whenever a new binary is
+# added (as happened with `valet-route-eval`).
 RUN cargo init --bin --name valet . && \
-    echo "pub fn dummy() {}" > src/lib.rs && \
-    mkdir -p src/bin && \
-    echo "fn main() {}" > src/bin/seed.rs && \
-    echo "fn main() {}" > src/bin/reindex.rs
+    echo "pub fn dummy() {}" > src/lib.rs
 
 COPY Cargo.toml Cargo.lock ./
-RUN cargo build --release && \
+RUN cargo build --release --lib && \
     rm -rf src
 
 COPY src ./src
@@ -47,6 +48,12 @@ RUN npm ci
 COPY frontend/ ./
 ENV CI=true
 RUN npm run build
+
+# `npm run build` genera `dist/.vite/manifest.json` (lo consume
+# `frontend/scripts/check-initial-bundle.mjs` durante el propio build). No debe
+# servirse en producción (el backend sirve `static` con ServeDir), así que se
+# elimina antes de copiar la imagen final.
+RUN rm -rf dist/.vite
 
 # ═══════════════════════════════════════════════════════════════
 # Stage 3: Runtime

@@ -6,6 +6,8 @@ import remarkGfm from "remark-gfm";
 import type { Message } from "../types";
 import valetIcon from "../assets/valet-icon.svg";
 import { UserAvatar } from "./UserAvatar";
+import { WidgetRenderer } from "./widgets/WidgetRenderer";
+import type { WidgetInstance } from "./widgets/types";
 
 const { Text } = Typography;
 
@@ -19,11 +21,21 @@ function formatTime(isoDate: string): string {
 interface MessageBubbleProps {
   message: Message;
   userAvatarUrl?: string | null;
+  widgets?: WidgetInstance[];
+  onWidgetAction?: (
+    widget: WidgetInstance,
+    action: string,
+    payload?: unknown,
+  ) => void;
+  widgetsDisabled?: boolean;
 }
 
 export const MessageBubble: React.FC<MessageBubbleProps> = ({
   message,
   userAvatarUrl,
+  widgets,
+  onWidgetAction,
+  widgetsDisabled,
 }) => {
   const config = getRoleConfig(message.role, userAvatarUrl);
 
@@ -58,6 +70,22 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           </div>
         ) : (
           <Text style={{ color: config.color }}>{message.content}</Text>
+        )}
+        {widgets && widgets.length > 0 && (
+          <div style={{ marginTop: 4 }}>
+            {widgets.map((widget) => (
+              <WidgetRenderer
+                key={widget.id}
+                id={widget.id}
+                name={widget.name}
+                data={widget.data}
+                disabled={widgetsDisabled}
+                onAction={(action, payload) =>
+                  onWidgetAction?.(widget, action, payload)
+                }
+              />
+            ))}
+          </div>
         )}
         {/* Metadata lines */}
         <div style={{ fontSize: 10, marginTop: 4, opacity: 0.35 }}>

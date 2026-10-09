@@ -170,6 +170,7 @@ impl LLMProvider for OllamaProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::provider::{ReasoningSpec, ResponseFormat};
 
     #[test]
     fn test_ollama_config_defaults() {
@@ -332,5 +333,73 @@ mod tests {
 
         assert_eq!(tool_calls[0].name, "geo");
         assert_eq!(tool_calls[1].name, "get_weather");
+    }
+
+    // -----------------------------------------------------------------------
+    // Contract tests — Ollama ignores reasoning / response_format
+    // -----------------------------------------------------------------------
+
+    /// Scenario: Ollama ignora reasoning y response_format
+    #[tokio::test]
+    async fn test_ollama_ignores_reasoning_and_response_format() {
+        use wiremock::matchers::{any, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let captured: std::sync::Arc<std::sync::Mutex<Option<Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = captured.clone();
+        Mock::given(any())
+            .and(method("POST"))
+            .respond_with(move |req: &wiremock::Request| {
+                *sink.lock().unwrap() = serde_json::from_slice::<Value>(&req.body).ok();
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "message": { "role": "assistant", "content": "ok" },
+                    "done": true
+                }))
+            })
+            .mount(&server)
+            .await;
+
+        let provider = OllamaProvider::new(OllamaConfig {
+            base_url: server.uri(),
+            model: "test-model".into(),
+            timeout_secs: 5,
+            keep_alive: "5m".into(),
+        });
+
+        let request = ChatRequest {
+            model: "test-model".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "Hi".into(),
+                tool_calls: None,
+                tool_result: None,
+                tool_call_id: None,
+            }],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            reasoning: Some(ReasoningSpec::Off),
+            response_format: Some(ResponseFormat::JsonObject),
+        };
+
+        let result = provider.chat(request).await;
+        assert!(
+            result.is_ok(),
+            "Ollama must not fail on unknown generation fields: {:?}",
+            result.err()
+        );
+
+        let body = captured.lock().unwrap().clone().expect("body captured");
+        assert!(
+            body.get("reasoning").is_none(),
+            "Ollama must ignore (not forward) `reasoning`: {body}"
+        );
+        assert!(
+            body.get("response_format").is_none(),
+            "Ollama must ignore (not forward) `response_format`: {body}"
+        );
     }
 }

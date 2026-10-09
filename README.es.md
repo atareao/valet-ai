@@ -13,8 +13,6 @@ Auto-hospedado y local-first: tus datos viven en SQLite en tu propia máquina, y
 - **🫖 Chat con IA**: Orquestador con ciclo ReAct y memoria por capas (sesión, episódica, perfil)
 - **🕰️ Agenda y Tareas**: Gestión de eventos, tareas y recordatorios con scope `shared`/`personal`
 - **🗺️ Clima y Geo**: Clima por coordenadas, geocoding (Nominatim), búsqueda de lugares (Overpass OSM)
-- **🍽️ Comidas**: Planificación semanal de menús y lista de la compra
-- **🎯 Hábitos**: Seguimiento de rachas diarias/semanales
 - **🧐 Búsqueda Unificada**: FTS5 en todas las dimensiones
 - **🗝️ Privado**: Datos locales en SQLite, auto-hospedado, con auth PocketID opcional
 - **🔔 Proactivo**: Briefing matutino, detección de conflictos, preparación de viajes
@@ -106,11 +104,12 @@ Las variables de entorno se leen una vez al arrancar (ver `src/config.rs`) con d
 | `OLLAMA_BASE_URL` | URL base del fallback Ollama | `http://localhost:11434` |
 | `OLLAMA_MODEL` | Modelo de fallback Ollama | `llama3.2:3b` |
 | `AUTH_ENABLED` | Habilitar autenticación PocketID | `false` |
-| `AUTH_ISSUER_URL` | URL del emisor OIDC | `http://localhost:8080` |
-| `AUTH_CLIENT_ID` | Client ID OIDC | — |
-| `AUTH_CLIENT_SECRET` | Client secret OIDC | — |
-| `AUTH_REDIRECT_URL` | URL de redirección OIDC | `http://localhost:3000/auth/callback` |
-| `JWT_SECRET` | Secreto para firmar tokens de sesión | — |
+| `AUTH_ISSUER_URL` | URL del emisor OIDC (requerida cuando `AUTH_ENABLED=true`) | — |
+| `AUTH_CLIENT_ID` | Client ID OIDC (requerido cuando `AUTH_ENABLED=true`) | — |
+| `AUTH_CLIENT_SECRET` | Client secret OIDC (requerido cuando `AUTH_ENABLED=true`) | — |
+| `AUTH_REDIRECT_URL` | URL de redirección OIDC — Redirect URI del cliente PocketID (`https://TU_DOMINIO/api/auth/callback`); requerida cuando `AUTH_ENABLED=true` | — |
+| `AUTH_POST_LOGOUT_REDIRECT_URL` | URI de redirección tras el logout enviada al proveedor (opcional) | — |
+| `JWT_SECRET` | Secreto para firmar tokens de sesión (requerido cuando `AUTH_ENABLED=true`) | — |
 | `OPENWEATHER_API_KEY` | API key de OpenWeather | — |
 | `GOOGLE_PLACES_API_KEY` | API key de Google Places | — |
 | `BRAVE_SEARCH_API_KEY` | API key de Brave Search | — |
@@ -125,19 +124,48 @@ Las variables de entorno se leen una vez al arrancar (ver `src/config.rs`) con d
 
 ## 🏭 Producción
 
-`docker-compose.prod.yml` separa el stack en backend, frontend nginx independiente y PocketID.
+`docker-compose.prod.yml` despliega un **único servicio** `valet`, construido desde el `Dockerfile` monolítico del repo (multi-stage: el SPA de Vite se compila a `/app/static` y lo sirve el propio binario Rust en `:3000`, junto a `/api` — el mismo `Dockerfile` que usa `docker-compose.yml` en desarrollo). **No se publica nada al host**: el servicio se une a la red externa de un **Traefik existente** y se enruta por labels; Traefik termina TLS.
+
+### La app tras Traefik
+
+Necesitas **un nombre DNS** apuntando al VPS (`APP_HOST`, **sin esquema**). La red externa de Traefik debe existir de antemano (o apunta `TRAEFIK_NETWORK` a la tuya):
+
+```bash
+podman network create traefik
+```
 
 ```bash
 # Variables requeridas
 export OPENROUTER_API_KEY="sk-..."
-export AUTH_ISSUER_URL="https://auth.example.com"
+export APP_HOST="valet.example.com"                       # nombre DNS de la app, SIN esquema
+export TRAEFIK_NETWORK="traefik"                          # red externa de Traefik
+export TRAEFIK_CERT_RESOLVER="letsencrypt"                # resolver ACME configurado en Traefik
+export AUTH_ISSUER_URL="https://auth.example.com"         # issuer público del PocketID existente (coincide con el claim `iss` del id_token)
 export AUTH_CLIENT_ID="valet"
 export AUTH_CLIENT_SECRET="..."
+export AUTH_REDIRECT_URL="https://valet.example.com/api/auth/callback"
+export AUTH_POST_LOGOUT_REDIRECT_URL="https://valet.example.com"
 export JWT_SECRET="cambiar-en-produccion"
 
-# Levantar
-docker compose -f docker-compose.prod.yml up -d
+# Levantar (la auth va activa por defecto; exporta AUTH_ENABLED=false para arrancar sin auth)
+podman compose -f docker-compose.prod.yml up -d
+# App: https://valet.example.com/
 ```
+
+Traefik descubre el contenedor por las labels y emite el certificado con `TRAEFIK_CERT_RESOLVER`; no se expone ningún `ports:`. La base de datos persiste en el volumen `valet_data` montado en `/app/data`.
+
+### PocketID (ya desplegado, externo)
+
+PocketID **no** forma parte de este stack — es un proveedor OIDC que ya corre en el VPS. La app lo consume mediante `AUTH_ISSUER_URL`, que debe ser el issuer **público**: el valor que aparece en el claim `iss` del ID token y que alcanzan tanto el navegador como el backend (el discovery, el intercambio de código y el JWKS se resuelven contra él). En el PocketID existente, registra el cliente OIDC con:
+
+- **Redirect URI** = `https://${APP_HOST}/api/auth/callback` (es decir, `AUTH_REDIRECT_URL`)
+- **Post-logout URI** = `https://${APP_HOST}` (es decir, `AUTH_POST_LOGOUT_REDIRECT_URL`)
+
+Este repo no crea ningún contenedor, volumen ni nombre DNS para PocketID.
+
+### Volumen de datos
+
+La base de datos vive en el volumen nombrado `valet_data`, montado en `/app/data` (ver `DATABASE_URL`). En un volumen nuevo, Podman hereda la propiedad de la imagen. La app corre con el usuario que defina la imagen — el `Dockerfile` monolítico corre como `root`, igual que la imagen de desarrollo.
 
 **Carencia conocida: el contenedor no sobrevive a un reinicio del host.** `docker-compose.yml` no declara `restart:`, así que si la máquina se apaga el servicio se queda caído hasta levantarlo a mano — el 2026-10-01 supuso unas 9 h y media de caída. Habilitar el autoarranque está deliberadamente aplazado; el arreglo verificado está en `AGENTS.md` § V.
 
@@ -163,7 +191,9 @@ docker compose -f docker-compose.prod.yml up -d
 └──────────────────────────────────────────────────┘
 ```
 
-El orquestador expone 14 herramientas desde `src/tools/`: `calendar`, `contacts`, `current_location`, `current_time`, `geo`, `google_places`, `habits`, `knowledge`, `meals`, `reminders`, `tasks`, `unified_search`, `weather`, `web_search`.
+El orquestador expone 12 herramientas desde `src/tools/`: `calendar`, `geocode`, `get_current_location`, `get_current_time`, `notes`, `reminders`, `reverse_geocode`, `search_places`, `tasks`, `unified_search`, `weather`, `web_search`.
+
+Las herramientas con varias operaciones (`calendar`, `tasks`) declaran el permiso por operación: las lecturas se ejecutan directamente, crear y actualizar avisan, mientras que los borrados (`delete_event`, `delete_task`) pausan el turno y exigen confirmación explícita del usuario antes de ejecutarse. La confirmación se resuelve con `POST /api/approval/{request_id}`; si no llega ninguna, la operación caduca y no se ejecuta.
 
 Workers en segundo plano en `src/workers/`: `briefing`, `collapse`, `conflict_detector`, `episodic_memory`, `memory_worker`, `pool`, `stats_cleanup`, `travel_prep`.
 

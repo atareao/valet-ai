@@ -1,3 +1,5 @@
+import type { WidgetInstance } from "../components/widgets/types";
+
 export interface Message {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
@@ -12,6 +14,7 @@ export interface Message {
   location?: string | null;
   tools_used?: string;
   created_at: string;
+  widgets?: WidgetInstance[] | null;
 }
 
 export interface CreateMessage {
@@ -27,6 +30,7 @@ export interface Settings {
   system_prompt: string;
   archivist_prompt: string;
   collapse_prompt: string;
+  consolidator_prompt: string;
   [key: string]: string;
 }
 
@@ -69,6 +73,7 @@ export type SSEEventType =
   | "chunk"
   | "tool_call"
   | "tool_result"
+  | "widget"
   | "done"
   | "error"
   | "approval_required"
@@ -77,8 +82,10 @@ export type SSEEventType =
 export interface SSEStreamEvent {
   type: SSEEventType;
   content?: string;
+  id?: string;
   name?: string;
   args?: unknown;
+  data?: unknown;
   success?: boolean;
   message_id?: string;
   user_message_id?: string;
@@ -133,6 +140,22 @@ export interface ModelStats {
   total_reasoning_tokens: number;
 }
 
+/**
+ * Uso de LLM de un origen no-chat (router, archivist, consolidator, collapse).
+ * Espejo de `BackgroundStats` en `src/models/stats.rs`; el backend devuelve una
+ * entrada por origen desde `GET /api/stats/llm/background`.
+ */
+export interface BackgroundStats {
+  kind: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  total_cost: number;
+  total_errors: number;
+  avg_duration_ms: number | null;
+}
+
 export interface DayStats {
   date: string;
   calls: number;
@@ -161,6 +184,16 @@ export interface MemoryStats {
   total_tokens: number;
   messages_indexed: number;
   messages_total: number;
+}
+
+export interface PersistentMemoryState {
+  payload: Record<string, unknown> | null;
+  updated_at: string | null;
+  token_count: number;
+  budget_tokens: number;
+  ceiling_tokens: number;
+  is_empty: boolean;
+  warning?: string | null;
 }
 
 export interface LastApiCall {
@@ -195,4 +228,49 @@ export interface CalendarEvent {
   reminder_minutes_before?: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface Tool {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+}
+
+/**
+ * Campo de una skill que puede quedar sobrescrito por `settings`: la pregunta,
+ * los dos criterios o el umbral. El fragmento de prompt no se marca (su
+ * restauración equivale a vaciar su clave, no a un valor del catálogo).
+ */
+export type SkillOverrideField =
+  | "question"
+  | "criteria_true"
+  | "criteria_false"
+  | "threshold";
+
+/** Skill del catálogo cerrado del enrutador (`GET /api/skills`). */
+export interface SkillInfo {
+  id: string;
+  prompt_key: string;
+  prompt_heading: string;
+  tools: string[];
+  /** Pregunta efectiva (el valor de `settings` si lo tiene, si no el del catálogo). */
+  question: string;
+  /** Criterio del «sí» efectivo. */
+  criteria_true: string;
+  /** Criterio del «no» efectivo. */
+  criteria_false: string;
+  /** Umbral efectivo (override por skill si existe, si no el global). */
+  threshold: number;
+  /**
+   * Campos cuyo valor efectivo difiere del catálogo: `question`,
+   * `criteria_true`, `criteria_false` o `threshold`. Vacío si ninguno.
+   */
+  overridden: SkillOverrideField[];
+}
+
+/** Respuesta de `GET /api/skills`: skills enrutables + herramientas núcleo. */
+export interface SkillsResponse {
+  skills: SkillInfo[];
+  core_tools: string[];
 }

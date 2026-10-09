@@ -199,4 +199,88 @@ mod tests {
 
         Ok(())
     }
+
+    // -----------------------------------------------------------------------
+    // RED phase — generation params settings (seeding + preservation)
+    //
+    // These tests will FAIL (runtime) because the migration that seeds the
+    // twelve `GENERATION_*` keys does not exist yet.
+    // -----------------------------------------------------------------------
+
+    /// Locate the generation-params migration by content (the filename is not
+    /// fixed) and return its SQL.
+    fn generation_migration_sql() -> String {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut found: Option<String> = None;
+        for entry in std::fs::read_dir(&dir).expect("migrations directory must exist") {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("sql") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("readable migration file");
+            if content.contains("GENERATION_CHAT_TEMPERATURE") {
+                found = Some(content);
+                break;
+            }
+        }
+        found.expect(
+            "a migration seeding the GENERATION_* keys (GENERATION_CHAT_TEMPERATURE) must exist",
+        )
+    }
+
+    /// Scenario: Las doce claves se siembran con sus defaults
+    #[tokio::test]
+    async fn test_generation_settings_seeded_with_defaults(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+
+        let expected = [
+            ("GENERATION_CHAT_TEMPERATURE", "0.7"),
+            ("GENERATION_CHAT_REASONING", ""),
+            ("GENERATION_CHAT_MAX_TOKENS", "4096"),
+            ("GENERATION_COLLAPSE_TEMPERATURE", "0.2"),
+            ("GENERATION_COLLAPSE_REASONING", "off"),
+            ("GENERATION_COLLAPSE_MAX_TOKENS", "1024"),
+            ("GENERATION_MEMORY_TEMPERATURE", "0.3"),
+            ("GENERATION_MEMORY_REASONING", "off"),
+            ("GENERATION_MEMORY_MAX_TOKENS", "1024"),
+            ("GENERATION_SEMANTIC_TEMPERATURE", "0.1"),
+            ("GENERATION_SEMANTIC_REASONING", "off"),
+            ("GENERATION_SEMANTIC_MAX_TOKENS", "2048"),
+        ];
+
+        for (key, value) in expected {
+            assert_eq!(
+                SettingsRepo::get(&pool, key).await.unwrap(),
+                Some(value.to_string()),
+                "after migrations, settings.{key} must hold its initial value"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Scenario: Un valor existente se respeta
+    #[tokio::test]
+    async fn test_generation_setting_existing_value_is_respected(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+
+        // A user-customised, non-empty value present before the migration runs.
+        SettingsRepo::set(&pool, "GENERATION_CHAT_TEMPERATURE", "0.9").await?;
+
+        // Re-run the generation migration; it must not clobber non-empty values.
+        let sql = generation_migration_sql();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await?;
+
+        assert_eq!(
+            SettingsRepo::get(&pool, "GENERATION_CHAT_TEMPERATURE").await?,
+            Some("0.9".to_string()),
+            "a non-empty pre-existing generation setting must be preserved"
+        );
+
+        Ok(())
+    }
 }

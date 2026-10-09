@@ -122,76 +122,35 @@ mod tests {
         );
     }
 
+    /// The six tables belonging to the removed tools (meals, shopping list,
+    /// habits and contacts) must NOT exist after migration.
+    const REMOVED_TOOLS_TABLES: [&str; 6] = [
+        "contacts",
+        "contacts_fts",
+        "meal_plans",
+        "shopping_list",
+        "habits",
+        "habit_logs",
+    ];
+
     #[tokio::test]
-    async fn test_migrations_creates_meal_plans_table() {
+    async fn test_migrations_drop_removed_tools_tables() {
         let pool = setup().await;
 
-        let has_table: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='meal_plans'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        for table in REMOVED_TOOLS_TABLES {
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = ?1")
+                    .bind(table)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
 
-        assert!(
-            has_table,
-            "Expected 'meal_plans' table to exist after migration"
-        );
+            assert_eq!(count, 0, "Table '{table}' should NOT exist after migration");
+        }
     }
 
     #[tokio::test]
-    async fn test_migrations_creates_shopping_list_table() {
-        let pool = setup().await;
-
-        let has_table: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='shopping_list'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert!(
-            has_table,
-            "Expected 'shopping_list' table to exist after migration"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_migrations_creates_habits_table() {
-        let pool = setup().await;
-
-        let has_table: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habits'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert!(
-            has_table,
-            "Expected 'habits' table to exist after migration"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_migrations_creates_habit_logs_table() {
-        let pool = setup().await;
-
-        let has_table: bool = sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habit_logs'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-
-        assert!(
-            has_table,
-            "Expected 'habit_logs' table to exist after migration"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_idempotent_includes_new_tables() {
+    async fn test_idempotent_does_not_recreate_removed_tables() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(
@@ -211,10 +170,10 @@ mod tests {
                 .await
                 .unwrap();
 
-        for table in &["meal_plans", "shopping_list", "habits", "habit_logs"] {
+        for table in REMOVED_TOOLS_TABLES {
             assert!(
-                tables.contains(&table.to_string()),
-                "Expected '{table}' table after idempotent migration"
+                !tables.contains(&table.to_string()),
+                "Table '{table}' should NOT exist after idempotent migration"
             );
         }
     }
@@ -598,6 +557,152 @@ mod tests {
             settings_value(&pool, "RAG_BUDGET_TOKENS").await,
             "800",
             "an empty value must be backfilled with the default"
+        );
+    }
+
+    // ─── Bloque 2: Capa C (persistent_memory) migration ──────────────────────
+
+    /// Read the Capa C migration SQL from disk.
+    fn persistent_memory_migration_sql() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("migrations/20261002000001_persistent_memory.sql");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+    }
+
+    /// The migration creates `persistent_memory(id TEXT PRIMARY KEY,
+    /// payload TEXT NOT NULL, updated_at)`.
+    #[tokio::test]
+    async fn test_persistent_memory_table_exists_with_columns() {
+        let pool = setup().await;
+
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='persistent_memory'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(
+            has_table,
+            "Expected 'persistent_memory' table after migration"
+        );
+
+        let columns: Vec<(i64, String, String, i64, Option<String>, i64)> = sqlx::query_as(
+            "SELECT cid, name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('persistent_memory')",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        let col_map: std::collections::BTreeMap<String, (String, i64, i64)> = columns
+            .into_iter()
+            .map(|(_cid, name, ty, notnull, _dflt, pk)| (name, (ty, notnull, pk)))
+            .collect();
+
+        let (ty, _notnull, pk) = col_map.get("id").expect("Column 'id' should exist");
+        assert_eq!(ty.to_uppercase(), "TEXT", "id should be TEXT");
+        assert_eq!(*pk, 1, "id should be PRIMARY KEY");
+
+        let (ty, notnull, pk) = col_map
+            .get("payload")
+            .expect("Column 'payload' should exist");
+        assert_eq!(ty.to_uppercase(), "TEXT", "payload should be TEXT");
+        assert_eq!(*notnull, 1, "payload should be NOT NULL");
+        assert_eq!(*pk, 0, "payload should not be PK");
+
+        let (ty, _notnull, _pk) = col_map
+            .get("updated_at")
+            .expect("Column 'updated_at' should exist");
+        assert_eq!(ty.to_uppercase(), "TEXT", "updated_at should be TEXT");
+    }
+
+    /// The migration seeds `consolidator_prompt` (with both placeholders) and
+    /// `PERSISTENT_MEMORY_BUDGET_TOKENS = 800` (bumped from 500 by the
+    /// consolidator-reliability migration).
+    #[tokio::test]
+    async fn test_persistent_memory_settings_seeded() {
+        let pool = setup().await;
+
+        let prompt = settings_value(&pool, "consolidator_prompt").await;
+        assert!(
+            !prompt.is_empty(),
+            "consolidator_prompt should not be empty"
+        );
+        assert!(
+            prompt.contains("{{ ESTADO_ACTUAL }}"),
+            "consolidator_prompt should contain the {{ ESTADO_ACTUAL }} placeholder"
+        );
+        assert!(
+            prompt.contains("{{ BLOQUE_DE_MENSAJES }}"),
+            "consolidator_prompt should contain the {{ BLOQUE_DE_MENSAJES }} placeholder"
+        );
+
+        assert_eq!(
+            settings_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await,
+            "800",
+            "the budget knob should default to 800"
+        );
+    }
+
+    /// Re-running the migration body is idempotent, keeps one row per key and a
+    /// single table, and never overwrites a non-empty custom value (only
+    /// empty/NULL values are backfilled).
+    #[tokio::test]
+    async fn test_persistent_memory_migration_idempotent_and_respects_existing() {
+        let pool = setup().await;
+
+        sqlx::query(
+            "UPDATE settings SET value = '999' WHERE key = 'PERSISTENT_MEMORY_BUDGET_TOKENS'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let sql = persistent_memory_migration_sql();
+        for _ in 0..2 {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        // Exactly one table and one row per seeded key.
+        let tables: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='persistent_memory'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tables, 1, "the table must exist exactly once");
+
+        for key in &["consolidator_prompt", "PERSISTENT_MEMORY_BUDGET_TOKENS"] {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key = ?1")
+                .bind(key)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count, 1, "expected exactly one row for key '{key}'");
+        }
+
+        // A non-empty custom value survives; an empty one is backfilled.
+        assert_eq!(
+            settings_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await,
+            "999",
+            "a non-empty custom budget must be preserved"
+        );
+
+        sqlx::query("UPDATE settings SET value = '' WHERE key = 'PERSISTENT_MEMORY_BUDGET_TOKENS'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            settings_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await,
+            "500",
+            "an empty budget must be backfilled with the default"
         );
     }
 }

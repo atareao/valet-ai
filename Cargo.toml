@@ -1,6 +1,6 @@
 [package]
 name = "valet"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 autobins = false
 
@@ -26,6 +26,10 @@ base64 = "0.23"
 futures = "0.3"
 async-stream = "0.3"
 url = "2"
+jsonwebtoken = "9"
+axum-extra = { version = "0.10", features = ["cookie"] }
+cookie = "0.18"
+rand = "0.10"
 
 # sqlite-vec provides the `vec0` virtual table. It must be registered on the
 # *same* libsqlite3-sys instance that sqlx opens connections with, otherwise the
@@ -47,6 +51,10 @@ path = "src/bin/seed.rs"
 [[bin]]
 name = "valet-reindex"
 path = "src/bin/reindex.rs"
+
+[[bin]]
+name = "valet-route-eval"
+path = "src/bin/route-eval.rs"
 
 [features]
 default = ["vec0"]
@@ -129,3 +137,15 @@ path = "tests/api/shutdown.rs"
 [[test]]
 name = "last-call-pipeline"
 path = "tests/api/last_call_pipeline.rs"
+
+[[test]]
+name = "persistent-memory-core"
+path = "tests/db/persistent_memory_core.rs"
+
+[[test]]
+name = "persistent-memory-api"
+path = "tests/api/persistent_memory.rs"
+
+[[test]]
+name = "auth"
+path = "tests/api/auth.rs"

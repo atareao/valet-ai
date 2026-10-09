@@ -90,24 +90,43 @@ Then it still returns success (idempotent)
 
 ### Requirement: Calendar tool — change delete_event permission to ExplicitApproval
 
-La tool `calendar` SHALL declarar `ExplicitApproval` como permiso para `delete_event`.
+La tool `calendar` SHALL declarar el permiso **por operación**, evaluando el parámetro `operation` de
+los argumentos: las operaciones de lectura SHALL ser `NoConfirm`, la creación y la edición SHALL ser
+`Notify`, y el borrado SHALL ser `ExplicitApproval`.
 
-Deleting events is destructive — it should require confirmation.
+Eliminar eventos es destructivo — debe requerir confirmación del usuario antes de ejecutarse.
 
 ```rust
-fn permission(&self) -> Permission {
-    // Operaciones de solo lectura: NoConfirm
-    // create_event, update_event: Notify
-    // delete_event: ExplicitApproval
+fn permission(&self, args: &Value) -> Permission {
+    match args.get("operation").and_then(|v| v.as_str()) {
+        // get_events, check_availability, list_by_category → NoConfirm
+        // create_event, update_event → Notify
+        // delete_event → ExplicitApproval
+    }
 }
 ```
 
 **Scenarios:**
 
 #### Scenario: Delete event requires explicit approval
-When the LLM calls `delete_event`
-Then the guardrail check returns `ExplicitApproval`
-And the orchestrator pauses to ask the user
+
+**When** el LLM llama a `delete_event`
+**Then** el guardrail devuelve `ExplicitApproval`
+**And** el orquestador pausa para pedir confirmación al usuario
+**And** solo ejecuta el borrado si el usuario aprueba
+
+#### Scenario: Read operations do not require approval
+
+**Given** una llamada a `get_events`, `check_availability` o `list_by_category`
+**When** el guardrail consulta el permiso con esos argumentos
+**Then** el permiso es `NoConfirm`
+
+#### Scenario: Create and update are allowed with notification
+
+**Given** una llamada a `create_event` o `update_event`
+**When** el guardrail consulta el permiso con esos argumentos
+**Then** el permiso es `Notify`
+**And** la operación se ejecuta sin aprobación explícita
 
 ### Requirement: Calendar tool — update_event supports start_time/end_time
 

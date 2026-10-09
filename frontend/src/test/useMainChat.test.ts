@@ -19,6 +19,7 @@ vi.mock("../api/client", () => ({
     chatInit: vi.fn().mockResolvedValue({ messages: [], settings: {} }),
     listMessages: vi.fn(),
     getSettings: vi.fn(),
+    approveAction: vi.fn().mockResolvedValue(undefined),
   },
   BASE_URL: "http://localhost:3000",
 }));
@@ -34,6 +35,12 @@ vi.mock("../hooks/useSSE", () => ({
           onError?: (m: string) => void;
           onToolCall?: (name: string, args: unknown) => void;
           onToolResult?: (name: string, success: boolean) => void;
+          onApprovalRequired?: (
+            requestId: string,
+            toolName: string,
+            reason: string,
+          ) => void;
+          onApprovalResult?: (requestId: string, approved: boolean) => void;
         },
         browserContext?: unknown,
       ) => {
@@ -42,6 +49,8 @@ vi.mock("../hooks/useSSE", () => ({
         sseCallbacks.onError = options.onError;
         sseCallbacks.onToolCall = options.onToolCall;
         sseCallbacks.onToolResult = options.onToolResult;
+        sseCallbacks.onApprovalRequired = options.onApprovalRequired;
+        sseCallbacks.onApprovalResult = options.onApprovalResult;
         capturedBrowserContext.current = browserContext;
       },
     ),
@@ -58,6 +67,9 @@ describe("useMainChat", () => {
     sseCallbacks.onDone = undefined;
     sseCallbacks.onError = undefined;
     sseCallbacks.onToolCall = undefined;
+    sseCallbacks.onToolResult = undefined;
+    sseCallbacks.onApprovalRequired = undefined;
+    sseCallbacks.onApprovalResult = undefined;
   });
 
   // -----------------------------------------------------------------------
@@ -343,5 +355,221 @@ describe("useMainChat", () => {
     expect(eventsChangedCalls).toHaveLength(0);
 
     dispatchSpy.mockRestore();
+  });
+
+  // -----------------------------------------------------------------------
+  // approval_required sets pendingApproval
+  // -----------------------------------------------------------------------
+  it("sets pendingApproval when approval_required arrives", async () => {
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(
+      () => {
+        expect(result.current.loading).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      const approvalFn = sseCallbacks.onApprovalRequired as (
+        requestId: string,
+        toolName: string,
+        reason: string,
+      ) => void;
+      approvalFn("req-1", "calendar", "Borrar un evento es irreversible");
+    });
+
+    expect(result.current.pendingApproval).toEqual({
+      requestId: "req-1",
+      toolName: "calendar",
+      reason: "Borrar un evento es irreversible",
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // resolveApproval posts to the backend and clears the pending state
+  // -----------------------------------------------------------------------
+  it("resolveApproval calls api.approveAction and clears pendingApproval", async () => {
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(
+      () => {
+        expect(result.current.loading).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      const approvalFn = sseCallbacks.onApprovalRequired as (
+        requestId: string,
+        toolName: string,
+        reason: string,
+      ) => void;
+      approvalFn("req-2", "tasks", "Borrar una tarea es irreversible");
+    });
+
+    expect(result.current.pendingApproval).not.toBeNull();
+
+    await act(async () => {
+      await result.current.resolveApproval(true);
+    });
+
+    expect(api.approveAction).toHaveBeenCalledWith("req-2", true);
+    expect(result.current.pendingApproval).toBeNull();
+  });
+
+  // -----------------------------------------------------------------------
+  // resolveApproval keeps pendingApproval when the POST fails
+  // -----------------------------------------------------------------------
+  it("keeps pendingApproval when api.approveAction rejects", async () => {
+    vi.mocked(api.approveAction).mockRejectedValueOnce(new Error("Boom"));
+
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(
+      () => {
+        expect(result.current.loading).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      const approvalFn = sseCallbacks.onApprovalRequired as (
+        requestId: string,
+        toolName: string,
+        reason: string,
+      ) => void;
+      approvalFn("req-2b", "calendar", "motivo");
+    });
+
+    expect(result.current.pendingApproval).not.toBeNull();
+
+    await act(async () => {
+      await result.current.resolveApproval(true);
+    });
+
+    expect(api.approveAction).toHaveBeenCalledWith("req-2b", true);
+    expect(result.current.pendingApproval).toEqual({
+      requestId: "req-2b",
+      toolName: "calendar",
+      reason: "motivo",
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // pendingApproval is cleared by approval_result / done / error
+  // -----------------------------------------------------------------------
+  it("clears pendingApproval when approval_result arrives", async () => {
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(
+      () => {
+        expect(result.current.loading).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      const approvalFn = sseCallbacks.onApprovalRequired as (
+        requestId: string,
+        toolName: string,
+        reason: string,
+      ) => void;
+      approvalFn("req-3", "calendar", "motivo");
+    });
+
+    expect(result.current.pendingApproval).not.toBeNull();
+
+    await act(async () => {
+      const resultFn = sseCallbacks.onApprovalResult as (
+        requestId: string,
+        approved: boolean,
+      ) => void;
+      resultFn("req-3", true);
+    });
+
+    expect(result.current.pendingApproval).toBeNull();
+  });
+
+  it("clears pendingApproval on done", async () => {
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(
+      () => {
+        expect(result.current.loading).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      const approvalFn = sseCallbacks.onApprovalRequired as (
+        requestId: string,
+        toolName: string,
+        reason: string,
+      ) => void;
+      approvalFn("req-4", "calendar", "motivo");
+    });
+
+    expect(result.current.pendingApproval).not.toBeNull();
+
+    await act(async () => {
+      const doneFn = sseCallbacks.onDone as () => void;
+      doneFn();
+    });
+
+    expect(result.current.pendingApproval).toBeNull();
+  });
+
+  it("clears pendingApproval on error", async () => {
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(
+      () => {
+        expect(result.current.loading).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      const approvalFn = sseCallbacks.onApprovalRequired as (
+        requestId: string,
+        toolName: string,
+        reason: string,
+      ) => void;
+      approvalFn("req-5", "calendar", "motivo");
+    });
+
+    expect(result.current.pendingApproval).not.toBeNull();
+
+    await act(async () => {
+      const errorFn = sseCallbacks.onError as (msg: string) => void;
+      errorFn("Stream error");
+    });
+
+    expect(result.current.pendingApproval).toBeNull();
   });
 });

@@ -15,6 +15,16 @@ pub async fn toggle_tool(
     Path(id): Path<String>,
 ) -> Result<Json<Tool>, AppError> {
     let tool = crate::db::repos::tools::ToolsRepo::toggle_enabled(&state.db, &id).await?;
-    tool.ok_or_else(|| AppError::NotFound(format!("Tool {} not found", id)))
-        .map(Json)
+    let tool = tool.ok_or_else(|| AppError::NotFound(format!("Tool {} not found", id)))?;
+
+    // Keep the in-memory registry in sync so a disabled tool is immediately
+    // hidden from the prompt and rejected at execution time.
+    if let Some(registry) = state.tool_registry.as_ref() {
+        match crate::db::repos::tools::ToolsRepo::disabled_names(&state.db).await {
+            Ok(disabled) => registry.set_disabled(disabled),
+            Err(e) => tracing::warn!("failed to refresh disabled tools: {e}"),
+        }
+    }
+
+    Ok(Json(tool))
 }

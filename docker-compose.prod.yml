@@ -1,12 +1,52 @@
+# ═══════════════════════════════════════════════════════════════
+# Valet — stack de producción (Podman/Docker Compose) tras Traefik
+#
+#   valet   UN ÚNICO servicio con el `Dockerfile` monolítico del repo:
+#           multi-stage que compila el SPA (Vite) a /app/static y lo sirve
+#           con el propio binario Rust en :3000, junto a /api.
+#           Es el mismo Dockerfile que usa `docker-compose.yml` (dev).
+#
+# ── Topología ────────────────────────────────────────────────────
+# El stack NO publica puertos en el host: el único ingress es un
+# Traefik EXISTENTE que termina TLS. El servicio `valet` se une a la
+# red externa de Traefik (`TRAEFIK_NETWORK`, por defecto `traefik`)
+# y se anuncia por labels.
+#
+#     APP_HOST   nombre DNS de la app, SIN esquema (router `valet`),
+#                p. ej. `app.example.com`
+#     TRAEFIK_NETWORK        red externa de Traefik (def. `traefik`)
+#     TRAEFIK_ENTRYPOINT     entrypoint HTTPS (def. `websecure`)
+#     TRAEFIK_CERT_RESOLVER  resolver ACME de Traefik (p. ej. `letsencrypt`)
+#
+# La red externa debe existir antes de levantar el stack:
+#     podman network create traefik
+# o apunta `TRAEFIK_NETWORK` a la red que ya use tu Traefik.
+#
+# ── OIDC / PocketID (externo) ────────────────────────────────────
+# PocketID YA ESTÁ DESPLEGADO en el VPS y NO se levanta desde aquí:
+# es un proveedor OIDC externo. El backend lo consume fijando
+# `AUTH_ISSUER_URL` a su issuer PÚBLICO — el valor que aparece en el
+# claim `iss` del ID token y que TANTO el navegador COMO el backend
+# pueden alcanzar para el discovery, el intercambio de código y el JWKS:
+#
+#     APP_HOST=app.example.com
+#     AUTH_ISSUER_URL=https://auth.example.com
+#     AUTH_REDIRECT_URL=https://app.example.com/api/auth/callback
+#     AUTH_POST_LOGOUT_REDIRECT_URL=https://app.example.com
+#
+# En el PocketID existente, registra el cliente OIDC con:
+#     Redirect URI    = https://app.example.com/api/auth/callback
+#     Post-logout URI = https://app.example.com   (== AUTH_POST_LOGOUT_REDIRECT_URL)
+# ═══════════════════════════════════════════════════════════════
 services:
-  backend:
+  valet:
     build:
       context: .
-      dockerfile: Dockerfile.backend
-    ports:
-      - "3000:3000"
+      dockerfile: Dockerfile
+    container_name: valet_valet
+    restart: unless-stopped
     environment:
-      - DATABASE_URL=/data/valet.db
+      - DATABASE_URL=/app/data/valet.db
       - LOG_LEVEL=info
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER}
@@ -15,35 +55,38 @@ services:
       - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
       - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
       - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
-      - AUTH_ENABLED=true
+      # Auth activo por defecto. Para levantar el stack sin PocketID
+      # (p. ej. un smoke test) exporta AUTH_ENABLED=false.
+      - AUTH_ENABLED=${AUTH_ENABLED:-true}
       - AUTH_ISSUER_URL=${AUTH_ISSUER_URL}
       - AUTH_CLIENT_ID=${AUTH_CLIENT_ID}
       - AUTH_CLIENT_SECRET=${AUTH_CLIENT_SECRET}
+      - AUTH_REDIRECT_URL=${AUTH_REDIRECT_URL}
+      - AUTH_POST_LOGOUT_REDIRECT_URL=${AUTH_POST_LOGOUT_REDIRECT_URL}
       - JWT_SECRET=${JWT_SECRET}
     volumes:
-      - valet_data:/data
-    restart: unless-stopped
-
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    ports:
-      - "80:80"
-    depends_on:
-      - backend
-    restart: unless-stopped
-
-  pocketid:
-    image: ghcr.io/pocket-id/pocket-id:latest
-    ports:
-      - "8080:80"
-    environment:
-      - PUBLIC_APP_URL=${POCKETID_URL:-http://localhost:8080}
-    volumes:
-      - pocketid_data:/app/data
-    restart: unless-stopped
+      - valet_data:/app/data
+    networks:
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
+      - traefik.http.routers.valet.rule=Host(`${APP_HOST}`)
+      - traefik.http.routers.valet.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.valet.tls=true
+      - traefik.http.routers.valet.tls.certresolver=${TRAEFIK_CERT_RESOLVER}
+      - traefik.http.services.valet.loadbalancer.server.port=3000
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 volumes:
   valet_data:
-  pocketid_data:
+
+networks:
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}

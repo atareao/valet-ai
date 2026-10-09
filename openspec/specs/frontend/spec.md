@@ -839,22 +839,22 @@ un error de validación
 
 ### Requirement: SettingsDialog SHALL display a Memoria tab with the four memory knobs
 
-SettingsDialog SHALL display a "Memoria" tab with four numeric fields, one per memory knob: `MEMORY_HALF_LIFE_DAYS`, `SIMILARITY_THRESHOLD`, `RAG_BUDGET_TOKENS` and `MEMORY_KNN_CANDIDATES`. Los valores SHALL cargarse de `GET /settings` y guardarse con `PUT /settings`, sin rutas nuevas de API. Al ser ajustables en caliente, un cambio guardado SHALL surtir efecto sin reiniciar.
+SettingsDialog SHALL display a "Memoria" tab that agrupa en un `Tabs` anidado dos sub-pestañas: «Episódica» y «Persistente». La sub-pestaña «Episódica» SHALL mostrar cuatro campos numéricos, uno por mando de memoria: `MEMORY_HALF_LIFE_DAYS`, `SIMILARITY_THRESHOLD`, `RAG_BUDGET_TOKENS` y `MEMORY_KNN_CANDIDATES`. La sub-pestaña «Persistente» SHALL mostrar el panel de memoria persistente descrito en la spec `persistent-memory-ui`. Los valores de la sub-pestaña «Episódica» SHALL cargarse de `GET /settings` y guardarse con `PUT /settings`, sin rutas nuevas de API. Al ser ajustables en caliente, un cambio guardado SHALL surtir efecto sin reiniciar.
 
-**Given** el SettingsDialog está abierto en la tab "Memoria"  
+**Given** el SettingsDialog está abierto en la pestaña "Memoria" con la sub-pestaña "Episódica" activa  
 **When** se renderiza  
 **Then** muestra cuatro campos numéricos: `MEMORY_HALF_LIFE_DAYS`, `SIMILARITY_THRESHOLD`, `RAG_BUDGET_TOKENS` y `MEMORY_KNN_CANDIDATES`  
 **And** cada campo muestra el valor actual cargado de `GET /settings`  
 **And** un botón "Guardar" persiste los cuatro valores vía `PUT /settings`
 
 #### Scenario: Los cuatro campos están presentes
-**Given** el SettingsDialog está abierto en la tab "Memoria"  
+**Given** el SettingsDialog está abierto en la pestaña "Memoria" con la sub-pestaña "Episódica" activa  
 **When** se renderiza  
 **Then** existen los campos `MEMORY_HALF_LIFE_DAYS`, `SIMILARITY_THRESHOLD`, `RAG_BUDGET_TOKENS` y `MEMORY_KNN_CANDIDATES`
 
 #### Scenario: Los valores se cargan desde la BD
 **Given** `GET /settings` devuelve `MEMORY_HALF_LIFE_DAYS = 90` y `RAG_BUDGET_TOKENS = 800`  
-**When** se abre la tab "Memoria"  
+**When** se abre la sub-pestaña "Episódica"  
 **Then** el campo `MEMORY_HALF_LIFE_DAYS` muestra `90`  
 **And** el campo `RAG_BUDGET_TOKENS` muestra `800`
 
@@ -868,3 +868,530 @@ SettingsDialog SHALL display a "Memoria" tab with four numeric fields, one per m
 **Given** el usuario modifica solo `SIMILARITY_THRESHOLD`  
 **When** hace clic en "Guardar"  
 **Then** los otros tres mandos se envían con sus valores actuales sin cambios
+
+### Requirement: SettingsDialog SHALL display a Generación tab with the generation knobs
+
+SettingsDialog SHALL display a "Generación" tab with four blocks —Chat, Colapso, Fichas y
+Consolidación—, y dentro de cada bloque tres campos: temperatura (numérico), razonamiento
+(selector) y tokens máximos (numérico). El selector de razonamiento SHALL ofrecer al menos
+`default` (no enviar), `off`, `minimal`, `low`, `medium`, `high`, `xhigh` y `max`. Los valores SHALL
+cargarse de `GET /settings` y guardarse con `PUT /settings`, sin rutas nuevas de API. Al ajustarse
+en caliente, un cambio guardado SHALL surtir efecto sin reiniciar.
+
+**Given** el SettingsDialog está abierto en la tab "Generación"  
+**When** se renderiza  
+**Then** muestra cuatro bloques, uno por rol  
+**And** cada bloque muestra temperatura, razonamiento y tokens máximos  
+**And** cada campo muestra el valor actual cargado de `GET /settings`  
+**And** un botón "Guardar" persiste las doce claves vía `PUT /settings`
+
+#### Scenario: La pestaña muestra los cuatro roles y sus tres campos
+**Given** el SettingsDialog abierto en la tab "Generación"  
+**When** se renderiza  
+**Then** existen los bloques Chat, Colapso, Fichas y Consolidación  
+**And** cada bloque tiene temperatura, razonamiento y tokens máximos
+
+#### Scenario: Los valores se cargan desde la BD
+**Given** `GET /settings` devuelve `GENERATION_CHAT_TEMPERATURE = 0.7` y `GENERATION_SEMANTIC_REASONING = low`  
+**When** se abre la tab "Generación"  
+**Then** el campo de temperatura del chat muestra `0.7`  
+**And** el selector de razonamiento de consolidación muestra `low`
+
+#### Scenario: El selector de razonamiento ofrece las opciones esperadas
+**Given** el SettingsDialog abierto en la tab "Generación"  
+**When** se abre el selector de razonamiento de cualquier rol  
+**Then** ofrece `default`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh` y `max`
+
+#### Scenario: Guardar envía las doce claves y muestra confirmación
+**Given** el usuario edita la temperatura del chat  
+**When** hace clic en "Guardar"  
+**Then** `updateSettings` se llama con las doce claves, las editadas y las demás con su valor actual  
+**And** se muestra el mensaje "Ajustes guardados"
+
+#### Scenario: Editar un campo no borra los demás
+**Given** el usuario modifica solo los tokens máximos del consolidador  
+**When** hace clic en "Guardar"  
+**Then** las otras once claves se envían con sus valores actuales sin cambios
+
+### Requirement: SettingsDialog SHALL organize the Generación roles in sub-tabs
+
+Dentro de la pestaña «Generación», SettingsDialog SHALL mostrar un `Tabs` anidado con una sub-pestaña
+por rol —**Chat**, **Colapso**, **Fichas** y **Consolidación**— siguiendo el patrón de la pestaña
+«Prompts». La sub-pestaña «Consolidación» corresponde a las claves `GENERATION_SEMANTIC_*`. Cada
+sub-pestaña SHALL contener los tres campos del rol (temperatura numérica, razonamiento por selector
+y tokens máximos numéricos), manteniendo `name`/`label` iguales a la clave cruda. Las sub-pestañas
+SHALL usar `forceRender` para que los doce campos permanezcan registrados en el formulario aunque su
+sub-pestaña no esté activa, de modo que el guardado siga enviando las doce claves.
+
+**Given** el SettingsDialog abierto en la pestaña "Generación"  
+**When** se renderiza  
+**Then** existe un `Tabs` anidado con las sub-pestañas Chat, Colapso, Fichas y Consolidación  
+**And** la sub-pestaña activa muestra temperatura, razonamiento y tokens máximos de su rol
+
+#### Scenario: Existen las cuatro sub-pestañas de rol
+**Given** el SettingsDialog abierto en la pestaña "Generación"  
+**When** se renderiza  
+**Then** existen sub-pestañas con nombre Chat, Colapso, Fichas y Consolidación
+
+#### Scenario: Cambiar de sub-pestaña muestra los campos del rol
+**Given** el SettingsDialog abierto en "Generación" con la sub-pestaña "Chat" activa  
+**When** el usuario selecciona la sub-pestaña "Colapso"  
+**Then** los campos de colapso (`GENERATION_COLLAPSE_*`) quedan visibles  
+**And** la sub-pestaña "Chat" deja de estar visible
+
+#### Scenario: Los doce campos siguen registrados con forceRender
+**Given** el usuario abrió la pestaña "Generación"  
+**When** guarda sin haber abierto todas las sub-pestañas  
+**Then** `updateSettings` recibe las doce claves `GENERATION_*` sin cambios en las no editadas
+
+### Requirement: SettingsDialog SHALL fit all its top-level tabs without overflow
+
+El `Modal` de SettingsDialog SHALL declarar un ancho de al menos **960 px** (se fija en 1000) para que sus siete pestañas superiores —Perfil, Interfaz, Prompts, API Keys, Memoria, Generación y Herramientas— quepan en una sola fila, sin que ninguna se oculte en el desplegable de desbordamiento de antd.
+
+**Given** el SettingsDialog abierto  
+**When** se renderiza  
+**Then** el ancho del diálogo es de al menos 960 px  
+**And** sus siete pestañas superiores son alcanzables
+
+#### Scenario: El diálogo es más ancho que el mínimo
+**Given** el SettingsDialog abierto  
+**When** se renderiza  
+**Then** el ancho declarado del `Modal` es mayor o igual a 960 px
+
+#### Scenario: La pestaña Memoria persistente es alcanzable
+**Given** el SettingsDialog abierto  
+**When** el usuario abre la pestaña "Memoria" y selecciona la sub-pestaña "Persistente"  
+**Then** se muestra el panel de memoria persistente
+
+#### Scenario: Existen exactamente seis pestañas superiores
+**Given** el SettingsDialog abierto  
+**When** el usuario busca las pestañas superiores  
+**Then** existen exactamente siete: Perfil, Interfaz, Prompts, API Keys, Memoria, Generación y Herramientas  
+**And** NO existe una pestaña superior "Memoria persistente"
+
+### Requirement: SettingsDialog SHALL organize the memory panels in sub-tabs
+
+Dentro de la pestaña «Memoria», SettingsDialog SHALL mostrar un `Tabs` anidado con dos sub-pestañas —«Episódica» y «Persistente»— siguiendo el patrón de las pestañas «Prompts» y «Generación». El `Tabs` anidado SHALL ir envuelto en una región etiquetada (`<section aria-label="Tipo de memoria">`), de modo que las tecnologías de asistencia la anuncien; antd no propaga `aria-label` al `role="tablist"`, así que un `aria-label` sobre el propio `Tabs` sería cosmético. Ninguna de las dos sub-pestañas SHALL usar `forceRender`: antd monta cada panel de forma perezosa, de modo que la sub-pestaña «Persistente» —y con ella el `GET` del estado persistente— solo se monta cuando se selecciona.
+
+**Given** el SettingsDialog abierto en la pestaña "Memoria"  
+**When** se renderiza  
+**Then** existe un `Tabs` anidado con las sub-pestañas Episódica y Persistente  
+**And** la sub-pestaña activa por defecto es "Episódica"
+
+#### Scenario: Existen las dos sub-pestañas
+**Given** el SettingsDialog abierto en la pestaña "Memoria"  
+**When** se renderiza  
+**Then** existen sub-pestañas con nombre Episódica y Persistente
+
+#### Scenario: El Tabs anidado está dentro de una región «Tipo de memoria»
+**Given** el SettingsDialog abierto en la pestaña "Memoria"  
+**When** se renderiza  
+**Then** existe una región accesible con nombre "Tipo de memoria" que contiene las sub-pestañas Episódica y Persistente
+
+#### Scenario: Cambiar de sub-pestaña activa el panel correspondiente
+**Given** el SettingsDialog abierto en "Memoria" con la sub-pestaña "Episódica" activa  
+**When** el usuario selecciona la sub-pestaña "Persistente"  
+**Then** el panel de memoria persistente queda visible  
+**And** la sub-pestaña "Episódica" deja de estar visible
+
+#### Scenario: El panel persistente no se monta hasta seleccionar su sub-pestaña
+**Given** el SettingsDialog abierto en la pestaña "Memoria" con la sub-pestaña "Episódica" activa  
+**When** se renderiza sin seleccionar "Persistente"  
+**Then** el panel de memoria persistente NO está montado
+
+### Requirement: El chat SHALL pedir confirmación para herramientas destructivas
+
+Ante un evento SSE `approval_required`, el chat SHALL mostrar la petición con el nombre de la
+herramienta y el motivo, y SHALL ofrecer las acciones Permitir y Denegar. Al decidir SHALL llamar a
+`POST /api/approval/{request_id}` y SHALL mantener abierto el stream para continuar la respuesta. El
+estado pendiente SHALL limpiarse al recibir `approval_result`, `done` o `error`.
+
+#### Scenario: La petición de aprobación se muestra
+
+**Given** el chat recibiendo un evento `approval_required` con `request_id`, `tool_name` y `reason`
+**When** llega el evento
+**Then** se muestra un diálogo con el nombre de la herramienta y el motivo
+**And** el diálogo ofrece Permitir y Denegar
+
+#### Scenario: Aprobar reanuda la respuesta
+
+**Given** un diálogo de aprobación visible
+**When** el usuario pulsa Permitir
+**Then** se llama a `POST /api/approval/{request_id}` con `approved: true`
+**And** el diálogo se cierra
+**And** el stream continúa y la respuesta se completa con `done`
+
+#### Scenario: Denegar cierra el diálogo y continúa
+
+**Given** un diálogo de aprobación visible
+**When** el usuario pulsa Denegar
+**Then** se llama a `POST /api/approval/{request_id}` con `approved: false`
+**And** el diálogo se cierra
+**And** el stream continúa hasta `done`
+
+#### Scenario: El estado pendiente se limpia
+
+**Given** una aprobación resuelta
+**When** llega `approval_result`, `done` o `error`
+**Then** no queda ningún diálogo de aprobación visible
+
+### Requirement: SettingsDialog SHALL display Herramientas tab
+
+SettingsDialog SHALL display a "Herramientas" top-level tab that lists the registered tools and lets
+the user enable or disable each one. Al abrirse, el panel SHALL cargar la lista desde `GET /api/tools`
+y SHALL mostrar cada tool con su nombre, su descripción y un `Switch` que refleja su campo `enabled`.
+Al cambiar un `Switch`, SHALL llamar a `PUT /api/tools/{id}/toggle` y actualizar la fila con la tool
+devuelta; si la llamada falla, SHALL restaurar el valor previo y mostrar un aviso de error.
+
+**Given** el SettingsDialog abierto en la tab "Herramientas"
+**When** el panel se monta
+**Then** se llama a `GET /api/tools`
+**And** se listan todas las tools con nombre, descripción y un `Switch` con su estado `enabled`
+
+#### Scenario: La pestaña lista las tools con su estado
+**Given** `GET /api/tools` devuelve una tool `weather` con `enabled: true`
+**When** el usuario abre la pestaña "Herramientas"
+**Then** la fila de `weather` muestra su nombre, su descripción y un `Switch` activado
+
+#### Scenario: Deshabilitar una tool
+**Given** la fila de la tool `weather` con el `Switch` activado
+**When** el usuario apaga el `Switch`
+**Then** se llama a `PUT /api/tools/weather/toggle` (con el `id` de la tool)
+**And** el `Switch` queda apagado
+
+#### Scenario: Habilitar de nuevo una tool
+**Given** la fila de la tool `weather` con el `Switch` apagado
+**When** el usuario enciende el `Switch`
+**Then** se llama a `PUT /api/tools/weather/toggle`
+**And** el `Switch` queda activado
+
+#### Scenario: Error al cambiar el estado
+**Given** la fila de la tool `weather` con el `Switch` activado
+**When** el usuario apaga el `Switch` y la llamada a `PUT /api/tools/.../toggle` falla
+**Then** el `Switch` vuelve a quedar activado
+**And** se muestra un aviso de error
+
+#### Scenario: Estado de carga
+**Given** que `GET /api/tools` aún no ha respondido
+**When** el usuario abre la pestaña "Herramientas"
+**Then** se muestra un indicador de carga
+**And** la lista de tools no se muestra hasta que llegan los datos
+
+### Requirement: El panel Herramientas SHALL limitar la altura de la lista y permitir scroll
+
+`ToolsTab` SHALL renderizar la lista de tools dentro de un contenedor con una altura máxima relativa al
+viewport (`max-height: 60vh`) y `overflow-y: auto`, de forma que cuando haya más tools de las que caben
+en la ventana la lista se desplace verticalmente y todas las filas sigan siendo alcanzables, sin
+desbordar el `Modal` de `SettingsDialog`.
+
+**Given** el SettingsDialog abierto en la tab "Herramientas"
+**When** el panel se monta con la lista de tools
+**Then** la lista queda envuelta en un contenedor con `overflow-y: auto` y una `max-height` definida
+
+#### Scenario: La lista queda contenida y con scroll
+
+**Given** que `GET /api/tools` devuelve más tools de las que caben en el viewport
+**When** el usuario abre la pestaña "Herramientas"
+**Then** la lista se renderiza dentro de un contenedor con `overflow-y` en `auto` y `max-height: 60vh`
+
+#### Scenario: Todas las filas quedan dentro del contenedor desplazable
+
+**Given** la pestaña "Herramientas" con varias tools
+**When** se renderiza el panel
+**Then** todas las filas de tools están contenidas en el mismo contenedor con scroll
+
+### Requirement: El frontend SHALL renderizar widgets a partir de un registry de componentes
+
+El frontend SHALL exponer un `WIDGET_REGISTRY` que mapee el nombre del widget a su componente React, y
+un `WidgetRenderer` que, dado un `WidgetInstance { id, name, data }`, renderice el componente
+correspondiente pasándole `data` y un callback `onAction`. Con un `name` que no exista en el registry,
+`WidgetRenderer` SHALL mostrar un aviso visible y SHALL NOT lanzar una excepción.
+
+#### Scenario: Widget conocido
+
+**Given** un `WidgetInstance` con `name: "Checklist"` y `data` válido
+**When** se renderiza con `WidgetRenderer`
+**Then** se pinta el componente `Checklist` dentro de un contenedor del mensaje
+
+#### Scenario: Widget desconocido
+
+**Given** un `WidgetInstance` con `name: "SystemMonitor"`
+**When** se renderiza con `WidgetRenderer`
+**Then** se muestra un aviso con el nombre desconocido
+**And** el chat sigue funcionando
+
+### Requirement: El evento SSE `widget` SHALL asociarse al mensaje del asistente en curso
+
+`useSSE` SHALL reconocer los eventos con `type: "widget"` y entregarlos por un callback con `id`,
+`name` y `data`. `useMainChat` SHALL acumular los `WidgetInstance` recibidos en el mapa de widgets del
+mensaje del asistente que se está generando, y SHALL exponerlos a la vista para que se rendericen tras
+el contenido Markdown. Un evento `widget` SHALL NOT interrumpir el resto del stream.
+
+#### Scenario: Llega un widget durante el stream
+
+**Given** un stream en curso del mensaje del asistente
+**When** llega un evento `{"type":"widget","id":"w1","name":"QuickForm","data":{}}`
+**Then** el mensaje del asistente en curso queda con un widget `QuickForm` de id `w1`
+
+#### Scenario: El stream continúa tras el widget
+
+**Given** un stream que ya emitió un evento `widget`
+**When** llegan nuevos eventos `chunk` y `done`
+**Then** el texto se sigue acumulando y el mensaje se cierra con normalidad
+
+### Requirement: Las acciones de un widget SHALL devolverse al backend como un turno de usuario
+
+El frontend SHALL exponer una función `sendWidgetAction(widget, action, payload)` que construya un
+contenido mediante `formatWidgetAction(name, id, action, payload)` con el formato
+`[widget:<name>#<id>] <action> <json-payload>` y lo envíe como mensaje de usuario por
+`POST /api/chat/stream`, reutilizando el pipeline existente. No SHALL crearse un endpoint nuevo para
+las acciones.
+
+#### Scenario: Submit de QuickForm
+
+**Given** un widget `QuickForm` con id `abc`
+**When** el usuario envía el formulario con `{ "ciudad": "Madrid" }`
+**Then** se envía un turno de usuario cuyo contenido es `[widget:QuickForm#abc] submit {"ciudad":"Madrid"}`
+
+#### Scenario: Submit de Checklist
+
+**Given** un widget `Checklist` con id `def`
+**When** el usuario envía la selección con `["a","c"]`
+**Then** se envía un turno de usuario cuya acción es `submit` y cuyo payload contiene `["a","c"]`
+
+### Requirement: El widget `QuickForm` SHALL presentar campos y enviar los valores introducidos
+
+`QuickFormWidget` SHALL renderizar, a partir de `QuickFormData`, un título y una lista de campos
+(antd), y un botón de envío. Al enviar, SHALL llamar a `onAction("submit", valores)` con un objeto que
+mapee el `name` de cada campo a su valor. Los tipos de campo admitidos son `text`, `textarea`, `number`,
+`select`, `checkbox` y `slider`; un campo con un `type` desconocido SHALL tratarse como texto.
+
+#### Scenario: Envío de un campo de texto
+
+**Given** un `QuickFormData` con un campo `ciudad` de tipo `text`
+**When** el usuario escribe "Madrid" y envía el formulario
+**Then** se invoca `onAction("submit", { "ciudad": "Madrid" })`
+
+#### Scenario: Envío de varios tipos de campo
+
+**Given** un `QuickFormData` con un campo de texto, uno de selección y otro de casilla
+**When** el usuario completa los campos y envía
+**Then** `onAction` recibe `submit` con el valor de cada campo bajo su `name`
+
+#### Scenario: Envío de un campo numérico
+
+**Given** un `QuickFormData` con un campo `presupuesto` de tipo `number`
+**When** el usuario introduce "1500" y envía el formulario
+**Then** se invoca `onAction("submit", { "presupuesto": 1500 })`
+
+#### Scenario: Envío de un campo de texto largo
+
+**Given** un `QuickFormData` con un campo `notas` de tipo `textarea`
+**When** el usuario escribe un texto y envía el formulario
+**Then** se invoca `onAction("submit", { "notas": "<texto>" })`
+
+### Requirement: El widget `Checklist` SHALL permitir marcar ítems y enviar la selección
+
+`ChecklistWidget` SHALL renderizar, a partir de `ChecklistData`, un título y una casilla por ítem, y un
+botón de envío. Al enviar, SHALL llamar a `onAction("submit", { checkedIds: [...] })` con los
+identificadores marcados.
+
+#### Scenario: Envío de elementos marcados
+
+**Given** un `ChecklistData` con los ítems `a`, `b` y `c`
+**When** el usuario marca `a` y `c` y envía
+**Then** se invoca `onAction("submit", { "checkedIds": ["a", "c"] })`
+
+#### Scenario: Sin elementos marcados
+
+**Given** un `ChecklistData` con ítems y ninguno marcado
+**When** el usuario envía
+**Then** se invoca `onAction("submit", { "checkedIds": [] })`
+
+### Requirement: Los widgets SHALL normalizar variantes de `data` antes de renderizar
+
+`QuickFormWidget` SHALL usar `description` como título cuando falte `title`. `ChecklistWidget` SHALL
+aceptar cada ítem con `label` o con `text`, y SHALL sintetizar un `id` cuando falte (a partir de su
+posición). Ninguna de estas variantes SHALL provocar un error de render.
+
+#### Scenario: `QuickForm` sin `title` usa `description`
+
+**Given** un `QuickFormData` sin `title` pero con `description: "Elige una opción"`
+**When** se renderiza el widget
+**Then** se muestra "Elige una opción" como título
+
+#### Scenario: `Checklist` con ítems sin `id` y con `text`
+
+**Given** un `ChecklistData` con ítems `{ text: "Paso uno" }` y `{ text: "Paso dos" }` (sin `id`)
+**When** el usuario marca "Paso uno" y envía
+**Then** se invoca `onAction("submit", { "checkedIds": ["item-0"] })`
+
+### Requirement: El widget `LocationWidget` SHALL mostrar una ubicación en un mapa con acciones
+
+El frontend SHALL registrar un widget `LocationWidget` que, a partir de `LocationData`
+(`{ title?, description?, latitude?, longitude?, address? }`), pinte un mapa Leaflet centrado en las
+coordenadas, con un marcador y su popup, y un panel con el título, la dirección y la descripción. El
+mapa SHALL usar tiles de **OpenStreetMap** (sin API key) con su atribución visible, y SHALL aplicar un
+filtro CSS sobre el panel de tiles para el aspecto oscuro. El mapa SHALL tener `scrollWheelZoom`
+desactivado. El widget SHALL ofrecer las acciones «Guardar», «Cómo llegar» y «Copiar coordenadas». El
+componente SHALL cargarse de forma **diferida** para no incluir la librería de mapas en el bundle
+inicial.
+
+#### Scenario: Renderiza la ubicación
+
+**Given** un `LocationData` con `title`, `latitude` y `longitude` válidos
+**When** se renderiza `LocationWidget`
+**Then** se muestra el título y un mapa centrado en esas coordenadas con un marcador
+
+#### Scenario: El mapa usa tiles de OpenStreetMap sin API key
+
+**Given** la configuración de tiles del widget `LocationWidget`
+**When** se inspecciona su URL de tiles
+**Then** apunta a `openstreetmap.org`
+**And** no apunta a un proveedor que requiera API key
+**And** incluye la atribución de OpenStreetMap
+
+#### Scenario: Guardar devuelve la acción al backend
+
+**Given** un `LocationWidget` renderizado con coordenadas válidas
+**When** el usuario pulsa «Guardar»
+**Then** se invoca `onAction("save_place", …)` con el título, la dirección y las coordenadas
+
+#### Scenario: Coordenadas ausentes no rompen el widget
+
+**Given** un `LocationData` sin `latitude` o `longitude`
+**When** se renderiza `LocationWidget`
+**Then** se muestra un aviso visible
+**And** no se lanza ninguna excepción
+
+### Requirement: El frontend SHALL reconstruir los widgets persistidos al cargar el historial
+
+Al inicializar el chat (`GET /api/chat/init`), el frontend SHALL poblar `widgetsByMessage` a partir del
+campo `widgets` de cada mensaje del asistente, de modo que los widgets renderizados en la conversación
+vuelvan a mostrarse tras recargar la página. Los mensajes sin `widgets` no SHALL crear entradas.
+
+#### Scenario: Los widgets reaparecen al recargar
+
+**Given** un historial con un mensaje assistant que tiene `widgets = [{ id: "w1", name: "LocationWidget", data: {…} }]`
+**When** el frontend inicializa el chat
+**Then** `widgetsByMessage[<id del mensaje>]` contiene ese widget
+**And** se renderiza con `WidgetRenderer`
+
+#### Scenario: Mensaje sin widgets no crea entrada
+
+**Given** un historial con un mensaje assistant sin `widgets`
+**When** el frontend inicializa el chat
+**Then** no se crea ninguna entrada en `widgetsByMessage` para ese mensaje
+
+### Requirement: El frontend presenta una pantalla de login
+
+Cuando no exista una sesión válida, el frontend SHALL mostrar una pantalla de login a pantalla completa con **fondo oscuro** (el color de fondo del layout de la aplicación, `#000000`), el **logo real de Valet** (`valet-icon.svg`) renderizado como imagen a un tamaño de **120 px**, y un control que inicie el flujo OIDC navegando a `/api/auth/login`; NO SHALL mostrar el contenido autenticado de la aplicación mientras la sesión no esté resuelta, y NO SHALL usar el emoji de chat (`💬`) como icono de la pantalla.
+
+#### Scenario: Sin sesión se muestra la pantalla de login
+- **Given** un usuario sin sesión válida
+- **When** se carga la aplicación
+- **Then** se muestra la pantalla de login y no el contenido autenticado
+
+#### Scenario: El control de login redirige a /api/auth/login
+- **Given** la pantalla de login visible
+- **When** el usuario activa el control de inicio de sesión
+- **Then** el navegador navega a `/api/auth/login`
+
+#### Scenario: La pantalla de login usa fondo oscuro y el logo de Valet
+- **Given** la pantalla de login visible
+- **When** se inspecciona su contenedor raíz
+- **Then** ocupa toda la ventana y tiene fondo oscuro (`#000000`)
+- **And** se muestra el logo de Valet (`valet-icon.svg`) como imagen, no un emoji
+
+#### Scenario: El logo de Valet se muestra a tamaño adecuado
+- **Given** la pantalla de login visible
+- **When** se inspecciona el logo
+- **Then** se renderiza a 120 px de ancho y alto
+
+### Requirement: Todas las peticiones incluyen credenciales
+
+El cliente HTTP del frontend SHALL enviar las cookies de sesión en todas las peticiones a la API (`credentials: include`), incluidas las de streaming, para que la sesión viaje en cada petición.
+
+#### Scenario: El cliente envía credenciales
+- **Given** el cliente HTTP del frontend
+- **When** se realiza cualquier petición a `/api/*`
+- **Then** la petición incluye las cookies de sesión (`credentials: include`)
+- **And** la sesión se envía igualmente en las peticiones de streaming
+
+### Requirement: Un 401 global redirige a login
+
+Cuando cualquier petición a la API reciba `401`, el frontend SHALL redirigir al usuario a la pantalla de login, salvo que se trate del propio flujo de autenticación, evitando dejar al usuario en un estado autenticado inconsistente.
+
+#### Scenario: Un 401 fuerza la vuelta al login
+- **Given** una sesión expirada o inexistente
+- **When** una petición a la API responde `401`
+- **Then** el frontend redirige a la pantalla de login
+- **And** no continúa mostrando contenido autenticado
+
+### Requirement: El header incluye un botón de logout
+
+El `AppLayout` SHALL mostrar un botón de logout cuando el usuario está autenticado; al activarlo, SHALL cerrar la sesión local llamando a `POST /api/auth/logout` y, a continuación, SHALL redirigir a la URL de cierre de sesión del proveedor devuelta por el backend (campo `end_session_url` de la respuesta) para cerrar también la sesión SSO.
+
+#### Scenario: Logout local y SSO desde el header
+- **Given** un usuario autenticado viendo la aplicación
+- **When** activa el botón de logout
+- **Then** se llama a `POST /api/auth/logout`
+- **And** la sesión local deja de estar disponible
+- **And** el navegador redirige a la URL de cierre de sesión del proveedor devuelta por el backend (`end_session_url`)
+
+### Requirement: Estado de carga mientras se resuelve la sesión
+
+Mientras se resuelve `GET /api/auth/me` al cargar la aplicación, el frontend SHALL mostrar un estado de carga y NO SHALL mostrar ni el contenido autenticado ni la pantalla de login hasta conocer el resultado.
+
+#### Scenario: Estado de carga durante la comprobación de sesión
+- **Given** la aplicación recién cargada a la espera de `/api/auth/me`
+- **When** la petición está en curso
+- **Then** se muestra un indicador de carga
+- **And** no se muestra contenido autenticado ni la pantalla de login antes de recibir la respuesta
+
+### Requirement: El frontend SHALL cargar la aplicación autenticada de forma diferida
+
+El bundle inicial del frontend —el que se descarga antes de resolver la sesión— SHALL excluir `antd`, `@ant-design/icons`, `react-router-dom`, las vistas autenticadas y las librerías de gráficas (`chart.js`) y markdown (`react-markdown`/`remark-gfm`). El módulo de la aplicación autenticada SHALL importarse dinámicamente cuando la sesión se resuelva, y las vistas que se abren desde el `AppLayout` (Agenda, Tareas, Stats y Ajustes) SHALL cargarse bajo demanda al abrirse, sin bloquear el bundle inicial. Si la carga de un módulo diferido falla, el frontend SHALL mostrar un aviso recuperable (con una acción de recarga) en lugar de desmontar la aplicación y dejar una pantalla en blanco.
+
+#### Scenario: El bundle inicial no incluye antd ni la app autenticada
+- **Given** una compilación de producción
+- **When** se analiza el grafo de chunks iniciales (entrada HTML y sus importaciones estáticas)
+- **Then** ningún chunk inicial pertenece a `antd`, `@ant-design/icons`, las gráficas, el markdown, leaflet ni la aplicación autenticada
+- **And** el tamaño gzip total del grafo inicial no supera el presupuesto de la comprobación de build
+- **And** existe un chunk diferido de la aplicación autenticada fuera de ese grafo
+
+#### Scenario: La aplicación autenticada se carga bajo demanda
+- **Given** un usuario con sesión resuelta
+- **When** la aplicación se muestra
+- **Then** el módulo de la aplicación autenticada se importa dinámicamente
+- **And** mientras se carga se muestra el indicador de carga
+
+#### Scenario: Las vistas del layout se cargan al abrirse
+- **Given** la aplicación autenticada cargada
+- **When** el usuario abre Agenda, Tareas, Stats o Ajustes
+- **Then** el código de esa vista se carga bajo demanda y se muestra su contenido
+
+#### Scenario: Un fallo al cargar un chunk diferido no deja la app en blanco
+- **Given** la aplicación en ejecución con la sesión resuelta
+- **When** falla la carga de un chunk diferido (por ejemplo, un 404 tras un despliegue)
+- **Then** se muestra un aviso recuperable con una acción de recarga
+- **And** la aplicación no queda desmontada en una pantalla en blanco
+
+### Requirement: El panel de estadísticas SHALL mostrar los procesos de fondo por separado
+
+La pestaña «Modelos» del panel de estadísticas SHALL incluir una tarjeta «Procesos de fondo» alimentada por `GET /api/stats/llm/background`, con una fila por origen (router, archivist, consolidator, collapse) y sus llamadas, tokens, coste, latencia media y errores. Las tarjetas de chat (resumen, modelos y diaria) SHALL NOT incluir las peticiones de los orígenes de fondo.
+
+#### Scenario: La tarjeta muestra el uso de cada origen
+- **Given** el endpoint devuelve entradas para router y collapse
+- **When** se abre la pestaña «Modelos»
+- **Then** la tarjeta «Procesos de fondo» muestra una fila por origen con sus cifras
+
+#### Scenario: Sin procesos de fondo
+- **Given** el endpoint devuelve todas las entradas a cero
+- **When** se abre la pestaña «Modelos»
+- **Then** la tarjeta muestra un estado vacío sin romper la vista
+
+#### Scenario: Las tarjetas de chat no incluyen los orígenes de fondo
+- **Given** datos de chat y de los orígenes de fondo
+- **When** se renderizan las tarjetas de chat
+- **Then** sus cifras no incluyen las peticiones de los orígenes de fondo

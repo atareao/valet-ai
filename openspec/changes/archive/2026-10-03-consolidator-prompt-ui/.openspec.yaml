@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-10-03
+goal: >-
+  Poder ver y editar desde la pestaña Prompts el prompt del consolidador de la Capa C, que hoy
+  solo vive en la base de datos, avisando si el texto pierde los placeholders que el worker
+  necesita en tiempo de ejecución.

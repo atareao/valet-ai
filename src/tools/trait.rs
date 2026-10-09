@@ -35,7 +35,7 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
     fn parameters(&self) -> Value;
-    fn permission(&self) -> Permission;
+    fn permission(&self, args: &Value) -> Permission;
     async fn execute(&self, args: Value) -> Result<ToolResult, ToolError>;
 }
 
@@ -64,7 +64,7 @@ mod tests {
             })
         }
 
-        fn permission(&self) -> Permission {
+        fn permission(&self, _args: &Value) -> Permission {
             Permission::NoConfirm
         }
 
@@ -108,7 +108,10 @@ mod tests {
     #[tokio::test]
     async fn test_tool_returns_permission() {
         let tool = TestTool;
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
     }
 
     #[tokio::test]

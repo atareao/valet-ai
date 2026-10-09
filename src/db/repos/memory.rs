@@ -216,10 +216,18 @@ impl MemoryRepo {
             let created_at: String = r.get(3);
 
             // Steps 4–5 (D4): exponential half-life decay, computed in Rust.
+            // The age is measured from `metadata.last_message_at` (the date of
+            // the newest origin message: a card is as current as its newest
+            // fact). Cards written before the `episodic-memory-occurred-at`
+            // change have no such key and fall back to `memory.created_at`.
             // A non-positive or non-finite half-life disables decay rather than
             // producing nonsensical scores.
+            let anchor = metadata
+                .get("last_message_at")
+                .and_then(|v| v.as_str())
+                .unwrap_or(created_at.as_str());
             let decay = if half_life_days > 0.0 && half_life_days.is_finite() {
-                (-std::f64::consts::LN_2 * days_since(&created_at, &now) / half_life_days).exp()
+                (-std::f64::consts::LN_2 * days_since(anchor, &now) / half_life_days).exp()
             } else {
                 1.0
             };
@@ -266,15 +274,16 @@ async fn read_usize_setting(
         .unwrap_or(default))
 }
 
-/// Age of a card in days, from its `created_at` (RFC 3339, as written by
-/// [`MemoryRepo::create`], always in UTC).
+/// Age of a card in days, measured from `anchor` — the card's
+/// `metadata.last_message_at` when present, or its `created_at` otherwise (RFC
+/// 3339, always in UTC).
 ///
 /// A timestamp in the future (clock skew, hand-edited data) yields `0.0`
 /// rather than a negative age, so it simply does not decay; an unreadable
-/// `created_at` also yields `0.0` (treated as "no decay" rather than dropped,
-/// since the card's similarity already passed the threshold).
-fn days_since(created_at: &str, now: &chrono::DateTime<chrono::Utc>) -> f64 {
-    match chrono::DateTime::parse_from_rfc3339(created_at) {
+/// anchor also yields `0.0` (treated as "no decay" rather than dropped, since
+/// the card's similarity already passed the threshold).
+fn days_since(anchor: &str, now: &chrono::DateTime<chrono::Utc>) -> f64 {
+    match chrono::DateTime::parse_from_rfc3339(anchor) {
         Ok(dt) => ((now.timestamp() - dt.timestamp()) as f64 / 86_400.0).max(0.0),
         Err(_) => 0.0,
     }
@@ -483,6 +492,32 @@ mod tests {
         .expect("failed to insert memory row");
     }
 
+    /// Helper: insert a `memory` row with an explicit `created_at` **and** an
+    /// explicit `metadata` JSON, so tests can probe which timestamp the decay
+    /// actually reads.
+    async fn insert_memory_with_metadata_at(
+        pool: &SqlitePool,
+        id: &str,
+        content: &str,
+        tokens_count: usize,
+        created_at: &str,
+        metadata: &serde_json::Value,
+    ) {
+        let metadata_str = serde_json::to_string(metadata).expect("metadata should serialize");
+        sqlx::query(
+            "INSERT INTO memory (id, content, tokens_count, created_at, metadata) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(id)
+        .bind(content)
+        .bind(tokens_count as i64)
+        .bind(created_at)
+        .bind(&metadata_str)
+        .execute(pool)
+        .await
+        .expect("failed to insert memory row");
+    }
+
     /// Helper: read a numeric setting (panics if missing/unparseable).
     async fn setting_f64(pool: &SqlitePool, key: &str) -> f64 {
         sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
@@ -647,6 +682,169 @@ mod tests {
         assert_eq!(
             results[1].id, "old-card",
             "the old card is present, just ordered last"
+        );
+    }
+
+    /// Two candidates with the SAME similarity but different
+    /// `metadata.last_message_at`: the one whose facts are more recent must
+    /// rank first, because `MemoryRepo::search_by_vector` measures the age from
+    /// `metadata.last_message_at`.
+    #[tokio::test]
+    async fn test_decay_orders_by_last_message_at_with_equal_similarity() {
+        let pool = setup_pool().await;
+
+        let now = chrono::Utc::now();
+        let old_created = (now - chrono::Duration::days(5 * 365)).to_rfc3339();
+        let new_created = now.to_rfc3339();
+        let old_facts = (now - chrono::Duration::days(5 * 365)).to_rfc3339();
+        let new_facts = now.to_rfc3339();
+
+        // Same similarity (0.9) for both: only the decay can order them.
+        // Its `created_at` is old, but its facts (`last_message_at`) are recent.
+        insert_memory_with_metadata_at(
+            &pool,
+            "newer-facts",
+            "Newer facts",
+            10,
+            &old_created,
+            &serde_json::json!({ "last_message_at": new_facts }),
+        )
+        .await;
+        insert_embedding(&pool, "newer-facts", &unit_vector_at_cosine(0.9)).await;
+
+        // Its `created_at` is fresh, but its facts (`last_message_at`) are old.
+        insert_memory_with_metadata_at(
+            &pool,
+            "older-facts",
+            "Older facts",
+            10,
+            &new_created,
+            &serde_json::json!({ "last_message_at": old_facts }),
+        )
+        .await;
+        insert_embedding(&pool, "older-facts", &unit_vector_at_cosine(0.9)).await;
+
+        let results = MemoryRepo::search_by_vector(&pool, &unit_vector_at_cosine(0.9))
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(
+            results.len(),
+            2,
+            "both cards share the same similarity above the threshold"
+        );
+        assert_eq!(
+            results[0].id, "newer-facts",
+            "the card whose `last_message_at` is more recent must rank first"
+        );
+        assert_eq!(
+            results[1].id, "older-facts",
+            "the card whose `last_message_at` is older must rank last"
+        );
+    }
+
+    /// Fallback (task 3.3): a card whose `metadata` has no `last_message_at`
+    /// measures its age from `memory.created_at`. It is neither dropped nor an
+    /// error: the change only adds an anchor, it never removes cards.
+    #[tokio::test]
+    async fn test_decay_falls_back_to_created_at_when_last_message_at_missing() {
+        let pool = setup_pool().await;
+        let now = chrono::Utc::now();
+
+        // Fresh by `created_at`, metadata `{}` (no anchor) → no decay.
+        let fresh = MemoryRepo::create(&pool, "Fresh", 10, &serde_json::json!({}))
+            .await
+            .unwrap();
+        insert_embedding(&pool, &fresh.id, &unit_vector_at_cosine(0.9)).await;
+
+        // Old by `created_at`, metadata `{}` (no anchor) → decays via `created_at`.
+        let old_created = (now - chrono::Duration::days(5 * 365)).to_rfc3339();
+        insert_memory_at(&pool, "old-no-anchor", "Old", 10, &old_created).await;
+        insert_embedding(&pool, "old-no-anchor", &unit_vector_at_cosine(0.9)).await;
+
+        let results = MemoryRepo::search_by_vector(&pool, &v1024(&[1.0, 0.0, 0.0]))
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(
+            results.len(),
+            2,
+            "a card without `last_message_at` must not be dropped for the absence of the key"
+        );
+        assert_eq!(
+            results[0].id, fresh.id,
+            "the fresh card ranks first: its age falls back to `created_at` with no decay"
+        );
+        assert_eq!(
+            results[1].id, "old-no-anchor",
+            "the old card falls back to `created_at` and ranks last"
+        );
+    }
+
+    // ─── Characterization: the decay anchor is `last_message_at` ────────────
+    //
+    // `episodic-memory-occurred-at` changes, on purpose, where the temporal
+    // decay measures the age from. The block-1 version of this test pinned the
+    // OLD anchor (`memory.created_at`); the assertion has moved here on purpose
+    // and is **exception 2 of 2** to this change's invariant (exception 1 is
+    // dropping the date from `format_memory`, in `orchestrator::context_builder`).
+    // The test is renamed to match the new behaviour. Any OTHER test that breaks
+    // while implementing the change is a regression, not an update.
+    //
+    /// CHARACTERIZATION OF THE NEW DECAY ANCHOR: the age is measured from
+    /// `metadata.last_message_at`. A card with a **lower** similarity but recent
+    /// facts beats a card with a higher similarity whose facts are 5 years old.
+    #[tokio::test]
+    async fn characterization_decay_measures_age_from_last_message_at() {
+        let pool = setup_pool().await;
+        let now = chrono::Utc::now();
+        let five_years_ago = (now - chrono::Duration::days(5 * 365)).to_rfc3339();
+        let just_now = now.to_rfc3339();
+
+        // Recent facts (`last_message_at` = now), but an old card
+        // (`created_at` = 5 years ago) and a LOWER similarity (0.7).
+        insert_memory_with_metadata_at(
+            &pool,
+            "recent-facts",
+            "Recent facts, lower similarity",
+            10,
+            &five_years_ago,
+            &serde_json::json!({ "last_message_at": just_now }),
+        )
+        .await;
+        insert_embedding(&pool, "recent-facts", &unit_vector_at_cosine(0.7)).await;
+
+        // Old facts (`last_message_at` = 5 years ago), a fresh card
+        // (`created_at` = now) and a HIGHER similarity (0.9).
+        insert_memory_with_metadata_at(
+            &pool,
+            "old-facts",
+            "Old facts, higher similarity",
+            10,
+            &just_now,
+            &serde_json::json!({ "last_message_at": five_years_ago }),
+        )
+        .await;
+        insert_embedding(&pool, "old-facts", &unit_vector_at_cosine(0.9)).await;
+
+        // Query on the x-axis, so the similarity equals the card vector's cosine.
+        let results = MemoryRepo::search_by_vector(&pool, &v1024(&[1.0, 0.0, 0.0]))
+            .await
+            .expect("search should succeed");
+
+        assert_eq!(
+            results.len(),
+            2,
+            "both cards clear the similarity threshold and survive the decay"
+        );
+        assert_eq!(
+            results[0].id, "recent-facts",
+            "NEW behaviour: the decay measures age from `metadata.last_message_at`, \
+             so the card with recent facts wins despite its lower similarity"
+        );
+        assert_eq!(
+            results[1].id, "old-facts",
+            "NEW behaviour: the card whose facts are 5 years old is ranked last"
         );
     }
 

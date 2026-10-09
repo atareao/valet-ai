@@ -23,14 +23,14 @@ impl Tool for CurrentTimeTool {
     }
 
     fn description(&self) -> &'static str {
-        "Obtener la hora y fecha actual del usuario. Devuelve la fecha, hora y zona horaria en formato legible."
+        "Obtiene la fecha y la hora actuales del usuario según su zona horaria configurada, en un formato legible."
     }
 
     fn parameters(&self) -> Value {
         serde_json::json!({"type": "object", "properties": {}})
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -95,7 +95,10 @@ mod tests {
     async fn test_tool_permission() {
         let pool = setup_pool().await;
         let tool = CurrentTimeTool { db: pool };
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
     }
 
     #[tokio::test]
@@ -108,5 +111,20 @@ mod tests {
         assert!(result.success);
         assert!(result.data["time"].as_str().unwrap().starts_with("Hoy es "));
         assert!(result.message.is_some());
+    }
+
+    // -----------------------------------------------------------------------
+    // Language guard — description in Spanish
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_current_time_description_is_spanish() {
+        let pool = setup_pool().await;
+        let tool = CurrentTimeTool { db: pool };
+        let desc = tool.description();
+        assert!(
+            desc.contains("hora") && desc.contains("fecha"),
+            "get_current_time description must be in Spanish (must contain 'hora' and 'fecha'), got: {desc}"
+        );
     }
 }

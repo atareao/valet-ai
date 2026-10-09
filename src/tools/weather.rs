@@ -2,9 +2,13 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde_json::Value;
 use sqlx::SqlitePool;
+use std::time::Duration;
 
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
+
+/// Default OpenWeather API base URL.
+const DEFAULT_WEATHER_BASE_URL: &str = "https://api.openweathermap.org/data/2.5";
 
 /// Parse a date string, accepting both ISO 8601 datetime and date-only YYYY-MM-DD formats.
 ///
@@ -25,16 +29,53 @@ pub struct WeatherTool {
     #[allow(dead_code)]
     db: SqlitePool,
     api_key: String,
-    client: reqwest::Client,
+    base_url: String,
+    timeout: Option<Duration>,
 }
 
 impl WeatherTool {
+    /// Build a `reqwest::Client`, applying an explicit timeout when one is
+    /// provided. `None` (used only by tests) leaves reqwest's default, i.e. no
+    /// timeout.
+    fn build_client(timeout: Option<Duration>) -> reqwest::Client {
+        match timeout {
+            Some(d) => reqwest::Client::builder()
+                .timeout(d)
+                .build()
+                .expect("Failed to create HTTP client"),
+            None => reqwest::Client::new(),
+        }
+    }
+
     pub fn new(db: SqlitePool, api_key: String) -> Self {
         Self {
             db,
             api_key,
-            client: reqwest::Client::new(),
+            base_url: DEFAULT_WEATHER_BASE_URL.to_string(),
+            timeout: Some(Duration::from_secs(30)),
         }
+    }
+
+    /// Test-only constructor allowing a custom base URL and timeout.
+    #[cfg(test)]
+    pub fn with_base_url_and_timeout(
+        db: SqlitePool,
+        api_key: String,
+        base_url: String,
+        timeout: Option<Duration>,
+    ) -> Self {
+        Self {
+            db,
+            api_key,
+            base_url,
+            timeout,
+        }
+    }
+
+    /// Test-only accessor for the configured HTTP timeout.
+    #[cfg(test)]
+    pub fn http_timeout(&self) -> Option<Duration> {
+        self.timeout
     }
 
     async fn get_current_weather(
@@ -43,12 +84,13 @@ impl WeatherTool {
         lon: f64,
         api_key: &str,
     ) -> Result<ToolResult, ToolError> {
+        let client = Self::build_client(self.timeout);
         let url = format!(
-            "https://api.openweathermap.org/data/2.5/weather?lat={}&lon={}&appid={}&units=metric&lang=es",
-            lat, lon, api_key
+            "{}/weather?lat={}&lon={}&appid={}&units=metric&lang=es",
+            self.base_url, lat, lon, api_key
         );
 
-        let resp = self.client.get(&url).send().await.map_err(|e| {
+        let resp = client.get(&url).send().await.map_err(|e| {
             ToolError::ExecutionError(format!("Failed to call OpenWeather API: {}", e))
         })?;
 
@@ -79,12 +121,13 @@ impl WeatherTool {
         date_str: &str,
         api_key: &str,
     ) -> Result<ToolResult, ToolError> {
+        let client = Self::build_client(self.timeout);
         let url = format!(
-            "https://api.openweathermap.org/data/2.5/forecast?lat={}&lon={}&appid={}&units=metric&lang=es",
-            lat, lon, api_key
+            "{}/forecast?lat={}&lon={}&appid={}&units=metric&lang=es",
+            self.base_url, lat, lon, api_key
         );
 
-        let resp = self.client.get(&url).send().await.map_err(|e| {
+        let resp = client.get(&url).send().await.map_err(|e| {
             ToolError::ExecutionError(format!("Failed to call OpenWeather API: {}", e))
         })?;
 
@@ -153,7 +196,7 @@ impl Tool for WeatherTool {
     }
 
     fn description(&self) -> &'static str {
-        "Consulta del clima actual o pronóstico para coordenadas geográficas"
+        "Consulta del clima actual o pronóstico para coordenadas geográficas. Si solo tienes el nombre de la ciudad, usa primero `geocode` para obtener las coordenadas."
     }
 
     fn parameters(&self) -> Value {
@@ -177,7 +220,7 @@ impl Tool for WeatherTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -236,9 +279,10 @@ mod tests {
     async fn test_weather_name_and_description() -> Result<(), Box<dyn std::error::Error>> {
         let (_, tool) = setup().await?;
         assert_eq!(tool.name(), "weather");
-        assert_eq!(
-            tool.description(),
-            "Consulta del clima actual o pronóstico para coordenadas geográficas"
+        assert!(
+            tool.description().contains("geocode"),
+            "weather description must guide the model to `geocode` when only a city name is known, got: {}",
+            tool.description()
         );
         Ok(())
     }
@@ -246,7 +290,10 @@ mod tests {
     #[tokio::test]
     async fn test_weather_permission() -> Result<(), Box<dyn std::error::Error>> {
         let (_, tool) = setup().await?;
-        assert_eq!(tool.permission(), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
         Ok(())
     }
 
@@ -354,5 +401,89 @@ mod tests {
         let dt = parse_forecast_date("2024-02-29");
         assert!(dt.is_some(), "Leap year date should parse");
         assert_eq!(dt.unwrap().to_rfc3339(), "2024-02-29T12:00:00+00:00");
+    }
+
+    // ------------------------------------------------------------------
+    // RED phase — HTTP timeout
+    // ------------------------------------------------------------------
+
+    /// RED: `new` must configure an explicit 30 s timeout on its HTTP client.
+    /// Currently `new` leaves `timeout = None`, so this assertion fails.
+    #[tokio::test]
+    async fn test_weather_new_sets_default_http_timeout() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_, tool) = setup().await?;
+        assert_eq!(
+            tool.http_timeout(),
+            Some(Duration::from_secs(30)),
+            "WeatherTool::new must configure an explicit 30 s HTTP timeout"
+        );
+        Ok(())
+    }
+
+    /// Guard: when a timeout is explicitly configured, a slow server must make
+    /// `execute` return an `ExecutionError` mentioning OpenWeather instead of
+    /// hanging. This confirms the timeout mechanism works end-to-end.
+    #[tokio::test]
+    async fn test_weather_execute_times_out_on_slow_server() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/weather"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(500))
+                    .set_body_json(serde_json::json!({})),
+            )
+            .mount(&server)
+            .await;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        run_migrations(&pool).await.unwrap();
+
+        let tool = WeatherTool::with_base_url_and_timeout(
+            pool,
+            "test-key".into(),
+            server.uri(),
+            Some(Duration::from_millis(50)),
+        );
+
+        let result = tool
+            .execute(serde_json::json!({"latitude": 40.4168, "longitude": -3.7038}))
+            .await;
+
+        match result {
+            Err(ToolError::ExecutionError(msg)) => {
+                assert!(
+                    msg.contains("OpenWeather"),
+                    "timeout error should mention OpenWeather, got: {msg}"
+                );
+            }
+            other => panic!("expected Err(ToolError::ExecutionError), got: {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: the weather description must guide the model
+    // to resolve a city name with `geocode` first.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: La descripción de weather guía a geocode
+    #[tokio::test]
+    async fn test_weather_description_mentions_geocode() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let desc = tool.description();
+        assert!(
+            desc.contains("geocode"),
+            "weather description must mention `geocode` for city names, got: {desc}"
+        );
+        Ok(())
     }
 }

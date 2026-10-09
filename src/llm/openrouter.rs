@@ -172,6 +172,19 @@ impl LLMProvider for OpenRouterProvider {
         if let Some(tools) = &request.tools {
             body["tools"] = serde_json::to_value(tools).unwrap_or_default();
         }
+        if let Some(reasoning) = &request.reasoning {
+            // Never emit `"reasoning": null`: on a (currently impossible)
+            // serialization failure the key is simply omitted.
+            if let Ok(value) = serde_json::to_value(reasoning) {
+                body["reasoning"] = value;
+            }
+        }
+        if let Some(response_format) = &request.response_format {
+            // Same rule for `response_format` — omit rather than send `null`.
+            if let Ok(value) = serde_json::to_value(response_format) {
+                body["response_format"] = value;
+            }
+        }
 
         tracing::debug!(
             model = %self.config.model,
@@ -336,6 +349,19 @@ impl LLMProvider for OpenRouterProvider {
         }
         if let Some(tools) = &request.tools {
             body["tools"] = serde_json::to_value(tools).unwrap_or_default();
+        }
+        if let Some(reasoning) = &request.reasoning {
+            // Never emit `"reasoning": null`: on a (currently impossible)
+            // serialization failure the key is simply omitted.
+            if let Ok(value) = serde_json::to_value(reasoning) {
+                body["reasoning"] = value;
+            }
+        }
+        if let Some(response_format) = &request.response_format {
+            // Same rule for `response_format` — omit rather than send `null`.
+            if let Ok(value) = serde_json::to_value(response_format) {
+                body["response_format"] = value;
+            }
         }
 
         tracing::debug!(
@@ -668,6 +694,7 @@ pub fn parse_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::llm::provider::{ReasoningEffort, ReasoningSpec, ResponseFormat};
     use wiremock::matchers::{any, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1276,6 +1303,8 @@ mod tests {
             max_tokens: None,
             tools: None,
             stream: false,
+            reasoning: None,
+            response_format: None,
         };
 
         let _ = provider.chat(request).await;
@@ -1347,6 +1376,181 @@ mod tests {
         assert!(
             response.usage.is_some(),
             "Usage should be present when the response body has usage"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Contract tests — generation params forwarded to OpenRouter
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal `ChatRequest` for body-forwarding tests.
+    fn generation_request(
+        reasoning: Option<ReasoningSpec>,
+        response_format: Option<ResponseFormat>,
+        stream: bool,
+    ) -> ChatRequest {
+        ChatRequest {
+            model: "test-model".into(),
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "Hi".into(),
+                tool_calls: None,
+                tool_result: None,
+                tool_call_id: None,
+            }],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            stream,
+            reasoning,
+            response_format,
+        }
+    }
+
+    /// Start a wiremock server that captures the JSON body of the single POST
+    /// it answers with a minimal valid completion.
+    async fn capture_body_server() -> (MockServer, std::sync::Arc<std::sync::Mutex<Option<Value>>>)
+    {
+        let server = MockServer::start().await;
+        let captured: std::sync::Arc<std::sync::Mutex<Option<Value>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = captured.clone();
+        Mock::given(any())
+            .and(method("POST"))
+            .respond_with(move |req: &wiremock::Request| {
+                let parsed = serde_json::from_slice::<Value>(&req.body).ok();
+                *sink.lock().unwrap() = parsed;
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+                }))
+            })
+            .mount(&server)
+            .await;
+        (server, captured)
+    }
+
+    fn generation_provider(server: &MockServer) -> OpenRouterProvider {
+        OpenRouterProvider::new(OpenRouterConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: server.uri(),
+            max_retries: 0,
+            timeout_secs: 5,
+        })
+    }
+
+    /// Scenario: chat() reenvía reasoning desactivado
+    #[tokio::test]
+    async fn test_chat_forwards_reasoning_off() {
+        let (server, captured) = capture_body_server().await;
+        let provider = generation_provider(&server);
+
+        let _ = provider
+            .chat(generation_request(Some(ReasoningSpec::Off), None, false))
+            .await;
+
+        let body = captured.lock().unwrap().clone().expect("body captured");
+        assert_eq!(
+            body["reasoning"],
+            serde_json::json!({ "enabled": false }),
+            "chat() must forward reasoning Off as {{\"enabled\": false}}"
+        );
+        assert!(
+            body.get("response_format").is_none(),
+            "response_format was None and must be omitted"
+        );
+    }
+
+    /// Scenario: chat() reenvía un nivel de razonamiento
+    #[tokio::test]
+    async fn test_chat_forwards_reasoning_effort() {
+        let (server, captured) = capture_body_server().await;
+        let provider = generation_provider(&server);
+
+        let _ = provider
+            .chat(generation_request(
+                Some(ReasoningSpec::Effort(ReasoningEffort::Low)),
+                None,
+                false,
+            ))
+            .await;
+
+        let body = captured.lock().unwrap().clone().expect("body captured");
+        assert_eq!(body["reasoning"], serde_json::json!({ "effort": "low" }));
+    }
+
+    /// Scenario: chat() reenvía el modo JSON
+    #[tokio::test]
+    async fn test_chat_forwards_response_format_json_object() {
+        let (server, captured) = capture_body_server().await;
+        let provider = generation_provider(&server);
+
+        let _ = provider
+            .chat(generation_request(
+                None,
+                Some(ResponseFormat::JsonObject),
+                false,
+            ))
+            .await;
+
+        let body = captured.lock().unwrap().clone().expect("body captured");
+        assert_eq!(
+            body["response_format"],
+            serde_json::json!({ "type": "json_object" })
+        );
+    }
+
+    /// Scenario: campos ausentes no aparecen en el body
+    #[tokio::test]
+    async fn test_chat_omits_generation_fields_when_none() {
+        let (server, captured) = capture_body_server().await;
+        let provider = generation_provider(&server);
+
+        let _ = provider.chat(generation_request(None, None, false)).await;
+
+        let body = captured.lock().unwrap().clone().expect("body captured");
+        assert!(body.get("reasoning").is_none(), "reasoning must be omitted");
+        assert!(
+            body.get("response_format").is_none(),
+            "response_format must be omitted"
+        );
+    }
+
+    /// Scenario: chat_stream() reenvía reasoning igual que chat()
+    #[tokio::test]
+    async fn test_chat_stream_forwards_reasoning() {
+        let (server, captured) = capture_body_server().await;
+        let provider = generation_provider(&server);
+
+        let _ = provider
+            .chat_stream(generation_request(
+                Some(ReasoningSpec::Effort(ReasoningEffort::High)),
+                None,
+                true,
+            ))
+            .await;
+
+        let body = captured.lock().unwrap().clone().expect("body captured");
+        assert_eq!(body["reasoning"], serde_json::json!({ "effort": "high" }));
+        assert_eq!(body["stream"], serde_json::json!(true));
+    }
+
+    /// Scenario: chat_stream() omite los campos cuando son None
+    #[tokio::test]
+    async fn test_chat_stream_omits_generation_fields_when_none() {
+        let (server, captured) = capture_body_server().await;
+        let provider = generation_provider(&server);
+
+        let _ = provider
+            .chat_stream(generation_request(None, None, true))
+            .await;
+
+        let body = captured.lock().unwrap().clone().expect("body captured");
+        assert!(body.get("reasoning").is_none(), "reasoning must be omitted");
+        assert!(
+            body.get("response_format").is_none(),
+            "response_format must be omitted"
         );
     }
 }

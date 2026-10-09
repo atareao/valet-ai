@@ -43,6 +43,7 @@ impl UnifiedSearchTool {
         for row in rows {
             results.push(serde_json::json!({
                 "source": row.try_get::<String, _>(0).map_err(|e| e.to_string())?,
+                "rank": row.try_get::<f64, _>(1).map_err(|e| e.to_string())?,
                 "snippet": row.try_get::<String, _>(2).map_err(|e| e.to_string())?,
             }));
         }
@@ -60,13 +61,11 @@ impl UnifiedSearchTool {
             Some("notes") => vec![("notes_fts", "note")],
             Some("events") => vec![("events_fts", "event")],
             Some("tasks") => vec![("tasks_fts", "task")],
-            Some("contacts") => vec![("contacts_fts", "contact")],
             _ => vec![
                 ("messages_fts", "message"),
                 ("notes_fts", "note"),
                 ("events_fts", "event"),
                 ("tasks_fts", "task"),
-                ("contacts_fts", "contact"),
             ],
         };
 
@@ -104,7 +103,7 @@ impl Tool for UnifiedSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Buscar en todas las dimensiones (mensajes, notas, eventos, tareas, contactos)"
+        "Buscar en todas las dimensiones (mensajes, notas, eventos y tareas) a partir de una consulta en lenguaje natural o palabras clave"
     }
 
     fn parameters(&self) -> Value {
@@ -114,7 +113,7 @@ impl Tool for UnifiedSearchTool {
                 "query": { "type": "string", "description": "Texto a buscar" },
                 "dimensions": {
                     "type": "string",
-                    "enum": ["messages", "notes", "events", "tasks", "contacts"],
+                    "enum": ["messages", "notes", "events", "tasks"],
                     "description": "Limitar a una dimensión específica"
                 },
                 "limit": { "type": "integer", "description": "Máximo de resultados (default: 10)" }
@@ -123,7 +122,7 @@ impl Tool for UnifiedSearchTool {
         })
     }
 
-    fn permission(&self) -> Permission {
+    fn permission(&self, _args: &Value) -> Permission {
         Permission::NoConfirm
     }
 
@@ -185,13 +184,6 @@ mod tests {
         )
         .execute(&pool)
         .await?;
-        // Insert a contact
-        sqlx::query(
-            "INSERT INTO contacts (id, profile_id, name) \
-             VALUES ('c1', 'p1', 'Contacto de Prueba')",
-        )
-        .execute(&pool)
-        .await?;
 
         Ok(UnifiedSearchTool::new(pool))
     }
@@ -215,6 +207,40 @@ mod tests {
         assert!(result.success);
         let results = result.data.as_array().unwrap();
         assert!(!results.is_empty(), "Should find at least one result");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_search_results_expose_rank_and_are_sorted(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Given several matches with different relevance
+        // When unified_search runs
+        // Then every result exposes a numeric `rank`
+        // And the sequence of `rank` is ascending (lower = more relevant)
+        let tool = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({"query": "prueba", "limit": 10}))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let results = result.data.as_array().unwrap();
+        assert!(!results.is_empty(), "Should find at least one result");
+
+        let ranks: Vec<f64> = results
+            .iter()
+            .map(|r| {
+                r["rank"]
+                    .as_f64()
+                    .expect("each result must expose a numeric `rank`")
+            })
+            .collect();
+
+        for pair in ranks.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "results must be sorted ascending by rank, got {ranks:?}"
+            );
+        }
         Ok(())
     }
 
@@ -265,6 +291,27 @@ mod tests {
         assert!(
             results.is_empty(),
             "Should return empty for non-matching query"
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: unified_search description in Spanish and it
+    // clarifies the query is natural language or keywords.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_unified_search_description_is_spanish() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tool = setup().await?;
+        let desc = tool.description();
+        assert!(
+            desc.contains("Buscar"),
+            "unified_search description must be in Spanish (must contain 'Buscar'), got: {desc}"
+        );
+        assert!(
+            desc.contains("lenguaje natural") || desc.contains("palabras clave"),
+            "unified_search description must clarify the query is in natural language or keywords, got: {desc}"
         );
         Ok(())
     }

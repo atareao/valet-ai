@@ -109,6 +109,84 @@ impl<'de> serde::Deserialize<'de> for ToolDef {
     }
 }
 
+/// Reasoning control for capable OpenRouter models.
+///
+/// Serializes to the exact OpenRouter shape:
+/// - `Off` → `{ "enabled": false }`
+/// - `Effort(e)` → `{ "effort": "<level>" }` (level lowercased)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReasoningSpec {
+    /// Explicitly disable reasoning.
+    Off,
+    /// Request a specific reasoning effort level.
+    Effort(ReasoningEffort),
+}
+
+/// A reasoning effort level accepted by OpenRouter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Minimal,
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl serde::Serialize for ReasoningSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        match self {
+            ReasoningSpec::Off => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("enabled", &false)?;
+                map.end()
+            }
+            ReasoningSpec::Effort(effort) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("effort", effort)?;
+                map.end()
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ReasoningSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        if let Some(enabled) = value.get("enabled").and_then(Value::as_bool) {
+            // Any `enabled:false` means Off. `enabled:true` has no dedicated
+            // representation yet, so it is treated as Off as well.
+            let _ = enabled;
+            return Ok(ReasoningSpec::Off);
+        }
+        if let Some(effort) = value.get("effort") {
+            let effort: ReasoningEffort =
+                serde_json::from_value(effort.clone()).map_err(serde::de::Error::custom)?;
+            return Ok(ReasoningSpec::Effort(effort));
+        }
+        Err(serde::de::Error::custom(
+            "expected reasoning object with `enabled` or `effort`",
+        ))
+    }
+}
+
+/// Response format constrain for structured outputs.
+///
+/// Serializes to `{ "type": "json_object" }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    JsonObject,
+}
+
 /// Request payload for an LLM chat completion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
@@ -118,6 +196,12 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub stream: bool,
+    /// Optional reasoning control. `None` means "omit the key".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<ReasoningSpec>,
+    /// Optional structured-output constrain. `None` means "omit the key".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
 }
 
 /// Response from an LLM chat completion.
@@ -225,6 +309,8 @@ mod tests {
             temperature: None,
             max_tokens: None,
             stream: false,
+            reasoning: None,
+            response_format: None,
         };
         assert!(!req.stream);
     }
@@ -242,5 +328,102 @@ mod tests {
         let err = LLMError::Timeout("slow".into());
         let cloned = err.clone();
         assert!(matches!(cloned, LLMError::Timeout(_)));
+    }
+
+    // -----------------------------------------------------------------------
+    // Contract tests — generation params (reasoning / response_format)
+    // -----------------------------------------------------------------------
+
+    /// Scenario: Off se serializa a enabled=false
+    #[test]
+    fn test_reasoning_spec_off_serializes_to_enabled_false() {
+        let value =
+            serde_json::to_value(ReasoningSpec::Off).expect("ReasoningSpec::Off should serialize");
+        assert_eq!(value, serde_json::json!({ "enabled": false }));
+        assert!(
+            value.get("effort").is_none(),
+            "Off must NOT carry an `effort` key: {value}"
+        );
+    }
+
+    /// Scenario: Un nivel se serializa a effort en minúsculas
+    #[test]
+    fn test_reasoning_effort_serializes_to_lowercase_level() {
+        let levels = [
+            (ReasoningEffort::Minimal, "minimal"),
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+            (ReasoningEffort::XHigh, "xhigh"),
+            (ReasoningEffort::Max, "max"),
+        ];
+        for (effort, expected) in levels {
+            let value = serde_json::to_value(ReasoningSpec::Effort(effort))
+                .expect("ReasoningSpec::Effort should serialize");
+            assert_eq!(
+                value,
+                serde_json::json!({ "effort": expected }),
+                "effort level must serialize lowercase"
+            );
+            assert!(
+                value.get("enabled").is_none(),
+                "Effort must NOT carry an `enabled` key: {value}"
+            );
+        }
+    }
+
+    /// Scenario: JsonObject se serializa a type=json_object
+    #[test]
+    fn test_response_format_json_object_serializes() {
+        let value = serde_json::to_value(ResponseFormat::JsonObject)
+            .expect("ResponseFormat::JsonObject should serialize");
+        assert_eq!(value, serde_json::json!({ "type": "json_object" }));
+    }
+
+    /// Scenario: ChatRequest por defecto omite los campos
+    #[test]
+    fn test_chat_request_defaults_reasoning_and_response_format_to_none() {
+        let req = ChatRequest {
+            model: "test-model".into(),
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            reasoning: None,
+            response_format: None,
+        };
+        assert!(
+            req.reasoning.is_none(),
+            "a ChatRequest built without reasoning must default to None"
+        );
+        assert!(
+            req.response_format.is_none(),
+            "a ChatRequest built without response_format must default to None"
+        );
+    }
+
+    /// `None` must mean "omit the key", never "send an empty object".
+    #[test]
+    fn test_chat_request_none_fields_are_omitted_when_serialized() {
+        let req = ChatRequest {
+            model: "test-model".into(),
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            max_tokens: None,
+            stream: false,
+            reasoning: None,
+            response_format: None,
+        };
+        let value = serde_json::to_value(&req).expect("ChatRequest should serialize");
+        assert!(
+            value.get("reasoning").is_none(),
+            "None reasoning must be omitted from the serialized request: {value}"
+        );
+        assert!(
+            value.get("response_format").is_none(),
+            "None response_format must be omitted from the serialized request: {value}"
+        );
     }
 }

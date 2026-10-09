@@ -1,8 +1,10 @@
 import React, { useRef, useEffect, useMemo } from "react";
+import { Modal, Button, Typography } from "antd";
 import type { Message } from "../types";
 import { MessageBubble } from "./MessageBubble";
 import { DateSeparator } from "./DateSeparator";
 import { MessageInput, type MessageInputHandle } from "./MessageInput";
+import type { WidgetInstance } from "./widgets/types";
 
 interface ChatViewProps {
   messages: Message[];
@@ -13,6 +15,18 @@ interface ChatViewProps {
   activeTools?: string[];
   settings?: Record<string, string> | null;
   userAvatarUrl?: string | null;
+  pendingApproval?: {
+    requestId: string;
+    toolName: string;
+    reason: string;
+  } | null;
+  onResolveApproval?: (approved: boolean) => void;
+  widgetsByMessage?: Record<string, WidgetInstance[]>;
+  onWidgetAction?: (
+    widget: WidgetInstance,
+    action: string,
+    payload?: unknown,
+  ) => void;
 }
 
 function isSameDay(date1: string, date2: string): boolean {
@@ -34,6 +48,10 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
     streamingContent,
     activeTools,
     userAvatarUrl,
+    pendingApproval,
+    onResolveApproval,
+    widgetsByMessage,
+    onWidgetAction,
   } = props;
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<MessageInputHandle>(null);
@@ -89,7 +107,13 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
           return (
             <React.Fragment key={msg.id}>
               {showSeparator && <DateSeparator date={msg.created_at} />}
-              <MessageBubble message={msg} userAvatarUrl={userAvatarUrl} />
+              <MessageBubble
+                message={msg}
+                userAvatarUrl={userAvatarUrl}
+                widgets={widgetsByMessage?.[msg.id]}
+                onWidgetAction={onWidgetAction}
+                widgetsDisabled={streaming}
+              />
             </React.Fragment>
           );
         })}
@@ -149,6 +173,39 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
           disabled={loading || !!streaming}
         />
       </div>
+      <Modal
+        title="⚠️ Confirmación requerida"
+        open={!!pendingApproval}
+        onCancel={() => onResolveApproval?.(false)}
+        closable={false}
+        maskClosable={false}
+        footer={[
+          <Button
+            key="deny"
+            onClick={() => onResolveApproval?.(false)}
+          >
+            Denegar
+          </Button>,
+          <Button
+            key="allow"
+            type="primary"
+            danger
+            onClick={() => onResolveApproval?.(true)}
+          >
+            Permitir
+          </Button>,
+        ]}
+      >
+        <p>Se ha solicitado ejecutar una herramienta destructiva:</p>
+        <Typography.Text code>
+          {pendingApproval?.toolName}
+        </Typography.Text>
+        {pendingApproval?.reason && (
+          <p style={{ marginTop: 12, marginBottom: 0 }}>
+            {pendingApproval.reason}
+          </p>
+        )}
+      </Modal>
     </div>
   );
 };

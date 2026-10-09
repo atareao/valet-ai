@@ -46,6 +46,7 @@ pub struct Message {
     pub summary_ref: Option<String>,
     pub location: Option<String>,
     pub tools_used: Option<String>,
+    pub widgets: Option<Value>,
     pub created_at: String,
 }
 
@@ -119,6 +120,7 @@ mod tests {
             created_at: "2024-01-01T00:00:00Z".to_string(),
             location: Some("Barcelona".to_string()),
             tools_used: None,
+            widgets: None,
         };
         assert_eq!(msg.location, Some("Barcelona".to_string()));
     }

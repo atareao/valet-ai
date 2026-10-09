@@ -63,6 +63,7 @@ impl MessagesRepo {
             summary_ref: None,
             location: location.map(|s| s.to_string()),
             tools_used: tools_used.map(|s| s.to_string()),
+            widgets: None,
             created_at: now,
         })
     }
@@ -70,7 +71,7 @@ impl MessagesRepo {
     pub async fn find_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Message>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, role, content, tool_calls, tool_results, \
-             tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at \
+             tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at, widgets \
              FROM messages WHERE id = ?1",
         )
         .bind(id)
@@ -94,6 +95,9 @@ impl MessagesRepo {
                     summary_ref: r.get(9),
                     location: r.get(10),
                     tools_used: r.get(11),
+                    widgets: r
+                        .get::<Option<String>, _>(13)
+                        .and_then(|s| serde_json::from_str(&s).ok()),
                     created_at: r.get(12),
                 }))
             }
@@ -112,7 +116,7 @@ impl MessagesRepo {
             Some(c) => {
                 sqlx::query(
                     "SELECT id, role, content, tool_calls, tool_results, \
-                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at \
+                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at, widgets \
 FROM messages WHERE created_at < ?1 \
                       ORDER BY created_at DESC LIMIT ?2",
                 )
@@ -124,7 +128,7 @@ FROM messages WHERE created_at < ?1 \
             None => {
                 sqlx::query(
                     "SELECT id, role, content, tool_calls, tool_results, \
-                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at \
+                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at, widgets \
                      FROM messages \
                      ORDER BY created_at DESC LIMIT ?1",
                 )
@@ -151,6 +155,9 @@ FROM messages WHERE created_at < ?1 \
                 summary_ref: r.get(9),
                 location: r.get(10),
                 tools_used: r.get(11),
+                widgets: r
+                    .get::<Option<String>, _>(13)
+                    .and_then(|s| serde_json::from_str(&s).ok()),
                 created_at: r.get(12),
             });
         }
@@ -182,7 +189,7 @@ FROM messages WHERE created_at < ?1 \
                        CASE WHEN collapsed_content IS NOT NULL THEN collapsed_tokens_count ELSE tokens_count END AS effective_tokens,
                        tool_calls, tool_results,
                        collapsed_content, collapsed_tokens_count,
-                       is_indexed, summary_ref, location, tools_used, created_at,
+                       is_indexed, summary_ref, location, tools_used, created_at, widgets,
                        SUM(CASE WHEN collapsed_content IS NOT NULL THEN collapsed_tokens_count ELSE tokens_count END)
                            OVER (ORDER BY created_at DESC ROWS UNBOUNDED PRECEDING) AS cumulative_tokens
                 FROM messages
@@ -190,7 +197,7 @@ FROM messages WHERE created_at < ?1 \
             SELECT id, role, effective_content,
                    tool_calls, tool_results,
                    effective_tokens, collapsed_content, collapsed_tokens_count,
-                   is_indexed, summary_ref, location, tools_used, created_at
+                   is_indexed, summary_ref, location, tools_used, created_at, widgets
             FROM RankedMessages
             WHERE cumulative_tokens <= ?1
             ORDER BY created_at ASC",
@@ -216,6 +223,9 @@ FROM messages WHERE created_at < ?1 \
                 summary_ref: r.get(9),
                 location: r.get(10),
                 tools_used: r.get(11),
+                widgets: r
+                    .get::<Option<String>, _>(13)
+                    .and_then(|s| serde_json::from_str(&s).ok()),
                 created_at: r.get(12),
             });
         }
@@ -225,6 +235,22 @@ FROM messages WHERE created_at < ?1 \
     pub async fn delete_all(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
         let result = sqlx::query("DELETE FROM messages").execute(pool).await?;
         Ok(result.rows_affected())
+    }
+
+    /// Persist the rendered widgets of a message as a JSON array in the
+    /// `widgets` column, overwriting any previous value.
+    pub async fn set_widgets(
+        pool: &SqlitePool,
+        id: &str,
+        widgets: &Value,
+    ) -> Result<(), sqlx::Error> {
+        let serialized = widgets.to_string();
+        sqlx::query("UPDATE messages SET widgets = ?1 WHERE id = ?2")
+            .bind(&serialized)
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 }
 
@@ -259,6 +285,7 @@ mod tests {
                 is_indexed INTEGER NOT NULL DEFAULT 0,
                 summary_ref TEXT,
                 tools_used TEXT,
+                widgets TEXT,
                 created_at TEXT NOT NULL
             )",
         )
@@ -745,6 +772,175 @@ mod tests {
         let result = MessagesRepo::list_by_token_budget(&pool, 10000).await?;
 
         assert!(result.is_empty(), "Empty store should return empty list");
+
+        Ok(())
+    }
+
+    // ── widgets persistence ─────────────────────────────────────────────────
+
+    /// `set_widgets` persists the JSON on the row and `find_by_id` returns it
+    /// deserialized.
+    #[tokio::test]
+    async fn test_set_widgets_persists_and_find_by_id_returns_them(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        let msg = MessagesRepo::create(
+            &pool,
+            "assistant",
+            "Aquí tienes",
+            None,
+            None,
+            None,
+            None,
+            2000,
+            None,
+        )
+        .await?;
+
+        let widgets = json!([
+            {"id": "w1", "name": "LocationWidget", "data": {"latitude": 1.0, "longitude": 2.0}}
+        ]);
+        MessagesRepo::set_widgets(&pool, &msg.id, &widgets).await?;
+
+        let found = MessagesRepo::find_by_id(&pool, &msg.id)
+            .await?
+            .expect("the message must exist");
+        assert_eq!(
+            found.widgets.as_ref(),
+            Some(&widgets),
+            "find_by_id must return the persisted widgets"
+        );
+
+        Ok(())
+    }
+
+    /// A message created without widgets has `widgets = None`.
+    #[tokio::test]
+    async fn test_widgets_is_none_when_not_set() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        let msg = MessagesRepo::create(
+            &pool,
+            "assistant",
+            "Sin widgets",
+            None,
+            None,
+            None,
+            None,
+            2000,
+            None,
+        )
+        .await?;
+
+        let found = MessagesRepo::find_by_id(&pool, &msg.id)
+            .await?
+            .expect("the message must exist");
+        assert!(
+            found.widgets.is_none(),
+            "widgets must be None when never set"
+        );
+
+        Ok(())
+    }
+
+    /// `list_all` includes the persisted widgets in the returned message.
+    #[tokio::test]
+    async fn test_list_all_returns_widgets() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        let msg = MessagesRepo::create(
+            &pool,
+            "assistant",
+            "Checklist",
+            None,
+            None,
+            None,
+            None,
+            2000,
+            None,
+        )
+        .await?;
+        let widgets = json!([{"id": "w1", "name": "Checklist", "data": {}}]);
+        MessagesRepo::set_widgets(&pool, &msg.id, &widgets).await?;
+
+        let (msgs, _) = MessagesRepo::list_all(&pool, 10, None).await?;
+        let listed = msgs
+            .iter()
+            .find(|m| m.id == msg.id)
+            .expect("the message must be listed");
+        assert_eq!(
+            listed.widgets.as_ref(),
+            Some(&widgets),
+            "list_all must include the persisted widgets"
+        );
+
+        Ok(())
+    }
+
+    /// A second `set_widgets` overwrites the previous list (no duplication).
+    #[tokio::test]
+    async fn test_set_widgets_overwrites() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        let msg = MessagesRepo::create(
+            &pool,
+            "assistant",
+            "Dos widgets",
+            None,
+            None,
+            None,
+            None,
+            2000,
+            None,
+        )
+        .await?;
+
+        let first = json!([{"id": "w1", "name": "A", "data": {}}]);
+        let second = json!([
+            {"id": "w2", "name": "B", "data": {}},
+            {"id": "w3", "name": "C", "data": {}}
+        ]);
+        MessagesRepo::set_widgets(&pool, &msg.id, &first).await?;
+        MessagesRepo::set_widgets(&pool, &msg.id, &second).await?;
+
+        let found = MessagesRepo::find_by_id(&pool, &msg.id)
+            .await?
+            .expect("the message must exist");
+        assert_eq!(
+            found.widgets.as_ref(),
+            Some(&second),
+            "the last call must overwrite the previous widgets"
+        );
+
+        Ok(())
+    }
+
+    /// `list_by_token_budget` also returns the persisted widgets.
+    #[tokio::test]
+    async fn test_list_by_token_budget_returns_widgets() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        let msg = MessagesRepo::create(
+            &pool,
+            "assistant",
+            "Widget",
+            None,
+            None,
+            None,
+            None,
+            99999,
+            None,
+        )
+        .await?;
+        let widgets = json!([{"id": "w1", "name": "Checklist", "data": {}}]);
+        MessagesRepo::set_widgets(&pool, &msg.id, &widgets).await?;
+
+        let result = MessagesRepo::list_by_token_budget(&pool, 10000).await?;
+        let listed = result
+            .iter()
+            .find(|m| m.id == msg.id)
+            .expect("the message must be within budget");
+        assert_eq!(
+            listed.widgets.as_ref(),
+            Some(&widgets),
+            "list_by_token_budget must include the persisted widgets"
+        );
 
         Ok(())
     }

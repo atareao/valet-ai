@@ -52,9 +52,35 @@ La tool `reverse_geocode` SHALL requerir `latitude` y `longitude` para resolver 
 
 ### Requirement: search_places tool (split from geo)
 
-La tool `search_places` SHALL requerir `query`, `latitude` y `longitude` para buscar lugares cercanos.
+La tool `search_places` SHALL requerir únicamente `query`; `latitude`, `longitude` y `radius` SHALL ser opcionales y usarse solo para sesgar geográficamente la búsqueda cuando estén presentes.
 
 #### Scenario: search_places tool has query + lat/lon + radius
-**Given** the search_places tool definition
-**When** `parameters()` is called
-**Then** `required` contains `["query", "latitude", "longitude"]`
+
+- **Given** la definición de la tool `search_places`
+- **When** se llama a `parameters()`
+- **Then** `properties` contiene `query`, `latitude`, `longitude` y `radius`
+- **And** solo `query` figura en `required`
+
+#### Scenario: search_places tool requires only query
+
+- **Given** la definición de la tool `search_places`
+- **When** se llama a `parameters()`
+- **Then** `required` contiene `["query"]`
+- **And** `latitude`, `longitude` y `radius` figuran en `properties` como opcionales
+- **And** la descripción de la tool y la de sus parámetros están en español
+
+### Requirement: Weather tool — HTTP timeout
+
+La tool de tiempo SHALL construir su cliente HTTP con un timeout explícito y SHALL fallar con un
+error acotado, en vez de colgarse, cuando OpenWeather no responde.
+
+#### Scenario: El cliente tiene un timeout acotado
+**Given** un `WeatherTool`
+**When** se construye
+**Then** su cliente HTTP DEBE haberse creado con un timeout explícito (30 s)
+
+#### Scenario: OpenWeather no responde
+**Given** un `WeatherTool` cuyo cliente HTTP expira
+**When** `execute` llama a OpenWeather y la petición supera el timeout
+**Then** DEBE devolver `Err(ToolError::ExecutionError)` con un mensaje que mencione el fallo
+**And** NO DEBE bloquear el turno indefinidamente

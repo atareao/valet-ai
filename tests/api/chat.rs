@@ -104,7 +104,7 @@ async fn test_approval_endpoint_returns_expected_body() {
 async fn test_approval_endpoint_with_deny() {
     // Given a running app
     // When POST /api/approval/req-2 with approved: false
-    // Then the body still contains status: "resolved" (stub returns true)
+    // Then the body contains status: "resolved" and approved: false
     let app = TestApp::new().await;
 
     let resp = app
@@ -116,7 +116,7 @@ async fn test_approval_endpoint_with_deny() {
     assert_eq!(resp.status(), 200);
     let body = resp.json::<serde_json::Value>().await;
     assert_eq!(body["status"], "resolved");
-    assert_eq!(body["approved"], true);
+    assert_eq!(body["approved"], false);
 }
 
 #[tokio::test]

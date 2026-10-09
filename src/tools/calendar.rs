@@ -292,8 +292,13 @@ impl Tool for CalendarTool {
         })
     }
 
-    fn permission(&self) -> Permission {
-        Permission::NoConfirm
+    fn permission(&self, args: &Value) -> Permission {
+        match args.get("operation").and_then(|v| v.as_str()) {
+            Some("delete_event") => Permission::ExplicitApproval,
+            Some("create_event") | Some("update_event") => Permission::Notify,
+            // get_events, check_availability, list_by_category, ausente o desconocida:
+            _ => Permission::NoConfirm,
+        }
     }
 
     async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {

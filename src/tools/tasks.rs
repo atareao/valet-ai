@@ -171,23 +171,39 @@ impl Tool for TasksTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["list_tasks", "add_task", "update_task", "complete_task", "delete_task"]
+                    "enum": ["list_tasks", "add_task", "update_task", "complete_task", "delete_task"],
+                    "description": "Acción a realizar. `content` es obligatorio para `add_task`; `id` para `update_task`, `complete_task` y `delete_task`."
                 },
-                "profile_id": { "type": "string" },
-                "content": { "type": "string" },
-                "status": { "type": "string", "enum": ["inbox", "todo", "doing", "waiting", "someday", "done"] },
-                "priority": { "type": "string", "enum": ["low", "medium", "high"] },
-                "project": { "type": "string" },
-                "due_date": { "type": "string" },
-                "scope": { "type": "string", "enum": ["shared", "personal"] },
-                "id": { "type": "string" }
+                "profile_id": { "type": "string", "description": "ID del perfil" },
+                "content": { "type": "string", "description": "Descripción o título de la tarea" },
+                "status": {
+                    "type": "string",
+                    "enum": ["inbox", "todo", "doing", "waiting", "someday", "done"],
+                    "description": "Estado GTD de la tarea"
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "description": "Prioridad de la tarea"
+                },
+                "project": { "type": "string", "description": "Proyecto asociado" },
+                "due_date": { "type": "string", "description": "Fecha límite (ISO 8601 o YYYY-MM-DD)" },
+                "scope": {
+                    "type": "string",
+                    "enum": ["shared", "personal"],
+                    "description": "Ámbito de la tarea"
+                },
+                "id": { "type": "string", "description": "ID de la tarea" }
             },
             "required": ["operation"]
         })
     }
 
-    fn permission(&self) -> Permission {
-        Permission::NoConfirm
+    fn permission(&self, args: &Value) -> Permission {
+        match args.get("operation").and_then(|v| v.as_str()) {
+            Some("delete_task") => Permission::ExplicitApproval,
+            _ => Permission::NoConfirm,
+        }
     }
 
     async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
@@ -474,6 +490,120 @@ mod tests {
         let tasks = result.data.as_array().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["project"], "Alpha");
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: the `operation` description documents the
+    // required fields per action.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: La operación documenta los obligatorios
+    #[tokio::test]
+    async fn test_tasks_operation_description_documents_required_fields(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let params = tool.parameters();
+
+        let desc = params["properties"]["operation"]["description"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            !desc.is_empty(),
+            "the `operation` parameter must carry a description"
+        );
+        assert!(
+            desc.contains("`content`"),
+            "the `operation` description must mention `content` for add_task, got: {desc}"
+        );
+        assert!(
+            desc.contains("`id`"),
+            "the `operation` description must mention `id` for update/complete/delete, got: {desc}"
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — improve-tool-schemas: todas las descripciones de parámetros deben
+    // estar en español (requisito transversal de `tools/registry`).
+    // -----------------------------------------------------------------------
+
+    /// Scenario: Las definiciones de herramientas están en español y documentan
+    /// los obligatorios; aquí se cubre `tasks`.
+    #[tokio::test]
+    async fn test_tasks_parameter_descriptions_are_in_spanish(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let params = tool.parameters();
+        let properties = params["properties"]
+            .as_object()
+            .expect("`properties` must be an object");
+
+        // Toda propiedad debe llevar una descripción no vacía y en español.
+        for (name, schema) in properties {
+            let desc = schema["description"].as_str().unwrap_or("");
+            assert!(
+                !desc.is_empty(),
+                "la descripción de `{name}` no debe estar vacía"
+            );
+        }
+
+        assert!(
+            properties["content"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("tarea"),
+            "`content` debe describir la tarea"
+        );
+        assert!(
+            properties["id"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("ID"),
+            "`id` debe describirse como «ID de la tarea»"
+        );
+        assert!(
+            properties["due_date"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Fecha"),
+            "`due_date` debe describirse como fecha límite"
+        );
+        assert!(
+            properties["priority"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Prioridad"),
+            "`priority` debe describirse en español"
+        );
+        assert!(
+            properties["status"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Estado"),
+            "`status` debe describirse en español"
+        );
+        assert!(
+            properties["project"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Proyecto"),
+            "`project` debe describirse en español"
+        );
+        assert!(
+            properties["scope"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Ámbito"),
+            "`scope` debe describirse en español"
+        );
+        assert!(
+            properties["profile_id"]["description"]
+                .as_str()
+                .unwrap_or("")
+                .contains("ID del perfil"),
+            "`profile_id` debe describirse como «ID del perfil»"
+        );
         Ok(())
     }
 }

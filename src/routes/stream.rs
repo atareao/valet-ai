@@ -153,7 +153,7 @@ pub async fn resolve_approval(
         None => {
             return Ok(Json(serde_json::json!({
                 "status": "resolved",
-                "approved": true,
+                "approved": body.approved,
             })));
         }
     };
@@ -242,7 +242,8 @@ mod tests {
             .unwrap();
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "resolved");
-        assert_eq!(json["approved"], true);
+        // The stub (no guardrails configured) must reflect the requested value.
+        assert_eq!(json["approved"], false);
     }
 
     #[tokio::test]
@@ -354,7 +355,7 @@ mod tests {
             serde_json::json!({"type": "object"})
         }
 
-        fn permission(&self) -> crate::tools::permission::Permission {
+        fn permission(&self, _args: &serde_json::Value) -> crate::tools::permission::Permission {
             crate::tools::permission::Permission::NoConfirm
         }
 

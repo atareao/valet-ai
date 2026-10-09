@@ -137,17 +137,20 @@ async fn read_rag_budget_tokens(pool: &SqlitePool) -> Option<usize> {
         .and_then(|v| v.trim().parse::<usize>().ok())
 }
 
-/// Format a `Memory` card for the injected block (design D8, task 8.1).
+/// Format a `Memory` card for the injected block.
 ///
-/// Carries the card's temporal anchor (`created_at`) so the model can tell a
-/// recent antecedent from an old one — that is the information the card really
-/// needs. Deliberately omits the old `[{tags}]` prefix: `EpisodicMemoryWorker`
+/// Returns the card's content **as is**, with no date in front (design D3): the
+/// chronology is already given by the `FECHA/CONTEXTO` line the LLM writes into
+/// the content, which is meant to be read; a machine date is for machine
+/// decisions (the ranking), not for the prompt, and lies after a
+/// reconstruction. The old `[{tags}]` prefix is also gone: `EpisodicMemoryWorker`
 /// never writes a `tags` key into `metadata` (production: 7 cards, 0 with
 /// `tags`), so that prefix always rendered as a constant empty `[]` that cost
-/// tokens without informing anything. See the spec requirement «El formato de
-/// ficha SHALL NOT depender de metadata ausente».
+/// tokens without informing anything. See the spec requirements «El formato de
+/// ficha SHALL NOT depender de metadata ausente» and the `orchestrator/agent`
+/// requirement «Orden por decaimiento de cada ficha».
 fn format_memory(m: &Memory) -> String {
-    format!("[{}] {}", m.created_at, m.content)
+    m.content.clone()
 }
 
 #[cfg(test)]
@@ -298,10 +301,14 @@ mod tests {
     }
 
     /// 8.1 — a card with no `tags` in `metadata` must not render empty `[]`
-    /// brackets. Instead it carries its temporal anchor (`created_at`), which is
-    /// the information the model actually needs to place the antecedent in time.
+    /// brackets, and the injected text is the card content, with no date.
+    ///
+    /// UPDATED (exception 1): this test used to assert that the card carried its
+    /// temporal anchor (`created_at`); `episodic-memory-occurred-at` removes the
+    /// date from the prompt (D3), so that assertion moved to the new behaviour.
+    /// The `[tags]` assertions are unchanged.
     #[test]
-    fn format_memory_omits_tags_and_anchors_created_at() {
+    fn format_memory_omits_tags_and_returns_content() {
         let m = Memory {
             id: "m1".into(),
             content: "User likes Rust".into(),
@@ -323,20 +330,83 @@ mod tests {
             !formatted.contains("[tags]"),
             "the `[tags]` prefix must be gone, got {formatted:?}"
         );
-        assert!(
-            formatted.contains("User likes Rust"),
-            "the card content must be preserved, got {formatted:?}"
-        );
-        assert!(
-            formatted.contains(&m.created_at),
-            "the card must carry its temporal anchor (`created_at`), got {formatted:?}"
+        assert_eq!(
+            formatted, "User likes Rust",
+            "the injected text is the card content, with no date, got {formatted:?}"
         );
     }
 
-    /// 8.2 — EXCEPTION 1 of the test invariant: the only formatting assertion
-    /// that changes on purpose. It used to pin `[{tags}] {content}`; the
-    /// `[tags]` prefix is removed (task 8.1) and replaced by the temporal
-    /// anchor, so this assertion now pins `[{created_at}] {content}`.
+    /// A card with a `created_at` and a `metadata.last_message_at` is formatted
+    /// **without any date**: the injected text is its content, as is.
+    #[test]
+    fn format_memory_returns_content_without_any_date() {
+        let m = Memory {
+            id: "m-no-date".into(),
+            content: "Contenido sin fecha".into(),
+            tokens_count: 5,
+            created_at: "2026-09-29T10:00:00Z".into(),
+            metadata: serde_json::json!({
+                "source": "episodic_worker",
+                "primary_message_ids": ["a"],
+                "last_message_at": "2026-09-30T17:37:00Z",
+            }),
+        };
+
+        let formatted = format_memory(&m);
+
+        assert_eq!(
+            formatted, "Contenido sin fecha",
+            "the injected text must be the card content, with no date"
+        );
+        assert!(
+            !formatted.contains("2026-09-29T10:00:00Z"),
+            "no date derived from `created_at` may appear, got {formatted:?}"
+        );
+        assert!(
+            !formatted.contains("2026-09-30T17:37:00Z"),
+            "no date derived from `metadata` may appear, got {formatted:?}"
+        );
+    }
+
+    // ─── Characterization: `format_memory` returns the content as is ────────
+    //
+    // `episodic-memory-occurred-at` removes, on purpose, the date from the
+    // injected card (D3): `format_memory` now returns the content `as is`. The
+    // block-1 version of this test pinned the OLD format `[{created_at}] {content}`;
+    // the assertion has moved here on purpose and is **exception 1 of 2** to this
+    // change's invariant (exception 2 is measuring the decay against
+    // `metadata.last_message_at`, in `db::repos::memory`). The test is renamed to
+    // match the new behaviour. Any OTHER test that breaks while implementing the
+    // change is a regression, not an update.
+    //
+    /// CHARACTERIZATION: `format_memory` returns the card's content with no date
+    /// in front, whether or not the metadata carries a `last_message_at`.
+    #[test]
+    fn characterization_format_memory_returns_content_without_date() {
+        let m = Memory {
+            id: "m-char".into(),
+            content: "Contenido de la ficha".into(),
+            tokens_count: 5,
+            created_at: "2026-09-29T10:00:00Z".into(),
+            metadata: serde_json::json!({
+                "source": "episodic_worker",
+                "primary_message_ids": ["a"],
+                "last_message_at": "2026-09-30T17:37:00Z",
+            }),
+        };
+
+        let formatted = format_memory(&m);
+
+        assert_eq!(
+            formatted, "Contenido de la ficha",
+            "NEW behaviour: the injected text is the card content, with no date"
+        );
+    }
+
+    /// 8.2 — EXCEPTION 1 of this change's invariant: the formatting assertion
+    /// that changes on purpose. It used to pin `[{tags}] {content}`, then
+    /// `[{created_at}] {content}`; `episodic-memory-occurred-at` removes the date
+    /// from the prompt (D3), so it now pins the bare content.
     #[tokio::test]
     async fn test_memory_with_pool_and_provider_returns_formatted_memories() {
         let pool = setup_pool().await;
@@ -371,9 +441,8 @@ mod tests {
             "exactly one stored card is retrieved"
         );
         assert_eq!(
-            ctx.rag_memories[0],
-            format!("[{}] User likes Rust", mem.created_at),
-            "rag_memories should contain the `[created_at] content` memory"
+            ctx.rag_memories[0], "User likes Rust",
+            "rag_memories should contain the card content, with no date"
         );
     }
 

@@ -1,0 +1,6 @@
+schema: spec-driven
+created: 2026-10-02
+goal: >-
+  Crear la Capa C (memoria persistente): fila JSON versionada, acotada y
+  podada, consolidada en la misma pasada que la memoria episodica con una sola
+  marca, e inyectada como seccion del mensaje de sistema.

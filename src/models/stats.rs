@@ -1,5 +1,31 @@
 use serde::{Deserialize, Serialize};
 
+/// The origin of an LLM request, stored in `llm_requests.kind`.
+///
+/// Five processes share the `llm_requests` table; `CallKind` tells them apart
+/// so chat aggregates can exclude background work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallKind {
+    Chat,
+    Router,
+    Archivist,
+    Consolidator,
+    Collapse,
+}
+
+impl CallKind {
+    /// The string persisted in the `kind` column.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CallKind::Chat => "chat",
+            CallKind::Router => "router",
+            CallKind::Archivist => "archivist",
+            CallKind::Consolidator => "consolidator",
+            CallKind::Collapse => "collapse",
+        }
+    }
+}
+
 /// Global aggregate statistics over all LLM requests.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsSummary {
@@ -9,6 +35,19 @@ pub struct StatsSummary {
     pub total_tokens: u64,
     pub total_cached_tokens: u64,
     pub total_reasoning_tokens: u64,
+    pub total_cost: f64,
+    pub total_errors: u64,
+    pub avg_duration_ms: Option<f64>,
+}
+
+/// Aggregate LLM usage for a single background origin (non-chat).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackgroundStats {
+    pub kind: String,
+    pub calls: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
     pub total_cost: f64,
     pub total_errors: u64,
     pub avg_duration_ms: Option<f64>,

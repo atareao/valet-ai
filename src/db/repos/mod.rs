@@ -1,15 +1,12 @@
-pub mod contacts;
 pub mod events;
-pub mod habits;
-pub mod meal_plans;
 pub mod memories;
 pub mod memory;
 pub mod messages;
 pub mod notes;
+pub mod persistent_memory;
 pub mod profiles;
 pub mod reminders;
 pub mod settings;
-pub mod shopping_list;
 pub mod stats;
 pub mod tasks;
 pub mod tools;

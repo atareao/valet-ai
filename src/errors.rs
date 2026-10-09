@@ -11,6 +11,8 @@ pub enum AppError {
     BadRequest(String),
     #[error("Unprocessable entity: {0}")]
     UnprocessableEntity(String),
+    #[error("Conflict: {0}")]
+    Conflict(String),
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -38,8 +40,30 @@ impl IntoResponse for AppError {
             Self::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             Self::UnprocessableEntity(msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg.clone()),
+            Self::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             Self::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg.clone()),
         };
         (status, Json(ApiError { error: message })).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::response::IntoResponse;
+
+    /// `Conflict` must answer `409 Conflict` in the same `{"error": "..."}`
+    /// shape as the rest of the variants.
+    #[tokio::test]
+    async fn conflict_maps_to_409_with_error_body() {
+        let response = AppError::Conflict("stale mark".to_string()).into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("body is JSON");
+        assert_eq!(json, serde_json::json!({"error": "stale mark"}));
     }
 }

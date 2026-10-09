@@ -1,7 +1,10 @@
 use sqlx::Row;
 use sqlx::SqlitePool;
 
-use crate::models::stats::{DayStats, MemoryStats, ModelStats, StatsSummary, TableSize, ToolStats};
+use crate::models::stats::{
+    BackgroundStats, CallKind, DayStats, MemoryStats, ModelStats, StatsSummary, TableSize,
+    ToolStats,
+};
 
 /// Repository for LLM usage statistics and administrative operations.
 pub struct StatsRepo;
@@ -22,6 +25,7 @@ impl StatsRepo {
                 COALESCE(SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END), 0) AS total_errors,
                 AVG(duration_ms)                                       AS avg_duration_ms
             FROM llm_requests
+            WHERE kind = 'chat'
             "#,
         )
         .fetch_one(pool)
@@ -53,6 +57,7 @@ impl StatsRepo {
                 SUM(cached_tokens)              AS total_cached_tokens,
                 SUM(reasoning_tokens)           AS total_reasoning_tokens
             FROM llm_requests
+            WHERE kind = 'chat'
             GROUP BY model
             ORDER BY total_cost DESC
             "#,
@@ -89,6 +94,7 @@ impl StatsRepo {
                 SUM(reasoning_tokens)           AS total_reasoning_tokens
             FROM llm_requests
             WHERE created_at >= datetime('now', '-' || ?1 || ' days')
+              AND kind = 'chat'
             GROUP BY DATE(created_at)
             ORDER BY date ASC
             "#,
@@ -117,10 +123,11 @@ impl StatsRepo {
     /// Parses the `tool_calls` JSON column (an array of objects with a `name`
     /// field, e.g. `[{"name":"get_weather"}, {"name":"search_web"}]`).
     pub async fn tools_summary(pool: &SqlitePool) -> Result<Vec<ToolStats>, sqlx::Error> {
-        let rows: Vec<String> =
-            sqlx::query_scalar("SELECT tool_calls FROM llm_requests WHERE tool_calls IS NOT NULL")
-                .fetch_all(pool)
-                .await?;
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT tool_calls FROM llm_requests WHERE tool_calls IS NOT NULL AND kind = 'chat'",
+        )
+        .fetch_all(pool)
+        .await?;
 
         let mut counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
@@ -151,12 +158,8 @@ impl StatsRepo {
     /// internal helper tables).
     pub async fn db_sizes(pool: &SqlitePool) -> Result<Vec<TableSize>, sqlx::Error> {
         let tables = [
-            "contacts",
             "events",
-            "habit_logs",
-            "habits",
             "llm_requests",
-            "meal_plans",
             "memory",
             "message_embeddings",
             "messages",
@@ -164,7 +167,6 @@ impl StatsRepo {
             "profiles",
             "reminders",
             "settings",
-            "shopping_list",
             "tasks",
             "tools",
         ];
@@ -197,7 +199,7 @@ impl StatsRepo {
                 prompt_tokens, completion_tokens, total_tokens,
                 cached_tokens, reasoning_tokens,
                 cost, is_byok, duration_ms, cache_hit,
-                status, error_message, tool_calls, created_at
+                status, error_message, tool_calls, kind, created_at
             FROM llm_requests
             ORDER BY created_at ASC
             "#,
@@ -209,7 +211,7 @@ impl StatsRepo {
             "id,model,provider,profile_id,prompt_tokens,completion_tokens,total_tokens,",
         );
         csv.push_str("cached_tokens,reasoning_tokens,cost,is_byok,duration_ms,cache_hit,");
-        csv.push_str("status,error_message,tool_calls,created_at\n");
+        csv.push_str("status,error_message,tool_calls,kind,created_at\n");
 
         for r in &rows {
             // Helper to quote a value for CSV
@@ -237,10 +239,11 @@ impl StatsRepo {
             let status: String = r.get(13);
             let error_message: Option<String> = r.get(14);
             let tool_calls: Option<String> = r.get(15);
-            let created_at: String = r.get(16);
+            let kind: String = r.get(16);
+            let created_at: String = r.get(17);
 
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 quote(&id),
                 quote(&model),
                 provider.as_deref().unwrap_or(""),
@@ -257,6 +260,7 @@ impl StatsRepo {
                 quote(&status),
                 quote(error_message.as_deref().unwrap_or("")),
                 quote(tool_calls.as_deref().unwrap_or("")),
+                quote(&kind),
                 quote(&created_at),
             ));
         }
@@ -268,10 +272,11 @@ impl StatsRepo {
     ///
     /// Inserts a row with the given parameters. If `created_at` is `None`,
     /// the database will assign `datetime('now')` automatically via the
-    /// column default.
+    /// column default. `kind` records the origin of the call.
     #[allow(clippy::too_many_arguments)]
     pub async fn record_request(
         pool: &SqlitePool,
+        kind: CallKind,
         id: &str,
         model: &str,
         profile_id: Option<&str>,
@@ -288,8 +293,8 @@ impl StatsRepo {
         created_at: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO llm_requests (id, model, provider, profile_id, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens, cost, is_byok, duration_ms, cache_hit, status, error_message, tool_calls, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, COALESCE(?17, datetime('now')))",
+            "INSERT INTO llm_requests (id, model, provider, profile_id, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens, cost, is_byok, duration_ms, cache_hit, status, error_message, tool_calls, kind, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, COALESCE(?18, datetime('now')))",
         )
         .bind(id)
         .bind(model)
@@ -307,11 +312,72 @@ impl StatsRepo {
         .bind(status)
         .bind(error_message)
         .bind(tool_calls)
+        .bind(kind.as_str())
         .bind(created_at)
         .execute(pool)
         .await?;
 
         Ok(())
+    }
+
+    /// Aggregate LLM usage per non-chat origin (router, archivist,
+    /// consolidator, collapse).
+    ///
+    /// Returns one [`BackgroundStats`] per background origin, with the counters
+    /// at zero for origins that have no rows.
+    pub async fn background_summary(
+        pool: &SqlitePool,
+    ) -> Result<Vec<BackgroundStats>, sqlx::Error> {
+        let rows = sqlx::query(
+            r#"
+            SELECT
+                kind,
+                COUNT(*)                                        AS calls,
+                COALESCE(SUM(prompt_tokens), 0)                 AS input_tokens,
+                COALESCE(SUM(completion_tokens), 0)             AS output_tokens,
+                COALESCE(SUM(total_tokens), 0)                  AS total_tokens,
+                COALESCE(SUM(cost), 0.0)                        AS total_cost,
+                COALESCE(SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END), 0) AS total_errors,
+                AVG(duration_ms)                                AS avg_duration_ms
+            FROM llm_requests
+            WHERE kind != 'chat'
+            GROUP BY kind
+            "#,
+        )
+        .fetch_all(pool)
+        .await?;
+
+        // One entry per background origin, in the canonical order, so origins
+        // with no rows still appear at zero.
+        let mut stats: Vec<BackgroundStats> = ["router", "archivist", "consolidator", "collapse"]
+            .iter()
+            .map(|kind| BackgroundStats {
+                kind: (*kind).to_string(),
+                calls: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                total_tokens: 0,
+                total_cost: 0.0,
+                total_errors: 0,
+                avg_duration_ms: None,
+            })
+            .collect();
+
+        for row in &rows {
+            let kind: String = row.get(0);
+            let Some(entry) = stats.iter_mut().find(|s| s.kind == kind) else {
+                continue;
+            };
+            entry.calls = row.get::<i64, _>(1) as u64;
+            entry.input_tokens = row.get::<i64, _>(2) as u64;
+            entry.output_tokens = row.get::<i64, _>(3) as u64;
+            entry.total_tokens = row.get::<i64, _>(4) as u64;
+            entry.total_cost = row.get::<f64, _>(5);
+            entry.total_errors = row.get::<i64, _>(6) as u64;
+            entry.avg_duration_ms = row.get::<Option<f64>, _>(7);
+        }
+
+        Ok(stats)
     }
 
     /// Purge LLM request records older than `days` days.
@@ -458,6 +524,49 @@ mod tests {
         q.execute(pool).await.unwrap();
     }
 
+    /// Convenience: insert a single LLM request row with an explicit `kind`.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_request_with_kind(
+        pool: &SqlitePool,
+        id: &str,
+        kind: &str,
+        model: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        total_tokens: i64,
+        cost: f64,
+        duration_ms: Option<i64>,
+        status: &str,
+        tool_calls: Option<&str>,
+        created_at: Option<&str>,
+    ) {
+        sqlx::query(
+            "INSERT INTO llm_requests (id, model, provider, profile_id, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens, cost, is_byok, duration_ms, cache_hit, status, error_message, tool_calls, kind, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, COALESCE(?18, datetime('now')))",
+        )
+        .bind(id)
+        .bind(model)
+        .bind(Option::<String>::None) // provider
+        .bind("profile-1")
+        .bind(prompt_tokens)
+        .bind(completion_tokens)
+        .bind(total_tokens)
+        .bind(0i64) // cached_tokens
+        .bind(0i64) // reasoning_tokens
+        .bind(cost)
+        .bind(0i64) // is_byok
+        .bind(duration_ms)
+        .bind(0i64) // cache_hit
+        .bind(status)
+        .bind(Option::<String>::None) // error_message
+        .bind(tool_calls)
+        .bind(kind)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     /// Like [`setup`] but with SQLite foreign-key enforcement enabled, matching
     /// production (`db::init_db` sets `foreign_keys(true)`).
     async fn setup_with_fk() -> SqlitePool {
@@ -497,6 +606,7 @@ mod tests {
 
         StatsRepo::record_request(
             &pool,
+            CallKind::Chat,
             "req-null",
             "gpt-4o",
             None,
@@ -539,6 +649,7 @@ mod tests {
 
         let result = StatsRepo::record_request(
             &pool,
+            CallKind::Chat,
             "req-bad",
             "gpt-4o",
             Some("background"),
@@ -568,6 +679,7 @@ mod tests {
 
         StatsRepo::record_request(
             &pool,
+            CallKind::Chat,
             "req-1",
             "gpt-4o",
             Some("profile-1"),
@@ -621,6 +733,7 @@ mod tests {
 
         StatsRepo::record_request(
             &pool,
+            CallKind::Chat,
             "req-tc",
             "gpt-4o",
             Some("profile-1"),
@@ -654,6 +767,7 @@ mod tests {
 
         StatsRepo::record_request(
             &pool,
+            CallKind::Chat,
             "req-err",
             "gpt-4o",
             Some("profile-1"),
@@ -688,6 +802,7 @@ mod tests {
 
         StatsRepo::record_request(
             &pool,
+            CallKind::Chat,
             "req-auto",
             "gpt-4o",
             Some("profile-1"),
@@ -1219,5 +1334,322 @@ mod tests {
         assert_eq!(s.total_tokens, 300);
         assert_eq!(s.messages_indexed, 2);
         assert_eq!(s.messages_total, 3);
+    }
+
+    // ── 12. record_request persiste el kind ────────────────────────────────
+
+    /// `record_request` must round-trip the origin it was given through the
+    /// `kind` column for every [`CallKind`] variant.
+    #[tokio::test]
+    async fn test_record_request_persists_kind_for_each_origin() {
+        let pool = setup().await;
+
+        let kinds = [
+            CallKind::Chat,
+            CallKind::Router,
+            CallKind::Archivist,
+            CallKind::Consolidator,
+            CallKind::Collapse,
+        ];
+
+        for (i, kind) in kinds.into_iter().enumerate() {
+            let id = format!("kind-req-{i}");
+            StatsRepo::record_request(
+                &pool,
+                kind,
+                &id,
+                "gpt-4o",
+                Some("profile-1"),
+                1,
+                1,
+                2,
+                0,
+                0,
+                0.0,
+                None,
+                "success",
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let stored: String = sqlx::query_scalar("SELECT kind FROM llm_requests WHERE id = ?1")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                stored,
+                kind.as_str(),
+                "record_request must persist the kind for {kind:?}"
+            );
+        }
+    }
+
+    // ── 13. agregaciones de chat excluyen filas no-chat ────────────────────
+
+    /// With one `chat` row and one `archivist` row, every chat aggregate must
+    /// ignore the background row.
+    #[tokio::test]
+    async fn test_chat_aggregations_exclude_non_chat_rows() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "chat-1",
+            "chat",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            0.01,
+            Some(200),
+            "success",
+            Some(r#"[{"name":"get_weather"}]"#),
+            None,
+        )
+        .await;
+
+        insert_request_with_kind(
+            &pool,
+            "arch-1",
+            "archivist",
+            "mistralai/mistral-small-24b-instruct-2501",
+            1000,
+            500,
+            1500,
+            0.5,
+            Some(300),
+            "success",
+            Some(r#"[{"name":"background_tool"}]"#),
+            None,
+        )
+        .await;
+
+        // summary ignores the archivist row
+        let s = StatsRepo::summary(&pool).await.unwrap();
+        assert_eq!(s.total_calls, 1, "summary must exclude non-chat rows");
+        assert_eq!(
+            s.total_tokens, 150,
+            "summary must not count archivist tokens"
+        );
+        assert!(
+            (s.total_cost - 0.01).abs() < f64::EPSILON,
+            "summary must not count archivist cost"
+        );
+
+        // by_model ignores the archivist model
+        let models = StatsRepo::by_model(&pool).await.unwrap();
+        assert_eq!(models.len(), 1, "by_model must exclude non-chat models");
+        assert_eq!(models[0].model, "gpt-4o");
+        assert_eq!(models[0].calls, 1);
+
+        // by_day ignores the archivist row
+        let days = StatsRepo::by_day(&pool, 30).await.unwrap();
+        let total_calls: u64 = days.iter().map(|d| d.calls).sum();
+        assert_eq!(total_calls, 1, "by_day must exclude non-chat rows");
+        let total_tokens: u64 = days.iter().map(|d| d.total_tokens).sum();
+        assert_eq!(total_tokens, 150, "by_day must not count archivist tokens");
+
+        // tools_summary ignores the archivist tool calls
+        let tools = StatsRepo::tools_summary(&pool).await.unwrap();
+        assert_eq!(
+            tools.len(),
+            1,
+            "tools_summary must exclude non-chat tool calls"
+        );
+        assert_eq!(tools[0].tool, "get_weather");
+        assert_eq!(tools[0].count, 1);
+    }
+
+    // ── 14. background_summary ─────────────────────────────────────────────
+
+    /// `background_summary` returns exactly one entry per non-chat origin,
+    /// aggregating the rows of each and leaving absent origins at zero.
+    #[tokio::test]
+    async fn test_background_summary_one_entry_per_origin() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "router-1",
+            "router",
+            "gpt-4o-mini",
+            10,
+            5,
+            15,
+            0.001,
+            Some(50),
+            "success",
+            None,
+            None,
+        )
+        .await;
+        insert_request_with_kind(
+            &pool,
+            "router-2",
+            "router",
+            "gpt-4o-mini",
+            20,
+            10,
+            30,
+            0.002,
+            Some(60),
+            "success",
+            None,
+            None,
+        )
+        .await;
+        insert_request_with_kind(
+            &pool,
+            "collapse-1",
+            "collapse",
+            "gpt-4o",
+            30,
+            15,
+            45,
+            0.003,
+            Some(70),
+            "error",
+            None,
+            None,
+        )
+        .await;
+        // A chat row must never show up in the background summary.
+        insert_request_with_kind(
+            &pool,
+            "chat-1",
+            "chat",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            0.01,
+            Some(200),
+            "success",
+            None,
+            None,
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool).await.unwrap();
+        assert_eq!(bg.len(), 4, "one entry per non-chat origin");
+
+        let find = |kind: &str| {
+            bg.iter()
+                .find(|b| b.kind == kind)
+                .unwrap_or_else(|| panic!("missing origin '{kind}'"))
+        };
+
+        let router = find("router");
+        assert_eq!(router.calls, 2);
+        assert_eq!(router.input_tokens, 30);
+        assert_eq!(router.output_tokens, 15);
+        assert_eq!(router.total_tokens, 45);
+        assert!((router.total_cost - 0.003).abs() < f64::EPSILON);
+        assert_eq!(router.total_errors, 0);
+        assert!((router.avg_duration_ms.unwrap() - 55.0).abs() < f64::EPSILON);
+
+        let collapse = find("collapse");
+        assert_eq!(collapse.calls, 1);
+        assert_eq!(collapse.total_tokens, 45);
+        assert_eq!(collapse.total_errors, 1, "the collapse row failed");
+        assert!((collapse.avg_duration_ms.unwrap() - 70.0).abs() < f64::EPSILON);
+
+        let archivist = find("archivist");
+        assert_eq!(archivist.calls, 0);
+        assert_eq!(archivist.total_tokens, 0);
+        assert_eq!(archivist.total_cost, 0.0);
+        assert!(archivist.avg_duration_ms.is_none());
+
+        let consolidator = find("consolidator");
+        assert_eq!(consolidator.calls, 0);
+        assert_eq!(consolidator.total_tokens, 0);
+        assert!(consolidator.avg_duration_ms.is_none());
+    }
+
+    /// With only chat rows the four background origins are still returned, all
+    /// at zero.
+    #[tokio::test]
+    async fn test_background_summary_no_background_calls() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "chat-1",
+            "chat",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            0.01,
+            Some(200),
+            "success",
+            None,
+            None,
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool).await.unwrap();
+        assert_eq!(bg.len(), 4, "one entry per non-chat origin");
+
+        for kind in ["router", "archivist", "consolidator", "collapse"] {
+            let entry = bg
+                .iter()
+                .find(|b| b.kind == kind)
+                .unwrap_or_else(|| panic!("missing origin '{kind}'"));
+            assert_eq!(entry.calls, 0, "origin '{kind}' must have zero calls");
+            assert_eq!(entry.total_tokens, 0);
+            assert_eq!(entry.total_cost, 0.0);
+            assert_eq!(entry.total_errors, 0);
+            assert!(entry.avg_duration_ms.is_none());
+        }
+    }
+
+    // ── 15. export_csv incluye kind ────────────────────────────────────────
+
+    /// `export_csv` must carry the `kind` column in the header and each row.
+    #[tokio::test]
+    async fn test_export_csv_includes_kind_column() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "csv-kind-1",
+            "archivist",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            0.01,
+            Some(200),
+            "success",
+            None,
+            Some("2026-09-24T10:00:00"),
+        )
+        .await;
+
+        let csv = StatsRepo::export_csv(&pool).await.unwrap();
+        let lines: Vec<&str> = csv.trim().lines().collect();
+        assert!(
+            lines.len() >= 2,
+            "expected header + 1 row, got {}",
+            lines.len()
+        );
+
+        let header: Vec<&str> = lines[0].split(',').collect();
+        let kind_idx = header
+            .iter()
+            .position(|h| *h == "kind")
+            .expect("CSV header must include a 'kind' column");
+
+        let row: Vec<&str> = lines[1].split(',').collect();
+        assert_eq!(
+            row[kind_idx], "archivist",
+            "each CSV line must carry its kind value"
+        );
     }
 }

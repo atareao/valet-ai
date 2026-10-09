@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-10-03
+goal: >-
+  Sustituir el heurístico de markdown de la Capa C por un estimador determinista de
+  tokens JSON, sin dependencias, y recalibrar el presupuesto con datos reales.

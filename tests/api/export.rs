@@ -28,12 +28,7 @@ async fn test_export_returns_json() {
     assert!(data.get("events").is_some(), "missing events");
     assert!(data.get("tasks").is_some(), "missing tasks");
     assert!(data.get("notes").is_some(), "missing notes");
-    assert!(data.get("contacts").is_some(), "missing contacts");
     assert!(data.get("reminders").is_some(), "missing reminders");
-    assert!(data.get("meal_plans").is_some(), "missing meal_plans");
-    assert!(data.get("shopping_list").is_some(), "missing shopping_list");
-    assert!(data.get("habits").is_some(), "missing habits");
-    assert!(data.get("habit_logs").is_some(), "missing habit_logs");
     assert!(data.get("memory").is_some(), "missing memory");
     assert!(data.get("tools").is_some(), "missing tools");
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ChatView } from "../components/ChatView";
 import type { Message } from "../types";
 
@@ -98,5 +99,82 @@ describe("ChatView — propagación del avatar de usuario", () => {
     const logo = container.querySelector("img[src*='valet-icon']");
     expect(logo).not.toBeNull();
     expect(logo!.getAttribute("alt")).toBeTruthy();
+  });
+});
+
+describe("ChatView — aprobación de herramientas destructivas", () => {
+  const pendingApproval = {
+    requestId: "req-1",
+    toolName: "calendar",
+    reason: "Eliminar un evento es irreversible",
+  };
+
+  function renderWithApproval(
+    onResolveApproval: (approved: boolean) => void,
+  ) {
+    return render(
+      <ChatView
+        messages={[userMessage]}
+        loading={false}
+        onSendMessage={vi.fn()}
+        streaming={false}
+        streamingContent=""
+        activeTools={[]}
+        pendingApproval={pendingApproval}
+        onResolveApproval={onResolveApproval}
+      />,
+    );
+  }
+
+  it("muestra el diálogo con la herramienta y el motivo", () => {
+    renderWithApproval(vi.fn());
+
+    expect(screen.getByText("calendar")).toBeInTheDocument();
+    expect(
+      screen.getByText("Eliminar un evento es irreversible"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Permitir" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Denegar" }),
+    ).toBeInTheDocument();
+  });
+
+  it("pulsar Permitir llama a onResolveApproval(true)", async () => {
+    const user = userEvent.setup();
+    const onResolveApproval = vi.fn();
+    renderWithApproval(onResolveApproval);
+
+    await user.click(screen.getByRole("button", { name: "Permitir" }));
+
+    expect(onResolveApproval).toHaveBeenCalledWith(true);
+  });
+
+  it("pulsar Denegar llama a onResolveApproval(false)", async () => {
+    const user = userEvent.setup();
+    const onResolveApproval = vi.fn();
+    renderWithApproval(onResolveApproval);
+
+    await user.click(screen.getByRole("button", { name: "Denegar" }));
+
+    expect(onResolveApproval).toHaveBeenCalledWith(false);
+  });
+
+  it("sin pendingApproval no aparece el diálogo", () => {
+    render(
+      <ChatView
+        messages={[userMessage]}
+        loading={false}
+        onSendMessage={vi.fn()}
+        streaming={false}
+        streamingContent=""
+        activeTools={[]}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Permitir" }),
+    ).not.toBeInTheDocument();
   });
 });

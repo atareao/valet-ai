@@ -84,6 +84,8 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 stream: false,
+                reasoning: None,
+                response_format: None,
             })
             .await;
         // Both providers should fail (no server running)
@@ -109,6 +111,8 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 stream: false,
+                reasoning: None,
+                response_format: None,
             })
             .await;
         assert!(result.is_err());

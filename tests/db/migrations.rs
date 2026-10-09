@@ -94,83 +94,88 @@ async fn test_migration_is_idempotent() {
     valet::db::schema::run_migrations(&pool).await.unwrap();
 }
 
+/// The `messages` table gains a nullable `widgets` TEXT column.
+#[tokio::test]
+async fn test_messages_table_has_widgets_column() {
+    let pool = setup().await;
+
+    let columns: Vec<(i64, String, String, i64, Option<String>, i64)> = sqlx::query_as(
+        "SELECT cid, name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('messages')",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    let widgets = columns
+        .iter()
+        .find(|(_cid, name, _ty, _notnull, _dflt, _pk)| name == "widgets")
+        .expect("Column 'widgets' should exist in messages table");
+
+    assert_eq!(widgets.2.to_uppercase(), "TEXT", "'widgets' should be TEXT");
+    assert_eq!(widgets.3, 0, "'widgets' should be nullable");
+}
+
+/// Running the migrations twice keeps the `widgets` column and does not fail.
+#[tokio::test]
+async fn test_message_widgets_migration_is_idempotent() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+
+    valet::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
+
+    let column_names: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('messages')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+    assert!(
+        column_names.contains(&"widgets".to_string()),
+        "Column 'widgets' must exist after running migrations twice"
+    );
+}
+
 // ── F5c: Tools de Valor — Schema tests ─────────────────────────────────────
 
-/// Asserts that `run_migrations` creates the `meal_plans` table.
+/// Asserts that `run_migrations` does NOT leave the tables of the removed tools.
 #[tokio::test]
-async fn test_migrations_creates_meal_plans_table() {
+async fn test_migrations_drop_removed_tools_tables() {
     let pool = setup().await;
 
-    let has_table: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='meal_plans'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    for table in &[
+        "contacts",
+        "contacts_fts",
+        "meal_plans",
+        "shopping_list",
+        "habits",
+        "habit_logs",
+    ] {
+        let has_table: bool = sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name=?1",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
 
-    assert!(
-        has_table,
-        "Expected 'meal_plans' table to exist after migration"
-    );
+        assert!(
+            !has_table,
+            "Expected '{table}' table to be dropped by migration"
+        );
+    }
 }
 
-/// Asserts that `run_migrations` creates the `shopping_list` table.
+/// Asserts that idempotent migrations do NOT recreate the removed tools' tables.
 #[tokio::test]
-async fn test_migrations_creates_shopping_list_table() {
-    let pool = setup().await;
-
-    let has_table: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='shopping_list'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert!(
-        has_table,
-        "Expected 'shopping_list' table to exist after migration"
-    );
-}
-
-/// Asserts that `run_migrations` creates the `habits` table.
-#[tokio::test]
-async fn test_migrations_creates_habits_table() {
-    let pool = setup().await;
-
-    let has_table: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habits'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert!(
-        has_table,
-        "Expected 'habits' table to exist after migration"
-    );
-}
-
-/// Asserts that `run_migrations` creates the `habit_logs` table.
-#[tokio::test]
-async fn test_migrations_creates_habit_logs_table() {
-    let pool = setup().await;
-
-    let has_table: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM sqlite_master WHERE type='table' AND name='habit_logs'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-
-    assert!(
-        has_table,
-        "Expected 'habit_logs' table to exist after migration"
-    );
-}
-
-/// Asserts idempotency covers the new F5c tables.
-#[tokio::test]
-async fn test_idempotent_includes_new_tables() {
+async fn test_idempotent_does_not_recreate_removed_tables() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(
@@ -191,10 +196,17 @@ async fn test_idempotent_includes_new_tables() {
             .await
             .unwrap();
 
-    for table in &["meal_plans", "shopping_list", "habits", "habit_logs"] {
+    for table in &[
+        "contacts",
+        "contacts_fts",
+        "meal_plans",
+        "shopping_list",
+        "habits",
+        "habit_logs",
+    ] {
         assert!(
-            tables.contains(&table.to_string()),
-            "Expected '{table}' table after idempotent migration"
+            !tables.contains(&table.to_string()),
+            "Removed '{table}' table must not be recreated by idempotent migration"
         );
     }
 }
@@ -205,6 +217,22 @@ async fn test_idempotent_includes_new_tables() {
 fn prompts_migration_sql() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("migrations/20260929000001_prompts.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// Reads the widget-prompt-guidance migration SQL from disk.
+fn widget_guidance_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261004000001_widget_prompt_guidance.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// Reads the consolidator-reliability migration SQL from disk.
+fn consolidator_reliability_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261003000003_consolidator_reliability.sql");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
@@ -309,6 +337,224 @@ async fn test_migration_respects_custom_system_prompt() {
     );
 }
 
+// ── Widget prompt guidance (20261004000001_widget_prompt_guidance.sql) ─────
+
+/// The guidance migration appends the widget-guidance section to a base prompt
+/// that does not already carry it. The tuning migration later relocates that
+/// section to `SKILL_WIDGETS_PROMPT`, so this exercises the append in isolation.
+#[tokio::test]
+async fn test_migration_appends_widget_guidance_section() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = 'base' WHERE key = 'system_prompt'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_guidance_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = setting_value(&pool, "system_prompt").await;
+    assert!(
+        value.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "system_prompt must contain the widget-guidance header"
+    );
+    assert!(
+        value.contains("render_widget"),
+        "system_prompt must mention the render_widget tool"
+    );
+    assert!(
+        value.contains("DEBES invocar"),
+        "system_prompt must contain the imperative 'DEBES invocar'"
+    );
+    assert!(
+        value.contains("NO invoques la herramienta"),
+        "system_prompt must contain the 'NO invoques la herramienta' rule"
+    );
+}
+
+/// A custom `system_prompt` is preserved and the section is appended after it.
+#[tokio::test]
+async fn test_migration_preserves_custom_system_prompt_and_appends_section() {
+    let pool = setup().await;
+
+    sqlx::query(
+        "UPDATE settings SET value = 'Mi prompt personalizado' WHERE key = 'system_prompt'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let sql = widget_guidance_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = setting_value(&pool, "system_prompt").await;
+    assert!(
+        value.contains("Mi prompt personalizado"),
+        "the custom system_prompt must be preserved"
+    );
+    assert!(
+        value.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "system_prompt must contain the widget-guidance header"
+    );
+    assert!(
+        value.find("Mi prompt personalizado")
+            < value.find("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "the user's custom prompt must appear before the appended section"
+    );
+}
+
+/// Running the widget-guidance migration twice appends the section only once.
+#[tokio::test]
+async fn test_widget_guidance_migration_is_idempotent() {
+    let pool = setup().await;
+
+    let sql = widget_guidance_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = setting_value(&pool, "system_prompt").await;
+    assert_eq!(
+        value
+            .matches("# Instrucciones de Interfaz y Widgets Interactivos")
+            .count(),
+        1,
+        "the widget-guidance header must appear exactly once after two runs"
+    );
+}
+
+// ── Consolidator reliability (20261003000003_consolidator_reliability.sql) ──
+
+/// After every migration, the Semantic generation role does not reason.
+#[tokio::test]
+async fn test_migration_semantic_reasoning_is_off_after_migrations() {
+    let pool = setup().await;
+    assert_eq!(
+        setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await,
+        "off"
+    );
+}
+
+/// A legacy `low` is corrected to `off` by the reliability migration.
+#[tokio::test]
+async fn test_consolidator_migration_forces_semantic_reasoning_off() {
+    let pool = setup().await;
+    sqlx::query("UPDATE settings SET value='low' WHERE key='GENERATION_SEMANTIC_REASONING'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let sql = consolidator_reliability_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await,
+        "off"
+    );
+}
+
+/// Any reasoning value other than `low` is respected.
+#[tokio::test]
+async fn test_consolidator_migration_respects_other_reasoning() {
+    let pool = setup().await;
+    sqlx::query("UPDATE settings SET value='medium' WHERE key='GENERATION_SEMANTIC_REASONING'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let sql = consolidator_reliability_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        setting_value(&pool, "GENERATION_SEMANTIC_REASONING").await,
+        "medium"
+    );
+}
+
+/// After every migration, the persistent-memory budget is 800.
+#[tokio::test]
+async fn test_migration_bumps_persistent_memory_budget_to_800() {
+    let pool = setup().await;
+    assert_eq!(
+        setting_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await,
+        "800"
+    );
+}
+
+/// A custom budget (not 500) is respected by the reliability migration.
+#[tokio::test]
+async fn test_consolidator_migration_respects_custom_budget() {
+    let pool = setup().await;
+    sqlx::query("UPDATE settings SET value='1200' WHERE key='PERSISTENT_MEMORY_BUDGET_TOKENS'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let sql = consolidator_reliability_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        setting_value(&pool, "PERSISTENT_MEMORY_BUDGET_TOKENS").await,
+        "1200"
+    );
+}
+
+/// The seeded consolidator prompt carries the taxonomy, the placeholders and the
+/// marker, and forbids duplicating and inventing.
+#[tokio::test]
+async fn test_migration_seeds_consolidator_prompt_taxonomy() {
+    let pool = setup().await;
+    let value = setting_value(&pool, "consolidator_prompt").await;
+    for needle in [
+        "preferences_and_tastes",
+        "dislikes_and_dealbreakers",
+        "{{ ESTADO_ACTUAL }}",
+        "{{ BLOQUE_DE_MENSAJES }}",
+        "consolidador de memoria persistente",
+    ] {
+        assert!(
+            value.contains(needle),
+            "consolidator_prompt must contain {needle}"
+        );
+    }
+}
+
+/// A custom consolidator prompt is preserved by the reliability migration.
+#[tokio::test]
+async fn test_migration_preserves_custom_consolidator_prompt() {
+    let pool = setup().await;
+    sqlx::query(
+        "UPDATE settings SET value='Mi consolidador personalizado' WHERE key='consolidator_prompt'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let sql = consolidator_reliability_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        setting_value(&pool, "consolidator_prompt").await,
+        "Mi consolidador personalizado"
+    );
+}
+
 // ── 11.1: reset of the index source ────────────────────────────────────────
 
 /// A no-network LLM double: returns a parseable memory card immediately.
@@ -316,16 +562,30 @@ struct NoNetworkLLM;
 
 #[async_trait]
 impl LLMProvider for NoNetworkLLM {
-    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
-        Ok(ChatResponse {
-            message: ChatMessage {
-                role: "assistant".into(),
-                content: "\
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
+        // The worker now makes two calls per pass: the archivist (Layer B) and
+        // the consolidator (Layer C). Reply with a valid JSON state for the
+        // latter, told apart by its prompt marker.
+        let system_content = request
+            .messages
+            .first()
+            .map(|m| m.content.as_str())
+            .unwrap_or_default();
+        let content = if system_content.contains("consolidador de memoria persistente") {
+            r#"{"schema_version":1,"user_profile":{"note":"reset test"},"system_rules":["una regla"]}"#
+                .to_string()
+        } else {
+            "\
 - FECHA/CONTEXTO: test de reseteo
 - TEMAS TRATADOS: reconstrucción del índice
 - HECHOS Y DECISIONES: la fuente se ha reseteado
 - SÍNTESIS: el worker rearchiva desde el mensaje original"
-                    .into(),
+                .to_string()
+        };
+        Ok(ChatResponse {
+            message: ChatMessage {
+                role: "assistant".into(),
+                content,
                 tool_calls: None,
                 tool_result: None,
                 tool_call_id: None,
@@ -501,4 +761,326 @@ async fn test_migration_prompts_idempotent() {
             .unwrap();
         assert_eq!(count, 1, "Expected exactly one row for key '{key}'");
     }
+}
+
+// ── Skill router (20261007000001_skill_router.sql) ─────────────────────────
+
+/// Reads the skill-router migration SQL from disk.
+fn skill_router_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261007000001_skill_router.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// Reads the router-enabled migration SQL from disk.
+fn router_enabled_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261008000002_router_enabled_by_default.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// After migrating, the `ROUTER_*` knobs hold their defaults and the eight
+/// `SKILL_*_PROMPT` fragments exist and are non-empty.
+#[tokio::test]
+async fn test_skill_router_settings_seeded_with_defaults() {
+    let pool = setup().await;
+
+    let router_defaults = [
+        // Flipped to true by 20261008000002_router_enabled_by_default.sql.
+        ("ROUTER_ENABLED", "true"),
+        ("ROUTER_MODEL", "typesafe/jev-1.13"),
+        // Bumped from 0.3 by 20261008000001_skill_router_tuning.sql (measured).
+        ("ROUTER_THRESHOLD", "0.10"),
+        ("ROUTER_TIMEOUT_MS", "800"),
+        // Bumped from 2 by 20261008000001_skill_router_tuning.sql (measured).
+        ("ROUTER_HISTORY_TURNS", "6"),
+    ];
+    for (key, value) in router_defaults {
+        assert_eq!(
+            setting_value(&pool, key).await,
+            value,
+            "after migrations, settings.{key} must hold its default"
+        );
+    }
+
+    let skill_keys = [
+        "SKILL_AGENDA_PROMPT",
+        "SKILL_TAREAS_PROMPT",
+        "SKILL_RECORDATORIOS_PROMPT",
+        "SKILL_NOTAS_PROMPT",
+        "SKILL_CLIMA_PROMPT",
+        "SKILL_LUGARES_PROMPT",
+        "SKILL_BUSQUEDA_WEB_PROMPT",
+        "SKILL_MEMORIA_PROMPT",
+    ];
+    for key in skill_keys {
+        let value = setting_value(&pool, key).await;
+        assert!(!value.trim().is_empty(), "fragment {key} must not be empty");
+        assert!(
+            value.contains("# SKILL ACTIVA:"),
+            "fragment {key} must carry its section heading"
+        );
+    }
+}
+
+/// After the migrations, the router boots enabled: 20261008000002 flips the
+/// seeded `ROUTER_ENABLED` from `false` to `true` so a migrated database routes
+/// out of the box.
+#[tokio::test]
+async fn test_router_enabled_is_true_after_migrations() {
+    let pool = setup().await;
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_ENABLED").await,
+        "true",
+        "a freshly migrated database must boot with the router enabled"
+    );
+}
+
+/// A hand-edited, non-empty value survives a second run of the migration.
+#[tokio::test]
+async fn test_skill_router_migration_respects_edited_value() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = '0.9' WHERE key = 'ROUTER_THRESHOLD'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = skill_router_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD").await,
+        "0.9",
+        "a hand-edited, non-empty value must not be overwritten by the upsert"
+    );
+}
+
+/// The flip only touches the exact seeded value: a user who turned the router
+/// off with the `0` spelling keeps it off after re-applying the migration.
+#[tokio::test]
+async fn test_router_enabled_migration_respects_user_value() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = '0' WHERE key = 'ROUTER_ENABLED'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = router_enabled_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_ENABLED").await,
+        "0",
+        "a user-chosen value that is not the seeded default must survive the migration"
+    );
+}
+
+/// The documented caveat is executable: an explicit `false` that started from
+/// the seeded value is indistinguishable from it, so the migration flips it
+/// once. That is the price of a plain SQL migration; the window is small.
+#[tokio::test]
+async fn test_router_enabled_migration_flips_the_seeded_false_once() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = 'false' WHERE key = 'ROUTER_ENABLED'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = router_enabled_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_ENABLED").await,
+        "true",
+        "the seeded `false` is flipped once — see the migration's caveat"
+    );
+}
+
+// ── Skill-router tuning (20261008000001_skill_router_tuning.sql) ────────────
+
+/// Reads the skill-router-tuning migration SQL from disk.
+fn skill_router_tuning_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261008000001_skill_router_tuning.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// After migrating, the measured global threshold, the measured history window
+/// and the widget's own threshold hold their new defaults.
+#[tokio::test]
+async fn test_skill_router_tuning_seeds_defaults() {
+    let pool = setup().await;
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD").await,
+        "0.10",
+        "the measured global threshold must be 0.10"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_HISTORY_TURNS").await,
+        "6",
+        "the measured history window must be 6"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+        "0.20",
+        "the widget override must be 0.20"
+    );
+}
+
+/// A user value is never overwritten: the bump only touches our own default.
+#[tokio::test]
+async fn test_skill_router_tuning_respects_user_values() {
+    let pool = setup().await;
+
+    for (key, value) in [
+        ("ROUTER_THRESHOLD", "0.42"),
+        ("ROUTER_HISTORY_TURNS", "9"),
+        ("ROUTER_THRESHOLD_WIDGETS", "0.77"),
+    ] {
+        sqlx::query("UPDATE settings SET value = ?1 WHERE key = ?2")
+            .bind(value)
+            .bind(key)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let sql = skill_router_tuning_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD").await,
+        "0.42",
+        "a user-tuned global threshold must not be overwritten"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_HISTORY_TURNS").await,
+        "9",
+        "a user-tuned history window must not be overwritten"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+        "0.77",
+        "a user-tuned widget threshold must not be overwritten"
+    );
+}
+
+/// The widget guide leaves the base prompt and lands in the widgets fragment.
+#[tokio::test]
+async fn test_skill_router_tuning_moves_widget_guide_out_of_system_prompt() {
+    let pool = setup().await;
+
+    let system_prompt = setting_value(&pool, "system_prompt").await;
+    assert!(
+        !system_prompt.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "the base prompt must no longer carry the widget guide"
+    );
+
+    let fragment = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+    assert!(
+        !fragment.trim().is_empty(),
+        "SKILL_WIDGETS_PROMPT must not be empty"
+    );
+    assert!(
+        fragment.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "the fragment must carry the relocated guide header"
+    );
+    assert!(
+        fragment.contains("render_widget"),
+        "the fragment must carry the relocated guide body"
+    );
+}
+
+/// An edited widget block is left where it is; nothing of the user's is removed.
+#[tokio::test]
+async fn test_skill_router_tuning_keeps_edited_widget_block() {
+    let pool = setup().await;
+
+    let edited = "Mi prompt personalizado\n\n# Instrucciones de Interfaz y Widgets Interactivos\n\n(editado por el usuario)";
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'system_prompt'")
+        .bind(edited)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = skill_router_tuning_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "system_prompt").await,
+        edited,
+        "an edited widget block must not be removed"
+    );
+}
+
+/// The five regrouped/new fragments exist and are non-empty.
+#[tokio::test]
+async fn test_skill_router_tuning_seeds_new_fragments() {
+    let pool = setup().await;
+
+    for key in [
+        "SKILL_PENDIENTES_PROMPT",
+        "SKILL_RECUERDOS_PROMPT",
+        "SKILL_ENTORNO_PROMPT",
+        "SKILL_WEB_PROMPT",
+        "SKILL_WIDGETS_PROMPT",
+    ] {
+        let value = setting_value(&pool, key).await;
+        assert!(!value.trim().is_empty(), "fragment {key} must not be empty");
+    }
+}
+
+/// Applying the migration twice leaves the same state.
+#[tokio::test]
+async fn test_skill_router_tuning_is_idempotent() {
+    let pool = setup().await;
+
+    let snapshot = |pool: SqlitePool| async move {
+        (
+            setting_value(&pool, "ROUTER_THRESHOLD").await,
+            setting_value(&pool, "ROUTER_HISTORY_TURNS").await,
+            setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+            setting_value(&pool, "system_prompt").await,
+            setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
+        )
+    };
+
+    let before = snapshot(pool.clone()).await;
+
+    let sql = skill_router_tuning_migration_sql();
+    for _ in 0..2 {
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let after = snapshot(pool.clone()).await;
+    assert_eq!(
+        before, after,
+        "re-applying the migration must leave the same state"
+    );
 }

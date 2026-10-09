@@ -3,7 +3,6 @@ pub mod repos;
 pub mod schema;
 pub mod vec_extension;
 
-use repos::tools::ToolsRepo;
 use sqlx::SqlitePool;
 
 /// Type alias for the shared database pool used by all handlers.
@@ -17,7 +16,8 @@ pub type DbPool = sqlx::SqlitePool;
 /// 3. Configures WAL journal mode and foreign-key enforcement.
 /// 4. Fail-fast: verifies `SELECT vec_version()` works and aborts otherwise.
 /// 5. Runs all sqlx schema migrations.
-/// 6. Seeds default tools if the tools table is empty.
+/// 6. Does NOT seed the `tools` table; callers reconcile it from the registry
+///    after `init_db` returns.
 /// 7. Creates FTS5 triggers for full-text search.
 ///
 /// [`vec_extension`]: crate::db::vec_extension
@@ -49,9 +49,6 @@ pub async fn init_db(db_path: &str) -> Result<DbPool, Box<dyn std::error::Error>
     // EMBEDDING_DIMENSION, otherwise refuse to start rather than search a
     // misaligned index silently.
     vec_extension::verify_embedding_dimension(&pool).await?;
-
-    // Seed default tools
-    ToolsRepo::seed_defaults(&pool).await?;
 
     // Initialize FTS5 triggers
     fts::create_fts_triggers(&pool).await?;

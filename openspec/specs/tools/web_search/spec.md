@@ -53,13 +53,14 @@ La tool SHALL extraer hasta 5 resultados de `web.results`, cada uno con `title`,
 
 ### Requirement: Tool interface
 
-`WebSearchTool` SHALL implementar el trait `Tool` con nombre `web_search`, permiso `NoConfirm` y parámetro requerido `query`.
+`WebSearchTool` SHALL implementar el trait `Tool` con nombre `web_search`, permiso `NoConfirm` para
+cualquier argumento y parámetro requerido `query`.
 
 **Given** `WebSearchTool` implementa el trait `Tool`
 **When** se consulta su metadata
 **Then** `name()` DEBE ser `"web_search"`
 **And** `description()` DEBE describir la búsqueda web
-**And** `permission()` DEBE ser `Permission::NoConfirm`
+**And** `permission(&args)` DEBE ser `Permission::NoConfirm` independientemente de los args
 **And** `parameters()` DEBE requerir `query` como string
 
 #### Scenario: Parámetros correctos

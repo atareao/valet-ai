@@ -19,21 +19,26 @@ use tower::ServiceExt;
 
 pub struct TestApp {
     pub router: axum::Router,
+    /// The database pool backing the app. Exposed additively so tests can seed
+    /// raw rows (e.g. a corrupt payload) that no endpoint would produce.
+    pub db: sqlx::SqlitePool,
 }
 
 impl TestApp {
     pub async fn new() -> Self {
         let state = valet::AppState::new_in_memory().await;
+        let db = state.db.clone();
         let router = valet::app_with_state(state);
-        Self { router }
+        Self { router, db }
     }
 
     /// Creates a TestApp with NO seed data (clean database).
     /// Only migrations and default tools are applied.
     pub async fn new_empty() -> Self {
         let state = valet::AppState::new_in_memory_empty().await;
+        let db = state.db.clone();
         let router = valet::app_with_state(state);
-        Self { router }
+        Self { router, db }
     }
 
     pub async fn get(&self, path: &str) -> TestResponse {

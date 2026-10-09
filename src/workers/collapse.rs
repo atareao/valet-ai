@@ -9,6 +9,7 @@ use crate::db::repos::stats::StatsRepo;
 use crate::db::DbPool;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider};
 use crate::models::message::estimate_markdown_tokens_heuristic;
+use crate::models::stats::CallKind;
 use std::time::Instant;
 
 /// Background worker that collapses long messages by sending them to an LLM
@@ -91,6 +92,11 @@ impl CollapseWorker {
 
                 if let Some(msg) = msg {
                     // 2. Build LLM request
+                    let generation = crate::generation::read_generation_params(
+                        &db,
+                        crate::generation::GenerationRole::Collapse,
+                    )
+                    .await;
                     let request = ChatRequest {
                         model: model.clone(),
                         messages: vec![
@@ -110,9 +116,11 @@ impl CollapseWorker {
                             },
                         ],
                         tools: None,
-                        temperature: Some(0.3),
-                        max_tokens: Some(1024),
+                        temperature: Some(generation.temperature),
+                        max_tokens: Some(generation.max_tokens),
                         stream: false,
+                        reasoning: generation.reasoning,
+                        response_format: None,
                     };
 
                     // 3. Call LLM
@@ -137,6 +145,7 @@ impl CollapseWorker {
                             let total_tokens = prompt_tokens + completion_tokens;
                             let _ = StatsRepo::record_request(
                                 &db,
+                                CallKind::Collapse,
                                 &uuid::Uuid::new_v4().to_string(),
                                 &model,
                                 None,
@@ -182,6 +191,7 @@ impl CollapseWorker {
                             let duration_ms = start.elapsed().as_millis() as i64;
                             let _ = StatsRepo::record_request(
                                 &db,
+                                CallKind::Collapse,
                                 &uuid::Uuid::new_v4().to_string(),
                                 &model,
                                 None,
@@ -215,7 +225,9 @@ mod tests {
     use super::*;
     use crate::db::repos::messages::MessagesRepo;
     use crate::db::schema::run_migrations;
-    use crate::llm::provider::{ChatMessage, ChatRequest, ChatResponse, LLMError, TokenUsage};
+    use crate::llm::provider::{
+        ChatMessage, ChatRequest, ChatResponse, LLMError, ReasoningSpec, TokenUsage,
+    };
     use async_trait::async_trait;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::sync::{Arc, Mutex};
@@ -494,5 +506,121 @@ mod tests {
             .expect("second ID was lost: forwarder dropped it when the channel was full")
             .expect("second ID should be present");
         assert_eq!(second, "second");
+    }
+
+    // -----------------------------------------------------------------------
+    // Contract tests — CollapseWorker reads its generation params from `settings`
+    // -----------------------------------------------------------------------
+
+    /// Run the worker once for `msg_id` and return the first captured request.
+    async fn collapse_once(
+        pool: &DbPool,
+        msg_id: String,
+    ) -> Result<ChatRequest, Box<dyn std::error::Error>> {
+        let (tx, rx) = mpsc::channel::<String>(16);
+        let calls: Arc<Mutex<Vec<ChatRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let mock = Arc::new(MockLLMProvider {
+            calls: calls.clone(),
+        });
+        let _handle = CollapseWorker::start(
+            pool.clone(),
+            mock,
+            rx,
+            "Resume el mensaje.".to_string(),
+            "mistralai/mistral-small".to_string(),
+        );
+
+        tx.send(msg_id).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let captured = calls.lock().unwrap();
+        assert!(!captured.is_empty(), "LLM provider was not called");
+        Ok(captured[0].clone())
+    }
+
+    /// Scenario: El colapso no razona con los defaults (0.2 / off / 1024).
+    #[tokio::test]
+    async fn test_collapse_uses_generation_defaults() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = test_db().await?;
+        let msg_id = create_long_message(&pool).await?;
+
+        let request = collapse_once(&pool, msg_id).await?;
+
+        assert_eq!(
+            request.temperature,
+            Some(0.2),
+            "default collapse temperature must be 0.2"
+        );
+        assert!(
+            matches!(request.reasoning, Some(ReasoningSpec::Off)),
+            "default collapse reasoning must be Off, got {:?}",
+            request.reasoning
+        );
+        assert_eq!(
+            request.max_tokens,
+            Some(1024),
+            "default collapse max_tokens must be 1024"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: El colapso toma sus tres parámetros de settings
+    #[tokio::test]
+    async fn test_collapse_reads_generation_params_from_settings(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = test_db().await?;
+        let msg_id = create_long_message(&pool).await?;
+
+        crate::db::repos::settings::SettingsRepo::set(
+            &pool,
+            "GENERATION_COLLAPSE_TEMPERATURE",
+            "0.5",
+        )
+        .await?;
+        crate::db::repos::settings::SettingsRepo::set(
+            &pool,
+            "GENERATION_COLLAPSE_REASONING",
+            "off",
+        )
+        .await?;
+        crate::db::repos::settings::SettingsRepo::set(
+            &pool,
+            "GENERATION_COLLAPSE_MAX_TOKENS",
+            "512",
+        )
+        .await?;
+
+        let request = collapse_once(&pool, msg_id).await?;
+
+        assert_eq!(request.temperature, Some(0.5));
+        assert!(
+            matches!(request.reasoning, Some(ReasoningSpec::Off)),
+            "expected Off, got {:?}",
+            request.reasoning
+        );
+        assert_eq!(request.max_tokens, Some(512));
+
+        Ok(())
+    }
+
+    /// Scenario: Una clave ausente cae al default del rol
+    #[tokio::test]
+    async fn test_collapse_missing_max_tokens_falls_back_to_default(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = test_db().await?;
+        let msg_id = create_long_message(&pool).await?;
+
+        crate::db::repos::settings::SettingsRepo::delete(&pool, "GENERATION_COLLAPSE_MAX_TOKENS")
+            .await?;
+
+        let request = collapse_once(&pool, msg_id).await?;
+        assert_eq!(
+            request.max_tokens,
+            Some(1024),
+            "a missing key must fall back to the role default"
+        );
+
+        Ok(())
     }
 }

@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-10-02
+goal: Eliminar la entrada sin streaming Orchestrator::process_message (sin uso
+  en produccion y sin ruta HTTP), migrando la cobertura unica y preservando el
+  registro de stats en error

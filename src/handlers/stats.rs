@@ -8,7 +8,8 @@ use serde_json::Value;
 use crate::db::repos::stats::StatsRepo;
 use crate::errors::AppError;
 use crate::models::stats::{
-    DayStats, LastApiCall, MemoryStats, ModelStats, StatsSummary, TableSize, ToolStats,
+    BackgroundStats, DayStats, LastApiCall, MemoryStats, ModelStats, StatsSummary, TableSize,
+    ToolStats,
 };
 use crate::AppState;
 
@@ -116,6 +117,15 @@ pub async fn set_retention_handler(
 /// Aggregate statistics over episodic memory.
 pub async fn memory_handler(State(state): State<AppState>) -> Result<Json<MemoryStats>, AppError> {
     let stats = StatsRepo::memory_summary(&state.db).await?;
+    Ok(Json(stats))
+}
+
+/// Per-origin aggregate of background LLM usage (router, archivist,
+/// consolidator, collapse), one entry per origin.
+pub async fn background_handler(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<BackgroundStats>>, AppError> {
+    let stats = StatsRepo::background_summary(&state.db).await?;
     Ok(Json(stats))
 }
 

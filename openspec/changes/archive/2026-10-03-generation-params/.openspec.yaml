@@ -1,0 +1,7 @@
+schema: spec-driven
+created: 2026-10-03
+goal: >-
+  Hacer configurables desde la UI, por rol, la temperatura, el nivel de razonamiento y los tokens
+  máximos de cada llamada al LLM, con defaults sensatos y efecto en caliente; y forzar el modo JSON
+  en el consolidador y la compresión para que los modelos razonadores no gasten de más ni trunquen
+  el JSON.
