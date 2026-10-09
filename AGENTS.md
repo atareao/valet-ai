@@ -175,8 +175,12 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 ### Nomenclatura
 
 - **Plan nuevo:** `plans/PLAN-XXX.md`, con `XXX` de tres dígitos y cero a la izquierda
-  (`001`, `002`, …). El número se asigna en orden creciente y **no se reutiliza** aunque
-  un plan se complete.
+  (`001`, `002`, …). El número se asigna en orden creciente y **no se reutiliza** mientras
+  el plan siga existiendo.
+- **Excepción — reordenación:** un número puede volver a usarse si el plan que lo tenía
+  **nunca llegó a ejecutarse** y pasó a `-PENDING`/`-COMPLETED` dejando libre el ordinal.
+  Precedente: el `003` se reutilizó al reorganizar `plans/` y aparcar el roadmap v2 como
+  `PLAN-004-PENDING`.
 - **Plan completado:** se renombra a `plans/PLAN-XXX-COMPLETED.md`. El cuerpo del plan
   **no se reescribe**: es un registro histórico de lo que se decidió e hizo.
 - **Plan parado / backlog:** se renombra a `plans/PLAN-XXX-PENDING.md`. No está activo ni se
@@ -190,7 +194,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 |:---|:---|:---:|
 | `plans/PLAN-001-COMPLETED.md` | Plan maestro original (`PLAN.md`): fases F0–F4 | ✅ Completado |
 | `plans/PLAN-002-COMPLETED.md` | OIDC (PocketID), producción tras Traefik y cierres (`PLAN-PENDIENTE.md`) | ✅ Completado |
-| `plans/PLAN-003.md` | (por definir — temas a acordar) | 🟢 Activo |
+| `plans/PLAN-003.md` | Selección por skills (Tema 1 ✅, PR #155) y otros temas | 🟢 Activo |
 | `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log, observabilidad | ⏸️ Pending |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
