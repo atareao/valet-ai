@@ -230,13 +230,6 @@ export interface CalendarEvent {
   updated_at: string;
 }
 
-export interface Tool {
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-}
-
 /**
  * Campo de una skill que puede quedar sobrescrito por `settings`: la pregunta,
  * los dos criterios o el umbral. El fragmento de prompt no se marca (su
@@ -254,13 +247,19 @@ export interface SkillInfo {
   prompt_key: string;
   prompt_heading: string;
   tools: string[];
+  /**
+   * ¿Está habilitada? (`ROUTER_SKILL_<ID>_ENABLED`; por defecto sí). Opcional
+   * para no romper fixtures antiguas del cliente; la UI lo trata como `true`
+   * cuando falta.
+   */
+  enabled?: boolean;
   /** Pregunta efectiva (el valor de `settings` si lo tiene, si no el del catálogo). */
   question: string;
   /** Criterio del «sí» efectivo. */
   criteria_true: string;
   /** Criterio del «no» efectivo. */
   criteria_false: string;
-  /** Umbral efectivo (override por skill si existe, si no el global). */
+  /** Umbral efectivo (override por skill si existe, si no el compilado). */
   threshold: number;
   /**
    * Campos cuyo valor efectivo difiere del catálogo: `question`,

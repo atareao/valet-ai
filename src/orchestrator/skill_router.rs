@@ -5,7 +5,7 @@
 //! herramientas expuesto al modelo y los fragmentos de prompt de las skills
 //! activas.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -68,10 +68,15 @@ pub struct Selection {
 pub struct SkillRouterConfig {
     pub enabled: bool,
     pub model: String,
-    pub threshold: f32,
-    /// Umbrales efectivos por skill que sobreescriben al global, indexados por
-    /// id de skill (clave `ROUTER_THRESHOLD_<ID>`). Por defecto vacío.
+    /// Umbrales efectivos por skill que sobreescriben al compilado, indexados
+    /// por id de skill (clave `ROUTER_THRESHOLD_<ID>`). Por defecto vacío. No
+    /// existe umbral global: una skill sin override usa su `spec.threshold`.
     pub threshold_overrides: HashMap<String, f32>,
+    /// Ids de skills **deshabilitadas** (clave `ROUTER_SKILL_<ID>_ENABLED` con
+    /// valor `false` o `0`). Una skill deshabilitada es un filtro absoluto:
+    /// nunca se enruta, no expone sus herramientas ni inyecta su fragmento, ni
+    /// siquiera al fallar abierto. Por defecto vacío (todas habilitadas).
+    pub disabled_skills: HashSet<String>,
     pub timeout_ms: u64,
     pub history_turns: usize,
 }
@@ -81,8 +86,8 @@ impl Default for SkillRouterConfig {
         Self {
             enabled: false,
             model: "typesafe/jev-1.13".to_string(),
-            threshold: 0.10,
             threshold_overrides: HashMap::new(),
+            disabled_skills: HashSet::new(),
             timeout_ms: 800,
             history_turns: 6,
         }
@@ -152,25 +157,34 @@ impl SkillRouter {
         }
     }
 
-    /// Decide las skills del turno a partir del mensaje actual, los últimos
-    /// turnos y las herramientas habilitadas.
+    /// Decide las skills del turno a partir del mensaje actual y los últimos
+    /// turnos.
     ///
     /// Hace **una sola** llamada al clasificador por turno. Los fallos
-    /// (enrutador apagado, sin clasificador, sin skills enrutables, error o
+    /// (enrutador apagado, sin clasificador, sin skills habilitadas, error o
     /// timeout) no devuelven preguntas: dejan constancia en
-    /// [`SelectionSource`] para que el llamante mande **todas** las
-    /// herramientas habilitadas (fallo abierto).
-    pub async fn select(
-        &self,
-        message: &str,
-        history: &[String],
-        enabled_tools: &[String],
-    ) -> Selection {
+    /// [`SelectionSource`] para que el llamante mande **todas** las skills
+    /// habilitadas (fallo abierto).
+    ///
+    /// Las candidatas son las skills del catálogo **habilitadas** (no en
+    /// [`SkillRouterConfig::disabled_skills`]); una deshabilitada no genera
+    /// pregunta.
+    pub async fn select(&self, message: &str, history: &[String]) -> Selection {
         let fallback = |source: SelectionSource, usage: Option<RouterUsage>| {
-            tracing::warn!(
-                source = ?source,
-                "skill routing fell open; exposing every enabled tool"
-            );
+            // `Disabled` and `NoRoutableSkills` are configured states, not
+            // failures: they happen on every turn without a classifier or with
+            // every skill turned off, so they are logged at `debug!`. Only a
+            // genuine classifier failure (`Error`) is a `warn!`.
+            match source {
+                SelectionSource::Error => tracing::warn!(
+                    source = ?source,
+                    "skill routing failed open; exposing every enabled skill"
+                ),
+                _ => tracing::debug!(
+                    source = ?source,
+                    "skill routing is inactive; exposing every enabled skill"
+                ),
+            }
             Selection {
                 skills: Vec::new(),
                 probabilities: Vec::new(),
@@ -188,16 +202,10 @@ impl SkillRouter {
         };
 
         // Solo se pregunta por lo que se puede ofrecer: una skill es enrutable
-        // si al menos una de sus herramientas está habilitada.
+        // si está habilitada. Una skill deshabilitada es un filtro absoluto.
         let routable: Vec<_> = catalog()
             .iter()
-            .filter(|spec| {
-                spec.tools.iter().any(|tool| {
-                    enabled_tools
-                        .iter()
-                        .any(|enabled| enabled.as_str() == *tool)
-                })
-            })
+            .filter(|spec| !self.config.disabled_skills.contains(spec.id))
             .collect();
 
         if routable.is_empty() {
@@ -313,23 +321,16 @@ impl SkillRouter {
 ///
 /// 1. El override por skill `ROUTER_THRESHOLD_<ID>` si está presente y es
 ///    válido (lo trae [`read_router_config`] en `threshold_overrides`).
-/// 2. El umbral global `ROUTER_THRESHOLD`.
-/// 3. El `spec.threshold` compilado en el catálogo.
+/// 2. El `spec.threshold` compilado en el catálogo.
 ///
-/// El umbral global siempre está poblado ([`read_router_config`] cae a
-/// [`SkillRouterConfig::default`]), así que el paso 3 solo se alcanzaría con
-/// una configuración construida a mano sin global; se mantiene por
-/// completitud de la precedencia. Sin overrides y con el global por defecto
-/// el resultado es `0.10`; con el override sembrado de `widgets`, `0.20`.
+/// **No existe umbral global** (`ROUTER_THRESHOLD` ya no se lee): una skill sin
+/// override usa siempre su umbral compilado.
 ///
 /// Es una función libre para que la API del catálogo y el arnés reutilicen la
 /// misma precedencia que el router sin construir uno.
 pub fn effective_threshold(config: &SkillRouterConfig, spec: &SkillSpec) -> f32 {
     if let Some(&override_threshold) = config.threshold_overrides.get(spec.id) {
         return override_threshold;
-    }
-    if config.threshold.is_finite() && (0.0..=1.0).contains(&config.threshold) {
-        return config.threshold;
     }
     spec.threshold
 }
@@ -351,41 +352,44 @@ pub fn effective_field(overridden: Option<&str>, catalog: &str) -> String {
     }
 }
 
-/// `core ∪ skills seleccionadas ∩ habilitadas`. Nunca una deshabilitada.
+/// `core ∪ (skills seleccionadas ∩ habilitadas)`. Nunca una deshabilitada.
 ///
 /// En una decisión del [`SelectionSource::Router`] con selección vacía
 /// devuelve solo el core (el turno no necesita herramientas). Con
 /// [`SelectionSource::Disabled`], [`SelectionSource::NoRoutableSkills`] o
-/// [`SelectionSource::Error`] —los casos de fallo abierto— devuelve **todas**
-/// las habilitadas, que es el comportamiento sin enrutador.
-pub fn exposed_tools(selection: &Selection, enabled_tools: &[String]) -> Vec<String> {
+/// [`SelectionSource::Error`] —los casos de fallo abierto— devuelve el core más
+/// las herramientas de **todas** las skills habilitadas, que es el
+/// comportamiento sin enrutador. Las skills deshabilitadas nunca aportan sus
+/// herramientas, ni siquiera al fallar abierto.
+pub fn exposed_tools(selection: &Selection, config: &SkillRouterConfig) -> Vec<String> {
+    let mut out: Vec<String> = CORE_TOOLS.iter().map(|tool| (*tool).to_string()).collect();
+
     match selection.source {
         SelectionSource::Disabled | SelectionSource::NoRoutableSkills | SelectionSource::Error => {
-            let mut out = enabled_tools.to_vec();
+            for spec in catalog() {
+                if config.disabled_skills.contains(spec.id) {
+                    continue;
+                }
+                for tool in spec.tools {
+                    if !out.iter().any(|t| t.as_str() == *tool) {
+                        out.push((*tool).to_string());
+                    }
+                }
+            }
             out.sort_unstable();
             out.dedup();
             out
         }
         SelectionSource::Router => {
-            let mut out: Vec<String> = Vec::new();
-            for core in CORE_TOOLS {
-                if enabled_tools
-                    .iter()
-                    .any(|enabled| enabled.as_str() == *core)
-                {
-                    out.push((*core).to_string());
-                }
-            }
             for spec in catalog() {
+                if config.disabled_skills.contains(spec.id) {
+                    continue;
+                }
                 if !selection.skills.contains(&spec.skill) {
                     continue;
                 }
                 for tool in spec.tools {
-                    if enabled_tools
-                        .iter()
-                        .any(|enabled| enabled.as_str() == *tool)
-                        && !out.iter().any(|t| t.as_str() == *tool)
-                    {
+                    if !out.iter().any(|t| t.as_str() == *tool) {
                         out.push((*tool).to_string());
                     }
                 }
@@ -395,15 +399,23 @@ pub fn exposed_tools(selection: &Selection, enabled_tools: &[String]) -> Vec<Str
     }
 }
 
-/// Fragmentos de las skills activas, en orden del catálogo; omite los vacíos y
-/// los que ya estén presentes en `base_prompt`.
+/// Fragmentos de las skills activas **habilitadas**, en orden del catálogo;
+/// omite los vacíos y los que ya estén presentes en `base_prompt`.
+///
+/// Una skill deshabilitada es un filtro absoluto (igual que en
+/// [`exposed_tools`]): ni siquiera si aparece en la selección inyecta su
+/// fragmento.
 pub fn compose_skill_fragments(
     selection: &Selection,
     base_prompt: &str,
     fragments: &HashMap<String, String>,
+    config: &SkillRouterConfig,
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for spec in catalog() {
+        if config.disabled_skills.contains(spec.id) {
+            continue;
+        }
         if !selection.skills.contains(&spec.skill) {
             continue;
         }
@@ -459,27 +471,6 @@ where
 /// y un historial más largo solo engorda el estado del clasificador.
 const ROUTER_HISTORY_TURNS_MAX: usize = 10;
 
-/// Lee el umbral `ROUTER_THRESHOLD`. Solo es válido si es **finito** y está en
-/// `[0, 1]`: `"NaN"` e `"inf"` parsean con éxito pero desactivarían el enrutado
-/// en silencio (`prob >= NaN` es siempre falso). Si no es válido, cae al
-/// default con `warn!`.
-async fn read_threshold(pool: &SqlitePool, default: f32) -> f32 {
-    match read_raw(pool, "ROUTER_THRESHOLD").await {
-        None => default,
-        Some(raw) => match raw.parse::<f32>() {
-            Ok(value) if value.is_finite() && (0.0..=1.0).contains(&value) => value,
-            _ => {
-                tracing::warn!(
-                    key = "ROUTER_THRESHOLD",
-                    value = %raw,
-                    "router threshold is not a finite value in [0, 1]; using the default"
-                );
-                default
-            }
-        },
-    }
-}
-
 /// Lee el timeout `ROUTER_TIMEOUT_MS`. Un `0` (o un valor ilegible) haría que
 /// toda llamada al clasificador expirase; cae al default con `warn!`.
 async fn read_timeout_ms(pool: &SqlitePool, default: u64) -> u64 {
@@ -519,11 +510,12 @@ async fn read_history_turns(pool: &SqlitePool, default: usize) -> usize {
 /// Lee los overrides por skill `ROUTER_THRESHOLD_<ID>` en **una sola** lectura
 /// de la tabla, indexados por id de skill.
 ///
-/// Un valor ausente **no** entra en el mapa: la skill usa el global. Un valor en
-/// blanco, no numérico, `NaN`/`inf` o fuera de `[0, 1]` tampoco entra y se
-/// registra un `warn!` (la skill cae al global y, si el global fuese ilegible,
-/// al `spec.threshold` del catálogo). Si la lectura falla, devuelve un mapa
-/// vacío tras registrarlo con `warn!`.
+/// Un valor ausente **no** entra en el mapa: la skill usa su umbral compilado.
+/// Un valor en blanco, no numérico, `NaN`/`inf` o fuera de `[0, 1]` tampoco
+/// entra y se registra un `warn!` (la skill cae a su `spec.threshold`). Si la
+/// lectura falla, devuelve un mapa vacío tras registrarlo con `warn!`.
+///
+/// **No existe umbral global**: `ROUTER_THRESHOLD` no se lee.
 async fn read_threshold_overrides(pool: &SqlitePool) -> HashMap<String, f32> {
     let mut overrides = HashMap::new();
 
@@ -532,7 +524,7 @@ async fn read_threshold_overrides(pool: &SqlitePool) -> HashMap<String, f32> {
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "failed to read per-skill router thresholds; using the global"
+                "failed to read per-skill router thresholds; using the catalog defaults"
             );
             return overrides;
         }
@@ -552,13 +544,48 @@ async fn read_threshold_overrides(pool: &SqlitePool) -> HashMap<String, f32> {
                 tracing::warn!(
                     key = %key,
                     value = %raw,
-                    "router per-skill threshold is not a finite value in [0, 1]; using the global"
+                    "router per-skill threshold is not a finite value in [0, 1]; using the catalog default"
                 );
             }
         }
     }
 
     overrides
+}
+
+/// Lee las skills **deshabilitadas** con `ROUTER_SKILL_<ID>_ENABLED` en **una
+/// sola** lectura de la tabla.
+///
+/// Una skill entra en el conjunto solo si la clave existe y su valor recortado
+/// (sin distinguir mayúsculas) es `false` o `0`. La ausencia de la clave o
+/// cualquier otro valor significa «habilitada». Si la lectura falla, devuelve
+/// un conjunto vacío tras registrarlo con `warn!` (todas habilitadas).
+async fn read_disabled_skills(pool: &SqlitePool) -> HashSet<String> {
+    let mut disabled = HashSet::new();
+
+    let all = match SettingsRepo::get_all(pool).await {
+        Ok(all) => all,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "failed to read per-skill enabled flags; treating every skill as enabled"
+            );
+            return disabled;
+        }
+    };
+
+    for spec in catalog() {
+        let key = format!("ROUTER_SKILL_{}_ENABLED", spec.id.to_ascii_uppercase());
+        let Some(raw) = all.get(&key) else {
+            continue;
+        };
+        let raw = raw.trim();
+        if raw.eq_ignore_ascii_case("false") || raw == "0" {
+            disabled.insert(spec.id.to_string());
+        }
+    }
+
+    disabled
 }
 
 /// Lee la configuración del enrutador desde `settings`.
@@ -598,16 +625,16 @@ pub async fn read_router_config(pool: &SqlitePool) -> SkillRouterConfig {
         Some(raw) => raw,
     };
 
-    let threshold = read_threshold(pool, defaults.threshold).await;
     let threshold_overrides = read_threshold_overrides(pool).await;
+    let disabled_skills = read_disabled_skills(pool).await;
     let timeout_ms = read_timeout_ms(pool, defaults.timeout_ms).await;
     let history_turns = read_history_turns(pool, defaults.history_turns).await;
 
     SkillRouterConfig {
         enabled,
         model,
-        threshold,
         threshold_overrides,
+        disabled_skills,
         timeout_ms,
         history_turns,
     }
@@ -708,7 +735,8 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// Las trece herramientas del registry de producción.
+    /// Las trece herramientas del registry de producción: lo que expone el
+    /// fallo abierto con todas las skills habilitadas.
     const ALL_TOOLS: &[&str] = &[
         "calendar",
         "geocode",
@@ -731,12 +759,45 @@ mod tests {
     const SKILL_ENTORNO_KEY: &str = "SKILL_ENTORNO_PROMPT";
     const SKILL_WIDGETS_KEY: &str = "SKILL_WIDGETS_PROMPT";
 
-    fn all_enabled() -> Vec<String> {
+    fn all_tools() -> Vec<String> {
         ALL_TOOLS.iter().map(|s| s.to_string()).collect()
     }
 
-    fn core_enabled() -> Vec<String> {
+    fn core_tools() -> Vec<String> {
         CORE.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Set con los ids de todas las skills del catálogo.
+    fn all_skill_ids() -> HashSet<String> {
+        catalog().iter().map(|spec| spec.id.to_string()).collect()
+    }
+
+    /// Set de skills deshabilitadas a partir de sus ids.
+    fn disabled(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    /// Configuración con el enrutador encendido y sin skills deshabilitadas.
+    fn enabled_config() -> SkillRouterConfig {
+        SkillRouterConfig {
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    /// Configuración con el **mismo** umbral para todas las skills (sustituye
+    /// al antiguo umbral global). El umbral ahora es por skill: se puebla
+    /// `threshold_overrides` para cada id del catálogo.
+    fn config_with_threshold(threshold: f32) -> SkillRouterConfig {
+        let threshold_overrides = catalog()
+            .iter()
+            .map(|spec| (spec.id.to_string(), threshold))
+            .collect();
+        SkillRouterConfig {
+            enabled: true,
+            threshold_overrides,
+            ..Default::default()
+        }
     }
 
     /// Ordena y deduplica para comparar conjuntos sin depender del orden.
@@ -809,18 +870,9 @@ mod tests {
     async fn threshold_selects_only_skills_above_it() {
         let provider =
             FakeDecisions::new(&[("agenda", 0.81), ("pendientes", 0.08), ("entorno", 0.12)]);
-        let router = SkillRouter::new(
-            Some(provider),
-            SkillRouterConfig {
-                enabled: true,
-                threshold: 0.3,
-                ..Default::default()
-            },
-        );
+        let router = SkillRouter::new(Some(provider), config_with_threshold(0.3));
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(
             sel.skills,
@@ -838,16 +890,10 @@ mod tests {
     async fn all_below_threshold_is_empty_and_exposes_core_only() {
         let provider =
             FakeDecisions::new(&[("agenda", 0.10), ("pendientes", 0.05), ("entorno", 0.20)]);
-        let router = SkillRouter::new(
-            Some(provider),
-            SkillRouterConfig {
-                enabled: true,
-                threshold: 0.3,
-                ..Default::default()
-            },
-        );
+        let config = config_with_threshold(0.3);
+        let router = SkillRouter::new(Some(provider), config.clone());
 
-        let sel = router.select("hola", &[], &all_enabled()).await;
+        let sel = router.select("hola", &[]).await;
 
         assert!(sel.skills.is_empty(), "no skill clears the threshold");
         assert_eq!(
@@ -856,8 +902,8 @@ mod tests {
             "an empty selection is still a legitimate router decision"
         );
         assert_eq!(
-            sorted(exposed_tools(&sel, &all_enabled())),
-            sorted(core_enabled()),
+            sorted(exposed_tools(&sel, &config)),
+            sorted(core_tools()),
             "a conversational turn exposes only the core"
         );
     }
@@ -866,21 +912,10 @@ mod tests {
     async fn multiskill_selects_every_skill_above_threshold() {
         let provider =
             FakeDecisions::new(&[("entorno", 0.94), ("agenda", 0.81), ("pendientes", 0.02)]);
-        let router = SkillRouter::new(
-            Some(provider),
-            SkillRouterConfig {
-                enabled: true,
-                threshold: 0.3,
-                ..Default::default()
-            },
-        );
+        let router = SkillRouter::new(Some(provider), config_with_threshold(0.3));
 
         let sel = router
-            .select(
-                "busca una cafetería cerca y créame un evento mañana",
-                &[],
-                &all_enabled(),
-            )
+            .select("busca una cafetería cerca y créame un evento mañana", &[])
             .await;
 
         assert_eq!(
@@ -898,17 +933,13 @@ mod tests {
     #[tokio::test]
     async fn router_disabled_fails_open_with_all_enabled() {
         let provider = FakeDecisions::new(&[("agenda", 1.0)]);
-        let router = SkillRouter::new(
-            Some(provider),
-            SkillRouterConfig {
-                enabled: false,
-                ..Default::default()
-            },
-        );
+        let config = SkillRouterConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let router = SkillRouter::new(Some(provider), config.clone());
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(
             sel.source,
@@ -916,25 +947,18 @@ mod tests {
             "a disabled router must report Disabled"
         );
         assert_eq!(
-            sorted(exposed_tools(&sel, &all_enabled())),
-            sorted(all_enabled()),
-            "fail-open exposes every enabled tool"
+            sorted(exposed_tools(&sel, &config)),
+            sorted(all_tools()),
+            "fail-open exposes every enabled skill's tools plus the core"
         );
     }
 
     #[tokio::test]
     async fn missing_provider_fails_open_with_all_enabled() {
-        let router = SkillRouter::new(
-            None,
-            SkillRouterConfig {
-                enabled: true,
-                ..Default::default()
-            },
-        );
+        let config = enabled_config();
+        let router = SkillRouter::new(None, config.clone());
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(
             sel.source,
@@ -942,51 +966,42 @@ mod tests {
             "without a classifier the router is effectively disabled"
         );
         assert_eq!(
-            sorted(exposed_tools(&sel, &all_enabled())),
-            sorted(all_enabled()),
-            "fail-open exposes every enabled tool"
+            sorted(exposed_tools(&sel, &config)),
+            sorted(all_tools()),
+            "fail-open exposes every enabled skill's tools plus the core"
         );
     }
 
     #[tokio::test]
-    async fn no_routable_skills_fails_open_with_all_enabled() {
+    async fn no_routable_skills_fails_open_with_core_only() {
         let provider = FakeDecisions::new(&[("agenda", 1.0)]);
-        let router = SkillRouter::new(
-            Some(provider),
-            SkillRouterConfig {
-                enabled: true,
-                ..Default::default()
-            },
-        );
+        let config = SkillRouterConfig {
+            enabled: true,
+            disabled_skills: all_skill_ids(), // nothing routable
+            ..Default::default()
+        };
+        let router = SkillRouter::new(Some(provider), config.clone());
 
-        let enabled = core_enabled(); // only the core is enabled → nothing routable
-        let sel = router.select("hola", &[], &enabled).await;
+        let sel = router.select("hola", &[]).await;
 
         assert_eq!(
             sel.source,
             SelectionSource::NoRoutableSkills,
-            "with no routable tool enabled the classifier must not run"
+            "with every skill disabled the classifier must not run"
         );
         assert_eq!(
-            sorted(exposed_tools(&sel, &enabled)),
-            sorted(enabled.clone()),
-            "fail-open exposes every enabled tool (only the core here)"
+            sorted(exposed_tools(&sel, &config)),
+            sorted(core_tools()),
+            "fail-open exposes nothing but the core when every skill is disabled"
         );
     }
 
     #[tokio::test]
     async fn classifier_error_fails_open_with_all_enabled() {
-        let router = SkillRouter::new(
-            Some(Arc::new(FailingDecisions)),
-            SkillRouterConfig {
-                enabled: true,
-                ..Default::default()
-            },
-        );
+        let config = enabled_config();
+        let router = SkillRouter::new(Some(Arc::new(FailingDecisions)), config.clone());
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(
             sel.source,
@@ -994,26 +1009,22 @@ mod tests {
             "a classifier error is reported as Error"
         );
         assert_eq!(
-            sorted(exposed_tools(&sel, &all_enabled())),
-            sorted(all_enabled()),
-            "fail-open exposes every enabled tool"
+            sorted(exposed_tools(&sel, &config)),
+            sorted(all_tools()),
+            "fail-open exposes every enabled skill's tools plus the core"
         );
     }
 
     #[tokio::test]
     async fn classifier_timeout_fails_open_with_all_enabled() {
-        let router = SkillRouter::new(
-            Some(Arc::new(HangingDecisions)),
-            SkillRouterConfig {
-                enabled: true,
-                timeout_ms: 10,
-                ..Default::default()
-            },
-        );
+        let config = SkillRouterConfig {
+            enabled: true,
+            timeout_ms: 10,
+            ..Default::default()
+        };
+        let router = SkillRouter::new(Some(Arc::new(HangingDecisions)), config.clone());
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(
             sel.source,
@@ -1021,9 +1032,9 @@ mod tests {
             "a timeout is reported as Error"
         );
         assert_eq!(
-            sorted(exposed_tools(&sel, &all_enabled())),
-            sorted(all_enabled()),
-            "fail-open exposes every enabled tool"
+            sorted(exposed_tools(&sel, &config)),
+            sorted(all_tools()),
+            "fail-open exposes every enabled skill's tools plus the core"
         );
     }
 
@@ -1033,18 +1044,10 @@ mod tests {
         // failure, not a legitimate empty selection. It must never shrink the
         // exposed set.
         let provider = FakeDecisions::new(&[]);
-        let router = SkillRouter::new(
-            Some(provider),
-            SkillRouterConfig {
-                enabled: true,
-                threshold: 0.3,
-                ..Default::default()
-            },
-        );
+        let config = config_with_threshold(0.3);
+        let router = SkillRouter::new(Some(provider), config.clone());
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(
             sel.source,
@@ -1052,9 +1055,9 @@ mod tests {
             "an empty answers map must fail open, not be read as an empty selection"
         );
         assert_eq!(
-            sorted(exposed_tools(&sel, &all_enabled())),
-            sorted(all_enabled()),
-            "fail-open exposes every enabled tool"
+            sorted(exposed_tools(&sel, &config)),
+            sorted(all_tools()),
+            "fail-open exposes every enabled skill's tools plus the core"
         );
     }
 
@@ -1064,18 +1067,10 @@ mod tests {
         // applying them would silently drop every routable skill.
         let provider =
             FakeDecisions::new(&[("skill_inexistente", 0.99), ("otra_inexistente", 0.51)]);
-        let router = SkillRouter::new(
-            Some(provider),
-            SkillRouterConfig {
-                enabled: true,
-                threshold: 0.3,
-                ..Default::default()
-            },
-        );
+        let config = config_with_threshold(0.3);
+        let router = SkillRouter::new(Some(provider), config.clone());
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(
             sel.source,
@@ -1083,33 +1078,154 @@ mod tests {
             "a response with only unknown ids must fail open"
         );
         assert_eq!(
-            sorted(exposed_tools(&sel, &all_enabled())),
-            sorted(all_enabled()),
-            "fail-open exposes every enabled tool"
+            sorted(exposed_tools(&sel, &config)),
+            sorted(all_tools()),
+            "fail-open exposes every enabled skill's tools plus the core"
         );
     }
 
     #[tokio::test]
     async fn unknown_ids_are_ignored_and_the_rest_applies() {
         let provider = FakeDecisions::new(&[("skill_inexistente", 0.99), ("agenda", 0.81)]);
-        let router = SkillRouter::new(
-            Some(provider),
-            SkillRouterConfig {
-                enabled: true,
-                threshold: 0.3,
-                ..Default::default()
-            },
-        );
+        let router = SkillRouter::new(Some(provider), config_with_threshold(0.3));
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(sel.source, SelectionSource::Router);
         assert_eq!(
             sel.skills,
             vec![Skill::Agenda],
             "the unknown id is ignored and the valid one still applies"
+        );
+    }
+
+    // ─── Filtro absoluto por skill deshabilitada ────────────────────────────
+
+    #[tokio::test]
+    async fn disabled_skill_generates_no_question_when_router_is_enabled() {
+        let captured = CapturingDecisions::new(&[("agenda", 0.9), ("widgets", 0.9)]);
+        let dyn_provider: Arc<dyn DecisionsProvider> = captured.clone();
+        let config = SkillRouterConfig {
+            enabled: true,
+            disabled_skills: disabled(&["widgets"]),
+            ..Default::default()
+        };
+        let router = SkillRouter::new(Some(dyn_provider), config);
+
+        let _ = router.select("convoca una reunión", &[]).await;
+
+        let request = captured
+            .captured_request()
+            .expect("the classifier must be called");
+        assert!(
+            !request.questions.iter().any(|q| q.id == "widgets"),
+            "una skill deshabilitada no genera pregunta: {:?}",
+            request
+                .questions
+                .iter()
+                .map(|q| q.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            request.questions.iter().any(|q| q.id == "agenda"),
+            "las demás skills habilitadas siguen preguntándose"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_skill_is_never_selected() {
+        // The classifier answers «yes» for the disabled skill, but it was never
+        // asked: the unknown id is ignored.
+        let provider = FakeDecisions::new(&[("widgets", 1.0), ("agenda", 0.9)]);
+        let config = SkillRouterConfig {
+            enabled: true,
+            disabled_skills: disabled(&["widgets"]),
+            ..Default::default()
+        };
+        let router = SkillRouter::new(Some(provider), config.clone());
+
+        let sel = router.select("convoca una reunión", &[]).await;
+
+        assert_eq!(sel.source, SelectionSource::Router);
+        assert!(
+            !sel.skills.contains(&Skill::Widgets),
+            "una skill deshabilitada nunca se selecciona: {:?}",
+            sel.skills
+        );
+        assert!(sel.skills.contains(&Skill::Agenda));
+        assert!(
+            !exposed_tools(&sel, &config).contains(&"render_widget".to_string()),
+            "sus herramientas no se exponen"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_skill_tools_are_not_exposed_on_fail_open_when_router_enabled() {
+        let config = SkillRouterConfig {
+            enabled: true,
+            disabled_skills: disabled(&["widgets"]),
+            ..Default::default()
+        };
+        // HTTP error → fail open.
+        let router = SkillRouter::new(Some(Arc::new(FailingDecisions)), config.clone());
+
+        let sel = router.select("convoca una reunión", &[]).await;
+
+        assert_eq!(sel.source, SelectionSource::Error);
+        let exposed = exposed_tools(&sel, &config);
+        assert!(
+            !exposed.contains(&"render_widget".to_string()),
+            "una skill deshabilitada no expone sus herramientas ni al fallar abierto: {exposed:?}"
+        );
+        assert!(
+            exposed.contains(&"calendar".to_string()),
+            "las skills habilitadas sí se exponen al fallar abierto: {exposed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_skill_tools_are_not_exposed_on_fail_open_when_router_disabled() {
+        let config = SkillRouterConfig {
+            enabled: false,
+            disabled_skills: disabled(&["widgets"]),
+            ..Default::default()
+        };
+        let provider = FakeDecisions::new(&[("widgets", 1.0)]);
+        let router = SkillRouter::new(Some(provider), config.clone());
+
+        let sel = router.select("convoca una reunión", &[]).await;
+
+        assert_eq!(sel.source, SelectionSource::Disabled);
+        let exposed = exposed_tools(&sel, &config);
+        assert!(
+            !exposed.contains(&"render_widget".to_string()),
+            "con el enrutador apagado tampoco se expone una skill deshabilitada: {exposed:?}"
+        );
+        assert!(exposed.contains(&"calendar".to_string()));
+    }
+
+    #[test]
+    fn disabled_skill_fragment_is_never_injected() {
+        let config = SkillRouterConfig {
+            disabled_skills: disabled(&["agenda"]),
+            ..Default::default()
+        };
+        let selector = |skills: Vec<Skill>| {
+            let selection = selection(skills);
+            let exposed = exposed_tools(&selection, &config);
+            let fragments = fragments_map(&[(SKILL_AGENDA_KEY, "FRAGMENTO_AGENDA")]);
+            let out = compose_skill_fragments(&selection, "prompt base", &fragments, &config);
+            (exposed, out)
+        };
+
+        let (exposed, out) = selector(vec![Skill::Agenda]);
+        assert!(
+            !exposed.contains(&"calendar".to_string()),
+            "una skill deshabilitada no expone sus herramientas: {exposed:?}"
+        );
+        assert!(
+            !out.iter().any(|f| f.contains("FRAGMENTO_AGENDA")),
+            "una skill deshabilitada no inyecta su fragmento: {out:?}"
         );
     }
 
@@ -1127,7 +1243,7 @@ mod tests {
             },
         );
 
-        let sel = router.select("hola", &[], &all_enabled()).await;
+        let sel = router.select("hola", &[]).await;
 
         assert_eq!(sel.source, SelectionSource::Disabled);
         assert!(
@@ -1144,11 +1260,12 @@ mod tests {
             Some(provider),
             SkillRouterConfig {
                 enabled: true,
+                disabled_skills: all_skill_ids(),
                 ..Default::default()
             },
         );
 
-        let sel = router.select("hola", &[], &core_enabled()).await;
+        let sel = router.select("hola", &[]).await;
 
         assert_eq!(sel.source, SelectionSource::NoRoutableSkills);
         assert!(
@@ -1164,16 +1281,12 @@ mod tests {
         let router = SkillRouter::new(
             Some(provider),
             SkillRouterConfig {
-                enabled: true,
-                threshold: 0.3,
                 model: "typesafe/jev-1.13".to_string(),
-                ..Default::default()
+                ..config_with_threshold(0.3)
             },
         );
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(sel.source, SelectionSource::Router);
         let usage = sel
@@ -1202,9 +1315,7 @@ mod tests {
             },
         );
 
-        let sel = router
-            .select("convoca una reunión", &[], &all_enabled())
-            .await;
+        let sel = router.select("convoca una reunión", &[]).await;
 
         assert_eq!(sel.source, SelectionSource::Error);
         let usage = sel
@@ -1219,20 +1330,25 @@ mod tests {
     // ─── Nunca una deshabilitada ────────────────────────────────────────────
 
     #[test]
-    fn a_disabled_tool_is_never_exposed_even_if_its_skill_is_selected() {
-        let enabled = core_enabled(); // `calendar` is absent
+    fn a_disabled_skill_is_never_exposed_even_if_it_were_selected() {
+        let config = SkillRouterConfig {
+            disabled_skills: disabled(&["agenda"]),
+            ..Default::default()
+        };
+        // Hand-built selection: even if a disabled skill somehow appeared as
+        // selected, its tools must not be exposed.
         let sel = selection(vec![Skill::Agenda]);
 
-        let exposed = sorted(exposed_tools(&sel, &enabled));
+        let exposed = sorted(exposed_tools(&sel, &config));
 
         assert!(
             !exposed.contains(&"calendar".to_string()),
-            "a disabled tool must never be exposed: {exposed:?}"
+            "una skill deshabilitada nunca expone sus herramientas: {exposed:?}"
         );
         assert_eq!(
             exposed,
-            sorted(enabled.clone()),
-            "the rest of the selection is exposed normally (core only here)"
+            sorted(core_tools()),
+            "solo queda el core: {exposed:?}"
         );
     }
 
@@ -1240,9 +1356,9 @@ mod tests {
 
     #[test]
     fn activating_a_skill_adds_its_tools_to_the_exposed_set() {
-        let enabled = all_enabled();
+        let config = SkillRouterConfig::default();
 
-        let agenda = sorted(exposed_tools(&selection(vec![Skill::Agenda]), &enabled));
+        let agenda = sorted(exposed_tools(&selection(vec![Skill::Agenda]), &config));
         assert!(
             agenda.contains(&"calendar".to_string()),
             "agenda adds calendar: {agenda:?}"
@@ -1254,7 +1370,7 @@ mod tests {
 
         let agenda_entorno = sorted(exposed_tools(
             &selection(vec![Skill::Agenda, Skill::Entorno]),
-            &enabled,
+            &config,
         ));
         assert!(
             agenda_entorno.contains(&"weather".to_string()),
@@ -1301,6 +1417,7 @@ mod tests {
             &selection(vec![Skill::Agenda, Skill::Pendientes]),
             "prompt base",
             &fragments,
+            &SkillRouterConfig::default(),
         );
 
         assert_eq!(out.len(), 2, "only active skills contribute: {out:?}");
@@ -1325,6 +1442,7 @@ mod tests {
             &selection(vec![Skill::Agenda, Skill::Pendientes]),
             "prompt base",
             &fragments,
+            &SkillRouterConfig::default(),
         );
 
         assert_eq!(out.len(), 1, "a blank fragment must be omitted: {out:?}");
@@ -1346,6 +1464,7 @@ mod tests {
             &selection(vec![Skill::Agenda, Skill::Pendientes]),
             &base,
             &fragments,
+            &SkillRouterConfig::default(),
         );
 
         assert!(
@@ -1377,14 +1496,19 @@ mod tests {
             &selection(vec![Skill::Widgets]),
             &base_with_guide,
             &fragments,
+            &SkillRouterConfig::default(),
         );
         assert!(
             out.is_empty(),
             "la guía de widgets ya está en el prompt base y no puede viajar dos veces: {out:?}"
         );
 
-        let out =
-            compose_skill_fragments(&selection(vec![Skill::Widgets]), "prompt base", &fragments);
+        let out = compose_skill_fragments(
+            &selection(vec![Skill::Widgets]),
+            "prompt base",
+            &fragments,
+            &SkillRouterConfig::default(),
+        );
         assert_eq!(
             out.len(),
             1,
@@ -1441,9 +1565,6 @@ mod tests {
         SettingsRepo::set(&pool, "ROUTER_MODEL", "typesafe/jev-2.0")
             .await
             .unwrap();
-        SettingsRepo::set(&pool, "ROUTER_THRESHOLD", "0.42")
-            .await
-            .unwrap();
         SettingsRepo::set(&pool, "ROUTER_TIMEOUT_MS", "1500")
             .await
             .unwrap();
@@ -1455,28 +1576,68 @@ mod tests {
 
         assert!(config.enabled, "ROUTER_ENABLED=true enables the router");
         assert_eq!(config.model, "typesafe/jev-2.0");
-        assert!((config.threshold - 0.42).abs() < 1e-6);
         assert_eq!(config.timeout_ms, 1500);
         assert_eq!(config.history_turns, 5);
     }
 
     #[tokio::test]
-    async fn read_router_config_rejects_non_finite_or_out_of_range_threshold() {
-        // R7/D6: `"NaN".parse::<f32>()` and `"inf".parse::<f32>()` succeed, and
-        // `prob >= NaN` is always false — a silent routing shut-off. The
-        // threshold is only valid when finite and within `[0, 1]`.
+    async fn read_router_config_ignores_the_removed_global_threshold() {
+        // `ROUTER_THRESHOLD` is no longer read: it must not create any
+        // per-skill override nor change a compiled default.
         let pool = db().await;
-        let defaults = SkillRouterConfig::default();
+        SettingsRepo::set(&pool, "ROUTER_THRESHOLD", "0.99")
+            .await
+            .unwrap();
 
-        for value in ["NaN", "inf", "-inf", "2.5", "-1"] {
-            SettingsRepo::set(&pool, "ROUTER_THRESHOLD", value)
-                .await
-                .unwrap();
-            let config = read_router_config(&pool).await;
+        let config = read_router_config(&pool).await;
+
+        for id in ["agenda", "pendientes", "entorno", "web"] {
             assert!(
-                (config.threshold - defaults.threshold).abs() < f32::EPSILON,
-                "threshold {value:?} must fall back to the default, got {}",
-                config.threshold
+                !config.threshold_overrides.contains_key(id),
+                "el umbral global eliminado no puede poblar {id}: {:?}",
+                config.threshold_overrides
+            );
+            let spec = spec_by_id(id).expect("skill in catalog");
+            assert!(
+                (effective_threshold(&config, spec) - spec.threshold).abs() < 1e-6,
+                "`{id}` debe usar su umbral compilado, no el global eliminado"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn read_router_config_marks_false_or_zero_skill_flags_as_disabled() {
+        let pool = db().await;
+        SettingsRepo::set(&pool, "ROUTER_SKILL_WIDGETS_ENABLED", "false")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "ROUTER_SKILL_WEB_ENABLED", "0")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "ROUTER_SKILL_PENDIENTES_ENABLED", "  FALSE  ")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "ROUTER_SKILL_AGENDA_ENABLED", "true")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "ROUTER_SKILL_ENTORNO_ENABLED", "quizá")
+            .await
+            .unwrap();
+
+        let config = read_router_config(&pool).await;
+
+        for id in ["widgets", "web", "pendientes"] {
+            assert!(
+                config.disabled_skills.contains(id),
+                "`{id}` debe quedar deshabilitada: {:?}",
+                config.disabled_skills
+            );
+        }
+        for id in ["agenda", "entorno", "recuerdos"] {
+            assert!(
+                !config.disabled_skills.contains(id),
+                "`{id}` debe quedar habilitada: {:?}",
+                config.disabled_skills
             );
         }
     }
@@ -1519,9 +1680,12 @@ mod tests {
 
         assert!(!config.enabled, "absent ROUTER_ENABLED defaults to false");
         assert_eq!(config.model, defaults.model);
-        assert!((config.threshold - defaults.threshold).abs() < f32::EPSILON);
         assert_eq!(config.timeout_ms, defaults.timeout_ms);
         assert_eq!(config.history_turns, defaults.history_turns);
+        assert!(
+            config.disabled_skills.is_empty(),
+            "absent skill flags leave every skill enabled"
+        );
     }
 
     #[tokio::test]
@@ -1531,9 +1695,6 @@ mod tests {
             .await
             .unwrap();
         SettingsRepo::set(&pool, "ROUTER_MODEL", "").await.unwrap();
-        SettingsRepo::set(&pool, "ROUTER_THRESHOLD", "alta")
-            .await
-            .unwrap();
         SettingsRepo::set(&pool, "ROUTER_TIMEOUT_MS", "poco")
             .await
             .unwrap();
@@ -1547,7 +1708,6 @@ mod tests {
 
         assert!(!config.enabled);
         assert_eq!(config.model, defaults.model);
-        assert!((config.threshold - defaults.threshold).abs() < f32::EPSILON);
         assert_eq!(config.timeout_ms, defaults.timeout_ms);
         assert_eq!(config.history_turns, defaults.history_turns);
     }
@@ -1603,9 +1763,14 @@ mod tests {
     fn router_config_defaults_match_the_measurement() {
         let defaults = SkillRouterConfig::default();
         assert!(
-            (defaults.threshold - 0.10).abs() < 1e-6,
-            "el umbral global por defecto debe ser 0.10, got {}",
-            defaults.threshold
+            defaults.threshold_overrides.is_empty(),
+            "sin umbral global, no hay overrides por defecto: {:?}",
+            defaults.threshold_overrides
+        );
+        assert!(
+            defaults.disabled_skills.is_empty(),
+            "por defecto no hay skills deshabilitadas: {:?}",
+            defaults.disabled_skills
         );
         assert_eq!(
             defaults.history_turns, 6,
@@ -1632,11 +1797,6 @@ mod tests {
     #[tokio::test]
     async fn effective_threshold_uses_the_widget_override_when_present() {
         let pool = db().await;
-        // Pin the global so the domain expectation does not depend on the
-        // seeded value: the precedence is override → global → catalog default.
-        SettingsRepo::set(&pool, "ROUTER_THRESHOLD", "0.10")
-            .await
-            .unwrap();
         SettingsRepo::set(&pool, "ROUTER_THRESHOLD_WIDGETS", "0.55")
             .await
             .unwrap();
@@ -1654,18 +1814,15 @@ mod tests {
             assert_eq!(
                 t.map(pct),
                 Some(10),
-                "el dominio `{id}` usa el global 0.10; got {t:?}"
+                "sin override, `{id}` usa su compilado 0.10; got {t:?}"
             );
         }
     }
 
     #[tokio::test]
-    async fn effective_threshold_falls_back_to_the_global_when_override_absent() {
+    async fn effective_threshold_falls_back_to_the_compiled_when_override_absent() {
         let pool = db().await;
         SettingsRepo::delete(&pool, "ROUTER_THRESHOLD_WIDGETS")
-            .await
-            .unwrap();
-        SettingsRepo::delete(&pool, "ROUTER_THRESHOLD")
             .await
             .unwrap();
         let router = SkillRouter::new(None, read_router_config(&pool).await);
@@ -1673,24 +1830,21 @@ mod tests {
         let widgets = effective_for(&router, "widgets");
         assert_eq!(
             widgets.map(pct),
-            Some(10),
-            "sin override, widgets cae al global por defecto 0.10, no a su spec 0.20; got {widgets:?}"
+            Some(20),
+            "sin override, widgets usa su compilado 0.20; got {widgets:?}"
         );
 
         let agenda = effective_for(&router, "agenda");
         assert_eq!(
             agenda.map(pct),
             Some(10),
-            "sin override, agenda cae al global por defecto 0.10; got {agenda:?}"
+            "sin override, agenda usa su compilado 0.10; got {agenda:?}"
         );
     }
 
     #[tokio::test]
     async fn effective_threshold_ignores_unreadable_widget_overrides() {
         let pool = db().await;
-        SettingsRepo::set(&pool, "ROUTER_THRESHOLD", "0.10")
-            .await
-            .unwrap();
         for bad in ["", "NaN", "inf", "-inf", "2.5", "-1", "alta"] {
             SettingsRepo::set(&pool, "ROUTER_THRESHOLD_WIDGETS", bad)
                 .await
@@ -1699,8 +1853,8 @@ mod tests {
             let widgets = effective_for(&router, "widgets");
             assert_eq!(
                 widgets.map(pct),
-                Some(10),
-                "un override ilegible {bad:?} cae al global 0.10; got {widgets:?}"
+                Some(20),
+                "un override ilegible {bad:?} cae al compilado 0.20; got {widgets:?}"
             );
         }
     }
@@ -1808,15 +1962,17 @@ mod tests {
         let router = SkillRouter::new(
             Some(dyn_provider),
             SkillRouterConfig {
-                enabled: true,
-                threshold: 0.0,
-                ..Default::default()
+                threshold_overrides: catalog()
+                    .iter()
+                    .map(|spec| (spec.id.to_string(), 0.0))
+                    .collect(),
+                ..enabled_config()
             },
         )
         .with_criteria(criteria);
 
         let _ = router
-            .select("convoca una reunión y dime el tiempo", &[], &all_enabled())
+            .select("convoca una reunión y dime el tiempo", &[])
             .await;
 
         let request = provider

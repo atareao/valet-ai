@@ -59,7 +59,8 @@ was part of the exposed set.
 OPTIONS:
     --limit <N>        Maximum number of historical turns to evaluate (default 200).
     --repeat <N>       Repeat the whole sweep N times and report the variance (default 1).
-    --threshold <F>    Override the router threshold (e.g. 0.4).
+    --threshold <F>    Default threshold applied to every skill without its own
+                       override (per-skill thresholds still win).
     --model <ID>       Override the decisions model (e.g. typesafe/jev-1.13).
     --overrides <PATH> Read thresholds (global + per skill) and criteria from a JSON file
                        (precedence: CLI > file > settings).
@@ -719,13 +720,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| Config::from_env().database_url);
     let pool = valet::db::init_db(&db_url).await?;
 
-    // Build the production registry once, with the persisted disables applied,
-    // and derive the enabled names from it. The same registry measures the
-    // exposed-vs-full definition blocks, so there is a single source of truth.
+    // Build the production registry once and derive the advertised tool names
+    // from it. The same registry measures the exposed-vs-full definition
+    // blocks, so there is a single source of truth. There is no per-tool
+    // enablement anymore: the catalogue advertises every registered tool.
     let registry = valet::build_tool_registry(&pool);
-    if let Ok(disabled) = valet::db::repos::tools::ToolsRepo::disabled_names(&pool).await {
-        registry.set_disabled(disabled);
-    }
     let mut enabled: Vec<String> = registry
         .definitions()
         .iter()
@@ -755,17 +754,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
-    // Global threshold precedence: CLI > file > settings. The `--threshold`
-    // guard is kept: an invalid CLI value is discarded, never silences the
-    // router. The effective value is resolved by precedence, so an invalid CLI
-    // threshold may still end up being the file's global, not the settings one.
+    // Default threshold precedence: CLI > file. There is no global threshold
+    // anymore, so the resolved value is applied as the **default** to every
+    // skill that has no explicit per-skill override (from settings or the file).
+    // The `--threshold` guard is kept: an invalid CLI value is discarded, never
+    // silences the router.
     let cli_threshold = match args.threshold {
         Some(threshold) if valid_threshold(threshold) => Some(threshold),
         Some(threshold) => {
             tracing::warn!(
                 value = threshold,
                 "--threshold is not a finite value in [0, 1]; discarding it and resolving the \
-                 effective value by precedence (CLI > file > settings)"
+                 effective value by precedence (CLI > file)"
             );
             None
         }
@@ -774,11 +774,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_global_threshold = overrides
         .as_ref()
         .and_then(|overrides| overrides.thresholds.get("global").copied());
-    router_config.threshold = resolve_threshold(
-        cli_threshold,
-        file_global_threshold,
-        router_config.threshold,
-    );
+    let default_threshold = resolve_default_threshold(cli_threshold, file_global_threshold);
 
     // The criteria the router will send: the live `settings` values, falling
     // back to the catalog, with the file overrides on top. Read here so the
@@ -788,11 +784,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Per-skill thresholds and criteria: the file sits above settings. The
         // merge returns new maps, so the settings maps are never mutated, and
         // the `"global"` threshold is deliberately not part of the per-skill
-        // map (it was already resolved into `router_config.threshold` above).
+        // map (it is applied as the default to the skills still without one).
         router_config.threshold_overrides =
             effective_thresholds(&router_config.threshold_overrides, overrides);
         criteria = effective_criteria(&criteria, overrides);
     }
+    apply_default_threshold(&mut router_config.threshold_overrides, default_threshold);
 
     let config_rows = effective_config_rows(&router_config, &criteria);
 
@@ -865,7 +862,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Window tokens (would be used): {budget_tokens}");
         println!();
         println!("Effective configuration (would be used):");
-        println!("  global threshold = {:.2}", router_config.threshold);
+        match default_threshold {
+            Some(value) => println!(
+                "  default threshold = {value:.2} (applied to skills without their own override)"
+            ),
+            None => println!("  default threshold = none (per-skill override or compiled)"),
+        }
         for row in &config_rows {
             println!("{row}");
         }
@@ -917,16 +919,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         for turn in &turns {
             let started = Instant::now();
-            let selection = router
-                .select(&turn.user_message, &turn.history, &enabled)
-                .await;
+            let selection = router.select(&turn.user_message, &turn.history).await;
             latencies.push(started.elapsed().as_millis() as u64);
 
             for skill in &selection.skills {
                 *activations.entry(*skill).or_insert(0) += 1;
             }
 
-            let exposed = exposed_tools(&selection, &enabled);
+            let exposed = exposed_tools(&selection, &router_config);
             let exposed_refs: Vec<&str> = exposed.iter().map(String::as_str).collect();
 
             // Instrumentación de la palanca: el bloque expuesto frente al
@@ -947,7 +947,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 TurnOutcome::Covered => rep_covered += 1,
                 TurnOutcome::Missing(missing) => {
                     let diagnostics =
-                        missing_diagnostics(&turn.used_tools, &selection, &enabled, &router_config);
+                        missing_diagnostics(&turn.used_tools, &selection, &router_config);
                     rep_uncovered.push(UncoveredTurn {
                         assistant_id: turn.assistant_id.clone(),
                         used_tools: turn.used_tools.clone(),
@@ -986,7 +986,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("== Skill routing evaluation ==");
     println!("Model:           {}", router_config.model);
-    println!("Threshold (global): {:.3}", router_config.threshold);
+    match default_threshold {
+        Some(value) => println!("Default threshold (skills without override): {value:.3}"),
+        None => println!("Default threshold: none (per-skill override or compiled)"),
+    }
     println!("Enabled tools:   {}", enabled.len());
     println!(
         "{}",
@@ -1126,19 +1129,15 @@ struct MissingTool {
 }
 
 /// Por cada herramienta usada que NO figure en el conjunto expuesto
-/// (`exposed_tools(selection, enabled)`), resuelve el diagnóstico: la skill que
+/// (`exposed_tools(selection, config)`), resuelve el diagnóstico: la skill que
 /// la habría cubierto (`skill_of_tool`), su probabilidad en la `Selection`
 /// (`None` si no está) y el umbral efectivo del config, más la fuente.
-///
-/// `enabled` es necesario porque el conjunto expuesto es
-/// `exposed_tools(selection, enabled)`.
 fn missing_diagnostics(
     used: &[String],
     selection: &Selection,
-    enabled: &[String],
     config: &SkillRouterConfig,
 ) -> Vec<MissingTool> {
-    let exposed = exposed_tools(selection, enabled);
+    let exposed = exposed_tools(selection, config);
     used.iter()
         .filter(|tool| !exposed.iter().any(|e| e.as_str() == tool.as_str()))
         .filter_map(|tool| {
@@ -1299,16 +1298,33 @@ fn load_overrides(path: &str) -> Result<Overrides, String> {
     parse_overrides(&json)
 }
 
-/// Precedencia del umbral global: CLI > fichero > settings.
-fn resolve_threshold(cli: Option<f32>, file: Option<f32>, settings: f32) -> f32 {
-    cli.or(file).unwrap_or(settings)
+/// Precedencia del umbral **por defecto** de las skills sin override: CLI >
+/// fichero (`"global"`). Ya no existe un umbral global del router, así que
+/// `None` cuando ninguno de los dos está declarado: en ese caso no se aplica
+/// ningún default y cada skill conserva su umbral compilado.
+fn resolve_default_threshold(cli: Option<f32>, file: Option<f32>) -> Option<f32> {
+    cli.or(file)
+}
+
+/// Aplica `default` como override por skill a **todas** las skills del catálogo
+/// que aún no tengan uno: los overrides de `settings` y del fichero (ya
+/// fusionados en `overrides`) siempre ganan. Un `default` ausente (`None`) es un
+/// no-op. Así el `--threshold` del arnés actúa como valor por defecto sin
+/// reintroducir un umbral global en el router.
+fn apply_default_threshold(overrides: &mut HashMap<String, f32>, default: Option<f32>) {
+    let Some(default) = default else {
+        return;
+    };
+    for spec in catalog() {
+        overrides.entry(spec.id.to_string()).or_insert(default);
+    }
 }
 
 /// Umbrales efectivos: los de `settings` con los del fichero por encima, **sin
 /// mutar** el mapa de `settings`. La clave `"global"` nunca entra en el
-/// resultado: el umbral global se resuelve aparte (`resolve_threshold` en
-/// `router_config.threshold`), así que `threshold_overrides` solo lleva overrides
-/// por skill.
+/// resultado: se resuelve aparte (`resolve_default_threshold`) y se aplica como
+/// default a las skills sin override, así que `threshold_overrides` solo lleva
+/// overrides por skill.
 fn effective_thresholds(
     settings: &HashMap<String, f32>,
     overrides: &Overrides,
@@ -2022,7 +2038,6 @@ mod tests {
         let mut threshold_overrides = HashMap::new();
         threshold_overrides.insert("widgets".to_string(), 0.20f32);
         SkillRouterConfig {
-            threshold: 0.10,
             threshold_overrides,
             ..Default::default()
         }
@@ -2128,7 +2143,6 @@ mod tests {
         let mut threshold_overrides = HashMap::new();
         threshold_overrides.insert("widgets".to_string(), 0.55f32);
         let config = SkillRouterConfig {
-            threshold: 0.10,
             threshold_overrides,
             ..Default::default()
         };
@@ -2168,17 +2182,9 @@ mod tests {
             source: SelectionSource::Router,
             usage: None,
         };
-        let config = SkillRouterConfig {
-            threshold: 0.10,
-            ..Default::default()
-        };
-        let enabled = vec![
-            "get_current_time".to_string(),
-            "get_current_location".to_string(),
-            "tasks".to_string(),
-        ];
+        let config = SkillRouterConfig::default();
 
-        let diags = missing_diagnostics(&["tasks".to_string()], &selection, &enabled, &config);
+        let diags = missing_diagnostics(&["tasks".to_string()], &selection, &config);
 
         assert_eq!(
             diags.len(),
@@ -2224,15 +2230,7 @@ mod tests {
 
     #[test]
     fn uncovered_turn_reports_the_selection_source() {
-        let config = SkillRouterConfig {
-            threshold: 0.10,
-            ..Default::default()
-        };
-        let enabled = vec![
-            "get_current_time".to_string(),
-            "get_current_location".to_string(),
-            "weather".to_string(),
-        ];
+        let config = SkillRouterConfig::default();
 
         // A router decision that did not select `entorno`: `weather` is used but
         // not exposed, and the source is the router.
@@ -2242,27 +2240,25 @@ mod tests {
             source: SelectionSource::Router,
             usage: None,
         };
-        let router_diags = missing_diagnostics(
-            &["weather".to_string()],
-            &router_selection,
-            &enabled,
-            &config,
-        );
+        let router_diags =
+            missing_diagnostics(&["weather".to_string()], &router_selection, &config);
         assert_eq!(router_diags.len(), 1);
         assert_eq!(router_diags[0].source, SelectionSource::Router);
         assert_eq!(router_diags[0].skill, Skill::Entorno);
 
-        // A fall-open selection (`Error`) exposes every enabled tool, so only a
-        // used tool that is NOT enabled can be missing — and it must report the
-        // `Error` source.
+        // A fall-open selection (`Error`) exposes every non-disabled tool, so the
+        // only used tool that can be missing is one from a *disabled* skill — and
+        // it must report the `Error` source.
         let error_selection = Selection {
             skills: Vec::new(),
             probabilities: Vec::new(),
             source: SelectionSource::Error,
             usage: None,
         };
+        let mut fall_open = SkillRouterConfig::default();
+        fall_open.disabled_skills.insert("entorno".to_string());
         let error_diags =
-            missing_diagnostics(&["tasks".to_string()], &error_selection, &enabled, &config);
+            missing_diagnostics(&["weather".to_string()], &error_selection, &fall_open);
         assert_eq!(error_diags.len(), 1);
         assert_eq!(error_diags[0].source, SelectionSource::Error);
         assert_eq!(
@@ -2328,21 +2324,55 @@ mod tests {
     }
 
     #[test]
-    fn override_precedence_is_cli_over_file_over_settings() {
+    fn default_threshold_precedence_is_cli_over_file() {
         assert_eq!(
-            resolve_threshold(Some(0.90), Some(0.50), 0.10),
-            0.90,
-            "the CLI wins over the file and settings"
+            resolve_default_threshold(Some(0.90), Some(0.50)),
+            Some(0.90),
+            "the CLI wins over the file"
         );
         assert_eq!(
-            resolve_threshold(None, Some(0.50), 0.10),
-            0.50,
-            "without a CLI value the file wins over settings"
+            resolve_default_threshold(None, Some(0.50)),
+            Some(0.50),
+            "without a CLI value the file global is used"
         );
         assert_eq!(
-            resolve_threshold(None, None, 0.10),
-            0.10,
-            "without CLI nor file, settings is used"
+            resolve_default_threshold(None, None),
+            None,
+            "without CLI nor file no default is applied: every skill keeps its compiled threshold"
+        );
+    }
+
+    #[test]
+    fn apply_default_threshold_fills_only_the_skills_without_an_override() {
+        let mut overrides: HashMap<String, f32> =
+            [("widgets".to_string(), 0.55f32)].into_iter().collect();
+
+        apply_default_threshold(&mut overrides, Some(0.42));
+
+        assert_eq!(
+            overrides.get("widgets"),
+            Some(&0.55),
+            "an explicit per-skill override must win over the default"
+        );
+        assert_eq!(
+            overrides.get("agenda"),
+            Some(&0.42),
+            "a skill without an override receives the default"
+        );
+        assert_eq!(
+            overrides.len(),
+            catalog().len(),
+            "every catalog skill ends up with an effective threshold"
+        );
+    }
+
+    #[test]
+    fn apply_default_threshold_is_a_noop_without_a_default() {
+        let mut overrides: HashMap<String, f32> = HashMap::new();
+        apply_default_threshold(&mut overrides, None);
+        assert!(
+            overrides.is_empty(),
+            "no default means no override is injected: the compiled thresholds stand"
         );
     }
 
@@ -2455,8 +2485,8 @@ mod tests {
 
     #[test]
     fn effective_thresholds_drops_the_global_threshold() {
-        // The file global lives in `router_config.threshold` (via
-        // `resolve_threshold`), so the per-skill map must not carry it.
+        // The file global is resolved apart (via `resolve_default_threshold`) and
+        // applied as a default, so the per-skill map must not carry it.
         let mut settings: HashMap<String, f32> = HashMap::new();
         settings.insert("global".to_string(), 0.10);
         settings.insert("widgets".to_string(), 0.20);

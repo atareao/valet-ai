@@ -613,15 +613,9 @@ impl Orchestrator {
         // Skill routing: one decision per turn, taken before the ReAct loop
         // (D1). The router reads its settings on every turn, so toggling it
         // takes effect without a restart. On any failure it falls open by
-        // exposing every enabled tool — the behaviour without a router.
-        let router = SkillRouter::new(self.decisions.clone(), read_router_config(&self.db).await);
-
-        let enabled_tools: Vec<String> = self
-            .registry
-            .definitions()
-            .iter()
-            .map(|d| d.name.clone())
-            .collect();
+        // exposing every enabled skill — the behaviour without a router.
+        let router_config = read_router_config(&self.db).await;
+        let router = SkillRouter::new(self.decisions.clone(), router_config.clone());
 
         // Conversational state for the classifier: each turn is truncated so
         // the state cannot grow without bound; `select` keeps only the last
@@ -634,9 +628,7 @@ impl Orchestrator {
             })
             .collect();
 
-        let selection = router
-            .select(user_message, &history_for_router, &enabled_tools)
-            .await;
+        let selection = router.select(user_message, &history_for_router).await;
 
         // D4/D5: when the router actually called the classifier (source `Router`
         // or `Error`) it exposes telemetry; persist it as a `kind='router'` row.
@@ -649,7 +641,7 @@ impl Orchestrator {
         // `core ∪ skills_seleccionadas ∩ habilitadas`. Computed once, outside
         // the loop: every iteration advertises the same set and never decides
         // again nor re-reads settings.
-        let exposed_names = exposed_tools(&selection, &enabled_tools);
+        let exposed_names = exposed_tools(&selection, &router_config);
         let exposed_refs: Vec<&str> = exposed_names.iter().map(String::as_str).collect();
 
         tracing::debug!(
@@ -662,7 +654,8 @@ impl Orchestrator {
         // prompt and before the code-composed sections. The base prompt is never
         // modified: the duplicate check uses the original.
         let fragments = read_skill_fragments(&self.db, &selection.skills).await;
-        let skill_sections = compose_skill_fragments(&selection, &system_prompt, &fragments);
+        let skill_sections =
+            compose_skill_fragments(&selection, &system_prompt, &fragments, &router_config);
         let prompt_with_skills = if skill_sections.is_empty() {
             system_prompt.clone()
         } else {
