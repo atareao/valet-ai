@@ -1406,11 +1406,17 @@ describe("SettingsDialog", () => {
 
     for (const id of SKILL_IDS) {
       expect(screen.getByRole("tab", { name: id })).toBeInTheDocument();
-      // Activa la sub-pestaña para que su panel deje de estar oculto.
-      await user.click(screen.getByRole("tab", { name: id }));
 
+      // La `Tabs` interna de `SkillsTab` usa `forceRender`: los paneles de
+      // todas las skills ya están montados aunque los inactivos estén
+      // ocultos. Consultamos sin clicar sub-pestañas (evita las animaciones
+      // de rc-tabs, lentas en CI) pasando `hidden: true` donde la librería
+      // filtra por accesibilidad.
       expect(
-        screen.getByRole("switch", { name: `Habilitada ${id}` }),
+        screen.getByRole("switch", {
+          name: `Habilitada ${id}`,
+          hidden: true,
+        }),
       ).toBeInTheDocument();
       expect(screen.getByLabelText(`Umbral de ${id}`)).toBeInTheDocument();
       for (const label of SKILL_FIELD_LABELS) {
