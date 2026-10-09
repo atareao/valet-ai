@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use crate::models::stats::LastApiCall;
+use crate::models::stats::{CallKind, LastApiCall};
 use tokio::sync::mpsc;
 
 use crate::db::repos::stats::StatsRepo;
@@ -452,6 +452,7 @@ impl Orchestrator {
     async fn record_stream_failure(&self, profile_id: &str, duration_ms: i64, error_message: &str) {
         let _ = StatsRepo::record_request(
             &self.db,
+            CallKind::Chat,
             &Uuid::new_v4().to_string(),
             &self.config.model,
             Some(profile_id),
@@ -885,6 +886,7 @@ impl Orchestrator {
 
                         let _ = StatsRepo::record_request(
                             &self.db,
+                            CallKind::Chat,
                             &Uuid::new_v4().to_string(),
                             &self.config.model,
                             Some(profile_id),
@@ -1418,6 +1420,7 @@ Respond in JSON format:
                 let total_tokens = prompt_tokens + completion_tokens;
                 let _ = StatsRepo::record_request(
                     db,
+                    CallKind::Chat,
                     &Uuid::new_v4().to_string(),
                     "default",
                     Some(profile_id),
@@ -1523,6 +1526,7 @@ Respond in JSON format:
                 let duration_ms = start.elapsed().as_millis() as i64;
                 let _ = StatsRepo::record_request(
                     db,
+                    CallKind::Chat,
                     &Uuid::new_v4().to_string(),
                     "default",
                     Some(profile_id),
@@ -5584,17 +5588,14 @@ mod tests {
         );
     }
 
-    /// R8: a routed turn writes no classifier row to the stats table — only the
-    /// chat model appears.
+    /// D4/R8: a routed turn with a successful classifier persists exactly one
+    /// `kind='router'` row with `status='success'` and the router's model. The
+    /// obsolete characterisation this replaces asserted the opposite (that the
+    /// classifier never wrote a row); the new contract inverts it.
     #[tokio::test]
-    async fn routed_turn_writes_no_classifier_stats_row() {
+    async fn routed_turn_persists_router_success_row() {
         let pool = setup_test_db().await;
         crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
-            .await
-            .unwrap();
-
-        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
-            .fetch_one(&pool)
             .await
             .unwrap();
 
@@ -5602,25 +5603,65 @@ mod tests {
         let decisions = counting_decisions(calls.clone(), &[("agenda", 0.9)], false);
         let _request = run_routed_turn(pool.clone(), Some(decisions)).await;
 
-        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            after - before,
-            1,
-            "only the single chat call must record a stats row"
-        );
-
-        let classifier_rows: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM llm_requests WHERE model = 'typesafe/jev-1.13'",
+        let router_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests \
+             WHERE kind = 'router' AND status = 'success' AND model = 'typesafe/jev-1.13'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(
-            classifier_rows, 0,
-            "the classifier must not write to the stats table"
+            router_rows, 1,
+            "a routed turn must persist exactly one success row for the classifier"
+        );
+    }
+
+    /// D5: a classifier failure is persisted as a `kind='router'` row with
+    /// `status='error'`.
+    #[tokio::test]
+    async fn routed_turn_persists_router_error_row() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[], true);
+        let _request = run_routed_turn(pool.clone(), Some(decisions)).await;
+
+        let error_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests WHERE kind = 'router' AND status = 'error'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            error_rows, 1,
+            "a classifier failure must be persisted as a router error row"
+        );
+    }
+
+    /// D4: with the router off there was no classifier call, so no `kind='router'`
+    /// row is persisted.
+    #[tokio::test]
+    async fn disabled_router_persists_no_router_row() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "false")
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[("agenda", 1.0)], false);
+        let _request = run_routed_turn(pool.clone(), Some(decisions)).await;
+
+        let router_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests WHERE kind = 'router'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            router_rows, 0,
+            "a disabled router never calls the classifier, so it must persist no router row"
         );
     }
 }

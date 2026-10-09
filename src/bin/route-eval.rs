@@ -2166,6 +2166,7 @@ mod tests {
             skills: Vec::new(),
             probabilities: vec![(Skill::Pendientes, 0.08), (Skill::Agenda, 0.30)],
             source: SelectionSource::Router,
+            usage: None,
         };
         let config = SkillRouterConfig {
             threshold: 0.10,
@@ -2239,6 +2240,7 @@ mod tests {
             skills: Vec::new(),
             probabilities: vec![(Skill::Entorno, 0.05)],
             source: SelectionSource::Router,
+            usage: None,
         };
         let router_diags = missing_diagnostics(
             &["weather".to_string()],
@@ -2257,6 +2259,7 @@ mod tests {
             skills: Vec::new(),
             probabilities: Vec::new(),
             source: SelectionSource::Error,
+            usage: None,
         };
         let error_diags =
             missing_diagnostics(&["tasks".to_string()], &error_selection, &enabled, &config);

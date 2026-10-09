@@ -140,6 +140,22 @@ export interface ModelStats {
   total_reasoning_tokens: number;
 }
 
+/**
+ * Uso de LLM de un origen no-chat (router, archivist, consolidator, collapse).
+ * Espejo de `BackgroundStats` en `src/models/stats.rs`; el backend devuelve una
+ * entrada por origen desde `GET /api/stats/llm/background`.
+ */
+export interface BackgroundStats {
+  kind: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  total_cost: number;
+  total_errors: number;
+  avg_duration_ms: number | null;
+}
+
 export interface DayStats {
   date: string;
   calls: number;

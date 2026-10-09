@@ -9,6 +9,7 @@ use crate::db::repos::stats::StatsRepo;
 use crate::db::DbPool;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider};
 use crate::models::message::estimate_markdown_tokens_heuristic;
+use crate::models::stats::CallKind;
 use std::time::Instant;
 
 /// Background worker that collapses long messages by sending them to an LLM
@@ -144,6 +145,7 @@ impl CollapseWorker {
                             let total_tokens = prompt_tokens + completion_tokens;
                             let _ = StatsRepo::record_request(
                                 &db,
+                                CallKind::Collapse,
                                 &uuid::Uuid::new_v4().to_string(),
                                 &model,
                                 None,
@@ -189,6 +191,7 @@ impl CollapseWorker {
                             let duration_ms = start.elapsed().as_millis() as i64;
                             let _ = StatsRepo::record_request(
                                 &db,
+                                CallKind::Collapse,
                                 &uuid::Uuid::new_v4().to_string(),
                                 &model,
                                 None,

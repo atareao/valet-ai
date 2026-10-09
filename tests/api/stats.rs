@@ -549,3 +549,37 @@ async fn test_set_and_get_retention() {
     let get_body: Value = get_resp.json().await;
     assert_eq!(get_body["days"], 45);
 }
+
+// ── 10. GET /api/stats/llm/background ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_background_summary() {
+    // Given no background LLM request data
+    // When GET /api/stats/llm/background is called
+    // Then returns 200 with one entry per non-chat origin
+    let (_db, app) = setup().await;
+
+    let resp = app.get("/api/stats/llm/background").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body: Value = resp.json().await;
+    let origins = body
+        .as_array()
+        .expect("the background summary must be a JSON array");
+    assert_eq!(
+        origins.len(),
+        4,
+        "one entry per non-chat origin (router, archivist, consolidator, collapse)"
+    );
+
+    let mut kinds: Vec<&str> = origins
+        .iter()
+        .map(|entry| entry["kind"].as_str().unwrap())
+        .collect();
+    kinds.sort_unstable();
+    assert_eq!(
+        kinds,
+        vec!["archivist", "collapse", "consolidator", "router"],
+        "every non-chat origin must appear"
+    );
+}
