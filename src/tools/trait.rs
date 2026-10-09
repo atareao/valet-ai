@@ -11,8 +11,6 @@ pub enum ToolError {
     InvalidArguments(String),
     #[error("Execution error: {0}")]
     ExecutionError(String),
-    #[error("Permission denied: {0}")]
-    PermissionDenied(String),
     #[error("Not found: {0}")]
     NotFound(String),
 }

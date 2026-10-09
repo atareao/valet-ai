@@ -7,12 +7,13 @@
 //!
 //! Besides the compiled defaults, the endpoint exposes the **effective** value
 //! of every editable field and marks which ones come from `settings`: the
-//! question, the two criteria and the per-skill threshold. A question/criteria
-//! is overridden when its effective value differs from the compiled default; a
-//! threshold is overridden when there is an explicit per-skill override (so a
-//! raised global does not flag every skill). The threshold precedence is the
-//! router's ([`effective_threshold`]); the field precedence is
-//! [`effective_field`]. Neither rule is reimplemented here.
+//! question, the two criteria and the per-skill threshold. It also exposes
+//! whether each skill is **enabled** (`ROUTER_SKILL_<ID>_ENABLED`). A
+//! question/criteria is overridden when its effective value differs from the
+//! compiled default; a threshold is overridden when there is an explicit
+//! per-skill override. The threshold precedence is the router's
+//! ([`effective_threshold`]); the field precedence is [`effective_field`].
+//! Neither rule is reimplemented here.
 
 use std::collections::HashMap;
 
@@ -31,15 +32,18 @@ use crate::AppState;
 ///
 /// `question` / `criteria_*` are the effective texts (the `settings` value when
 /// it has content, otherwise the catalog's). `threshold` is the effective
-/// threshold. `overridden` names the fields that come from `settings`: a
-/// question/criteria when its effective value differs from the compiled
-/// default, a threshold when an explicit per-skill override exists.
+/// threshold. `enabled` is false when the skill is in
+/// [`SkillRouterConfig::disabled_skills`]. `overridden` names the fields that
+/// come from `settings`: a question/criteria when its effective value differs
+/// from the compiled default, a threshold when an explicit per-skill override
+/// exists.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SkillView {
     pub id: &'static str,
     pub prompt_key: &'static str,
     pub prompt_heading: &'static str,
     pub tools: &'static [&'static str],
+    pub enabled: bool,
     pub question: String,
     pub criteria_true: String,
     pub criteria_false: String,
@@ -54,6 +58,7 @@ impl SkillView {
             "prompt_key": self.prompt_key,
             "prompt_heading": self.prompt_heading,
             "tools": self.tools,
+            "enabled": self.enabled,
             "question": self.question,
             "criteria_true": self.criteria_true,
             "criteria_false": self.criteria_false,
@@ -71,9 +76,8 @@ impl SkillView {
 ///
 /// A question/criteria is marked as overridden when its effective value differs
 /// from the compiled default; a threshold is marked when `config` carries an
-/// explicit per-skill override for that skill, even when its value equals the
-/// catalog default (the seeded `ROUTER_THRESHOLD_WIDGETS`). A raised global
-/// never flags a skill.
+/// explicit per-skill override for that skill. `enabled` is false when the skill
+/// is in [`SkillRouterConfig::disabled_skills`].
 pub fn skill_views(
     config: &SkillRouterConfig,
     settings: &HashMap<String, String>,
@@ -102,6 +106,7 @@ pub fn skill_views(
                 spec.criteria_false,
             );
             let threshold = effective_threshold(config, spec);
+            let enabled = !config.disabled_skills.contains(spec.id);
 
             let mut overridden: Vec<&'static str> = Vec::new();
             if question != spec.instructions {
@@ -113,10 +118,8 @@ pub fn skill_views(
             if criteria_false != spec.criteria_false {
                 overridden.push("criteria_false");
             }
-            // Only a genuine per-skill override counts: raising the global
-            // (`ROUTER_THRESHOLD`) must not flag every domain skill, so the
-            // compiled default is not the yardstick here — presence in
-            // `threshold_overrides` is.
+            // Only a genuine per-skill override counts: the compiled default is
+            // not the yardstick here — presence in `threshold_overrides` is.
             if config.threshold_overrides.contains_key(spec.id) {
                 overridden.push("threshold");
             }
@@ -126,6 +129,7 @@ pub fn skill_views(
                 prompt_key: spec.prompt_key,
                 prompt_heading: spec.prompt_heading,
                 tools: spec.tools,
+                enabled,
                 question,
                 criteria_true,
                 criteria_false,
@@ -139,9 +143,9 @@ pub fn skill_views(
 /// `GET /api/skills`
 ///
 /// Serialises the closed catalog from [`catalog()`] (id, `prompt_key`,
-/// `prompt_heading`, the tools each skill covers —prerequisites included—, the
-/// effective question/criteria/threshold and which fields are overridden)
-/// together with the always-exposed core set.
+/// `prompt_heading`, the tools each skill covers —prerequisites included—,
+/// whether it is enabled, the effective question/criteria/threshold and which
+/// fields are overridden) together with the always-exposed core set.
 pub async fn list_skills(State(state): State<AppState>) -> Json<Value> {
     let config = read_router_config(&state.db).await;
     let settings = SettingsRepo::get_all(&state.db).await.unwrap_or_else(|e| {
@@ -167,30 +171,50 @@ pub async fn list_skills(State(state): State<AppState>) -> Json<Value> {
 mod tests {
     use super::*;
 
-    /// A configuration with a **changed global** threshold and no per-skill
-    /// override: nothing is a genuine override of the global.
-    fn config_with_global(threshold: f32) -> SkillRouterConfig {
-        SkillRouterConfig {
-            threshold,
-            threshold_overrides: HashMap::new(),
-            ..Default::default()
+    #[test]
+    fn a_skill_without_an_override_uses_its_compiled_threshold() {
+        let views = skill_views(&SkillRouterConfig::default(), &HashMap::new());
+
+        for view in &views {
+            let spec = catalog()
+                .iter()
+                .find(|spec| spec.id == view.id)
+                .expect("every view comes from the catalog");
+            assert!(
+                (view.threshold - spec.threshold).abs() < 1e-6,
+                "sin override `{}` usa su umbral compilado: {} != {}",
+                view.id,
+                view.threshold,
+                spec.threshold
+            );
+            assert!(
+                !view.overridden.contains(&"threshold"),
+                "una skill sin override no se marca: {:?}",
+                view.overridden
+            );
         }
     }
 
     #[test]
-    fn a_changed_global_marks_no_skill_threshold_without_overrides() {
-        // Raising the global (e.g. ROUTER_THRESHOLD=0.15) is not a per-skill
-        // override: no domain skill may be flagged as overridden for it.
-        let views = skill_views(&config_with_global(0.15), &HashMap::new());
+    fn an_enabled_skill_is_reported_as_enabled_and_a_disabled_one_as_disabled() {
+        let views = skill_views(&SkillRouterConfig::default(), &HashMap::new());
+        assert!(
+            views.iter().all(|v| v.enabled),
+            "sin skills deshabilitadas todas figuran habilitadas"
+        );
 
-        for view in &views {
-            assert!(
-                !view.overridden.contains(&"threshold"),
-                "una subida del global no es un override de `{}`: {:?}",
-                view.id,
-                view.overridden
-            );
-        }
+        let mut disabled_skills = std::collections::HashSet::new();
+        disabled_skills.insert("widgets".to_string());
+        let config = SkillRouterConfig {
+            disabled_skills,
+            ..Default::default()
+        };
+
+        let views = skill_views(&config, &HashMap::new());
+        let widgets = views.iter().find(|v| v.id == "widgets").unwrap();
+        assert!(!widgets.enabled, "una skill deshabilitada figura apagada");
+        let agenda = views.iter().find(|v| v.id == "agenda").unwrap();
+        assert!(agenda.enabled, "una skill habilitada sigue encendida");
     }
 
     #[test]
@@ -198,7 +222,6 @@ mod tests {
         let mut threshold_overrides = HashMap::new();
         threshold_overrides.insert("widgets".to_string(), 0.20f32);
         let config = SkillRouterConfig {
-            threshold: 0.10,
             threshold_overrides,
             ..Default::default()
         };

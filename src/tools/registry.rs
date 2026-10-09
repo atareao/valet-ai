@@ -1,5 +1,5 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -11,19 +11,20 @@ use crate::tools::r#trait::{Tool, ToolError, ToolResult};
 ///
 /// Tools are stored as `Arc<dyn Tool>` so that the registry can be cheaply
 /// cloned (shared via Arc) while still allowing registration at init time.
+///
+/// The registry holds **no** enablement state: every registered tool is
+/// advertised and executable. The per-domain filtering that used to live here
+/// is now the skill router's job (it asks for the subset of the selected,
+/// enabled skills — see [`definitions_for`]).
 #[derive(Clone)]
 pub struct ToolRegistry {
     tools: Arc<HashMap<String, Arc<dyn Tool>>>,
-    /// Names of tools that are disabled in the database. Disabled tools are
-    /// neither advertised to the model nor executable.
-    disabled: Arc<RwLock<HashSet<String>>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: Arc::new(HashMap::new()),
-            disabled: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
@@ -41,29 +42,11 @@ impl ToolRegistry {
         self.tools.get(name).map(|t| t.as_ref())
     }
 
-    /// Replace the set of disabled tool names.
-    pub fn set_disabled(&self, names: impl IntoIterator<Item = String>) {
-        let mut disabled = self
-            .disabled
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        disabled.clear();
-        disabled.extend(names);
-    }
-
-    /// Returns `true` when the tool is not present in the disabled set.
-    pub fn is_enabled(&self, name: &str) -> bool {
-        let disabled = self
-            .disabled
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        !disabled.contains(name)
-    }
-
+    /// Definiciones de **todas** las herramientas registradas, sin filtrar por
+    /// ningún estado de habilitación.
     pub fn definitions(&self) -> Vec<ToolDef> {
         self.tools
             .values()
-            .filter(|t| self.is_enabled(t.name()))
             .map(|t| ToolDef {
                 name: t.name().to_string(),
                 description: t.description().to_string(),
@@ -72,13 +55,14 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Definiciones de un subconjunto de herramientas, incluyendo **únicamente**
-    /// las que estén habilitadas y en un **orden determinista por nombre**.
-    /// Los nombres desconocidos se ignoran sin error.
+    /// Definiciones de un subconjunto de herramientas, en un **orden
+    /// determinista por nombre**. Los nombres desconocidos se ignoran sin
+    /// error.
     ///
     /// `definitions_for` acota lo que se **anuncia** al modelo; no es una
     /// frontera de ejecución (`execute` sigue resolviendo cualquier herramienta
-    /// habilitada).
+    /// registrada). El filtrado por dominio lo decide el enrutador, que pide el
+    /// subconjunto `core ∪ (skills seleccionadas ∩ habilitadas)`.
     pub fn definitions_for(&self, names: &[&str]) -> Vec<ToolDef> {
         let mut defs: Vec<ToolDef> = self
             .definitions()
@@ -94,11 +78,6 @@ impl ToolRegistry {
         name: &str,
         args: serde_json::Value,
     ) -> Result<ToolResult, ToolError> {
-        if !self.is_enabled(name) {
-            return Err(ToolError::PermissionDenied(format!(
-                "tool '{name}' is disabled"
-            )));
-        }
         match self.tools.get(name) {
             Some(tool) => tool.execute(args).await,
             None => Err(ToolError::NotFound(name.to_string())),
@@ -189,29 +168,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn test_disabled_tool_is_hidden_and_rejected() -> Result<(), Box<dyn std::error::Error>> {
-        let mut reg = ToolRegistry::new();
-        reg.register(Box::new(DummyTool));
-
-        reg.set_disabled(["dummy".to_string()]);
-        assert!(
-            reg.definitions().is_empty(),
-            "disabled tool must not be advertised"
-        );
-        assert!(!reg.is_enabled("dummy"));
-        let result = reg.execute("dummy", serde_json::json!({})).await;
-        assert!(matches!(result, Err(ToolError::PermissionDenied(_))));
-
-        // Re-enabling restores both advertisement and execution.
-        reg.set_disabled(Vec::new());
-        assert!(reg.is_enabled("dummy"));
-        assert_eq!(reg.definitions().len(), 1);
-        let result = reg.execute("dummy", serde_json::json!({})).await.unwrap();
-        assert!(result.success);
-        Ok(())
-    }
-
     #[test]
     fn test_permission_of_unknown_tool() {
         let reg = ToolRegistry::new();
@@ -254,11 +210,10 @@ mod tests {
     }
 
     #[test]
-    fn definitions_for_omits_disabled_and_unknown() {
+    fn definitions_for_ignores_unknown_names() {
         let mut reg = ToolRegistry::new();
         reg.register(Box::new(NamedTool("tasks")));
         reg.register(Box::new(NamedTool("weather")));
-        reg.set_disabled(["weather".to_string()]);
 
         let names: Vec<String> = reg
             .definitions_for(&["weather", "tasks", "inexistente"])
@@ -268,8 +223,8 @@ mod tests {
 
         assert_eq!(
             names,
-            vec!["tasks"],
-            "only enabled, known tools must be returned"
+            vec!["tasks", "weather"],
+            "every known name is returned, unknowns are ignored"
         );
     }
 

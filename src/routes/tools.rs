@@ -1,1 +1,1 @@
-pub use crate::handlers::tools::{list_tools, toggle_tool};
+pub use crate::handlers::tools::list_tools;
