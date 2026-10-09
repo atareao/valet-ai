@@ -138,6 +138,38 @@ Frontend:
 
 ---
 
+## Tema 2 — Conciencia temporal
+
+### Objetivo
+
+Que el modelo sepa **qué hora es realmente** en cada turno y **cuándo** se dijo cada mensaje del historial, de modo que resuelva «hoy», «ayer» y «mañana» contra la fecha real y no contra una que leyó turnos atrás y ya caducó.
+
+### Decisiones de diseño (BLOQUEADAS — respétalas tal cual)
+
+1. **Sección temporal siempre presente** en el mensaje de sistema, en cada turno (no solo cuando el navegador manda contexto), y **cierra** el mensaje. Formato: `Fecha y hora actual: 2026-10-09 19:00:00 (viernes). Evalúa 'hoy', 'ayer' y 'mañana' respecto a este timestamp.`
+2. **La sección de ubicación manda solo la ubicación**: la antigua sección «browser» pierde la fecha; conserva `Ubicación: …` / `Coordenadas: …` y se omite si no hay coordenadas.
+3. **Marca de tiempo por mensaje**: los mensajes `user` y `assistant` (historial y turno) se prefijan con `[YYYY-MM-DD HH:MM]` en la zona efectiva; los `tool` y los vacíos, no. La marca **no se persiste**: solo viaja en la petición al LLM.
+4. **Instante y zona efectivos por turno**: instante = `BrowserContext.timestamp` si es válido, si no `Utc::now()`; zona = `BrowserContext.timezone` → `settings.timezone` → `Europe/Madrid`; zona inválida → UTC.
+
+### Mapa arquitectónico
+
+- `src/tools/time_format.rs` — formateadores nuevos (`format_inline_timestamp`, `format_prompt_now`), reutilizando `chrono_tz` y los nombres en español.
+- `src/orchestrator/agent.rs` — resolución del instante/zona del turno; sección temporal; sección de ubicación sin fecha; prefijado del historial y del mensaje del turno; `compose_system_message` gana la sección temporal final.
+
+### Specs afectadas
+
+- `orchestrator/agent` (un requisito modificado, uno retirado y cuatro añadidos). Sin cambios de esquema, migraciones, API ni UI.
+
+### Tareas técnicas (TDD — checklist)
+
+- [ ] F0 — Change OpenSpec `temporal-awareness` (aprobado antes de codificar).
+- [ ] F1 — RED: formateadores y ensamblado (sección temporal siempre presente y cierra; ubicación sin fecha; prefijos del historial y del turno).
+- [ ] F2 — GREEN: `time_format.rs` + `agent.rs`.
+- [ ] F3 — REFACTOR: `cargo fmt`, `clippy -D warnings`, código muerto del formato antiguo.
+- [ ] F4 — VERIFY: `cargo test`, review y archivo del change.
+
+---
+
 ## Temas pendientes
 
-_Pendiente: se irán añadiendo más piezas a este plan._
+Tema 1 cerrado (PR #155). **Tema 2** (conciencia temporal) definido: change `temporal-awareness` propuesto, pendiente de aprobación.
