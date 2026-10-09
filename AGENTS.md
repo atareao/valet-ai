@@ -171,3 +171,30 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 
 `assets.svg` y `temporal.svg` llevaban sin trackear desde el 2026-09-29 y los vieron tres sesiones seguidas, que se limitaron a clasificarlos como "preexistentes y ajenos" sin decidir nada. El 2026-10-01 quedaron movidos a `~/.local/share/valet-scratch/`, con un `NOTAS.md` allí que explica qué son. Eran restos inválidos de la generación de iconos (uno de ellos ni siquiera es un SVG: es un fragmento pegado sin etiqueta `<svg>`), nunca estuvieron en git, y los iconos reales y versionados están en `frontend/src/assets/valet-icon.svg`, `assets/linux/hicolor/scalable/apps/valet.svg` y `assets/icono.svg`. Si vuelven a aparecer en la raíz, es que alguien los ha traído de vuelta a propósito.
 
+
+---
+
+## VI. GESTIÓN DE PLANES (`plans/`)
+
+Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la raíz.
+
+### Nomenclatura
+
+- **Plan nuevo:** `plans/PLAN-XXX.md`, con `XXX` de tres dígitos y cero a la izquierda
+  (`001`, `002`, …). El número se asigna en orden creciente y **no se reutiliza** aunque
+  un plan se complete.
+- **Plan completado:** se renombra a `plans/PLAN-XXX-COMPLETED.md`. El cuerpo del plan
+  **no se reescribe**: es un registro histórico de lo que se decidió e hizo.
+- Un plan completado **no se reabre**. El trabajo nuevo —aunque sea un ajuste sobre algo ya
+  cerrado— genera un `plans/PLAN-XXX.md` nuevo.
+
+### Índice
+
+| Fichero | Origen | Estado |
+|:---|:---|:---:|
+| `plans/PLAN-001-COMPLETED.md` | Plan maestro original (`PLAN.md`): fases F0–F4 | ✅ Completado |
+| `plans/PLAN-002-COMPLETED.md` | OIDC (PocketID), producción tras Traefik y cierres (`PLAN-PENDIENTE.md`) | ✅ Completado |
+| `plans/PLAN-003.md` | Roadmap v2 (`v2-ROADMAP.md`) | 🟢 Activo |
+
+> Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
+> un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
