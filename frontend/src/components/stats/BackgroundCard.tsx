@@ -1,5 +1,6 @@
 import React from "react";
-import { Card, Row, Col, Skeleton, Tag } from "antd";
+import { Card, Skeleton, Table, Tag } from "antd";
+import type { TableColumnsType } from "antd";
 import type { BackgroundStats } from "../../types";
 
 interface BackgroundCardProps {
@@ -17,20 +18,58 @@ const ORIGIN_LABELS: Record<string, string> = {
 
 const originLabel = (kind: string): string => ORIGIN_LABELS[kind] ?? kind;
 
-const formatCost = (cost: number): string => `$${cost.toFixed(6)}`;
-
 const formatLatency = (ms: number | null): string =>
-  ms != null ? `${ms.toFixed(0)} ms` : "N/A";
+  ms != null ? `${Math.round(ms)} ms` : "N/A";
 
-const Metric: React.FC<{ title: string; value: React.ReactNode }> = ({
-  title,
-  value,
-}) => (
-  <div>
-    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.45)" }}>{title}</div>
-    <div style={{ fontSize: 14 }}>{value}</div>
-  </div>
-);
+const headerStyle = { color: "#ffffff" };
+
+const columns: TableColumnsType<BackgroundStats> = [
+  {
+    title: "Origin",
+    dataIndex: "kind",
+    key: "kind",
+    onHeaderCell: () => ({ style: headerStyle }),
+    render: (kind: string) => (
+      <>
+        <span style={{ fontWeight: 600 }}>{originLabel(kind)}</span>{" "}
+        <Tag>{kind}</Tag>
+      </>
+    ),
+  },
+  {
+    title: "Calls",
+    dataIndex: "calls",
+    key: "calls",
+    onHeaderCell: () => ({ style: headerStyle }),
+  },
+  {
+    title: "Tokens",
+    dataIndex: "total_tokens",
+    key: "total_tokens",
+    onHeaderCell: () => ({ style: headerStyle }),
+    render: (tokens: number) => tokens.toLocaleString("en-US"),
+  },
+  {
+    title: "Cost",
+    dataIndex: "total_cost",
+    key: "total_cost",
+    onHeaderCell: () => ({ style: headerStyle }),
+    render: (cost: number) => `$${cost.toFixed(6)}`,
+  },
+  {
+    title: "Avg Duration",
+    dataIndex: "avg_duration_ms",
+    key: "avg_duration_ms",
+    onHeaderCell: () => ({ style: headerStyle }),
+    render: (ms: number | null) => formatLatency(ms),
+  },
+  {
+    title: "Errors",
+    dataIndex: "total_errors",
+    key: "total_errors",
+    onHeaderCell: () => ({ style: headerStyle }),
+  },
+];
 
 export const BackgroundCard: React.FC<BackgroundCardProps> = ({
   data,
@@ -58,40 +97,13 @@ export const BackgroundCard: React.FC<BackgroundCardProps> = ({
 
   return (
     <Card title="Procesos de fondo" style={{ marginBottom: 16 }}>
-      {data.map((entry) => (
-        <Row
-          key={entry.kind}
-          gutter={[16, 16]}
-          align="middle"
-          style={{
-            borderBottom: "1px solid rgba(255,255,255,0.08)",
-            padding: "8px 0",
-          }}
-        >
-          <Col xs={24} sm={8} md={6}>
-            <span style={{ fontWeight: 600 }}>{originLabel(entry.kind)}</span>{" "}
-            <Tag>{entry.kind}</Tag>
-          </Col>
-          <Col xs={8} sm={4} md={4}>
-            <Metric title="Calls" value={entry.calls} />
-          </Col>
-          <Col xs={8} sm={4} md={4}>
-            <Metric title="Tokens" value={entry.total_tokens} />
-          </Col>
-          <Col xs={8} sm={4} md={4}>
-            <Metric title="Cost" value={formatCost(entry.total_cost)} />
-          </Col>
-          <Col xs={12} sm={4} md={3}>
-            <Metric
-              title="Avg Duration"
-              value={formatLatency(entry.avg_duration_ms)}
-            />
-          </Col>
-          <Col xs={12} sm={4} md={3}>
-            <Metric title="Errors" value={entry.total_errors} />
-          </Col>
-        </Row>
-      ))}
+      <Table
+        dataSource={data}
+        columns={columns}
+        rowKey="kind"
+        pagination={false}
+        size="small"
+      />
     </Card>
   );
 };

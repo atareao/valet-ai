@@ -15,7 +15,8 @@ use crate::orchestrator::context_builder::ContextBuilder;
 use crate::orchestrator::context_classifier::ContextClassifier;
 use crate::orchestrator::guardrails::{ApprovalOutcome, GuardrailResult, Guardrails};
 use crate::orchestrator::skill_router::{
-    compose_skill_fragments, exposed_tools, read_router_config, read_skill_fragments, SkillRouter,
+    compose_skill_fragments, exposed_tools, read_router_config, read_skill_fragments, RouterUsage,
+    SkillRouter,
 };
 use crate::tools::geo_utils::reverse_geocode;
 use crate::tools::r#trait::ToolResult;
@@ -407,6 +408,33 @@ impl Orchestrator {
         self
     }
 
+    /// Persist the classifier call as a `kind='router'` row. Never touches
+    /// `last_api_call`: the chat call stays the last one (D7).
+    async fn persist_router_usage(&self, profile_id: &str, usage: &RouterUsage) {
+        if let Err(error) = StatsRepo::record_request(
+            &self.db,
+            CallKind::Router,
+            &Uuid::new_v4().to_string(),
+            &usage.model,
+            Some(profile_id),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.input_tokens + usage.output_tokens,
+            0,
+            0,
+            usage.cost,
+            Some(usage.duration_ms),
+            &usage.status,
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            tracing::warn!(%error, model = %usage.model, status = %usage.status, "failed to persist router usage");
+        }
+    }
+
     /// Save the last API call data in memory so it can be served by the stats endpoint.
     #[allow(clippy::too_many_arguments)]
     fn save_last_call(
@@ -615,25 +643,7 @@ impl Orchestrator {
         // Sources without a classifier call (`Disabled`, `NoRoutableSkills`)
         // expose no usage and write nothing. `last_api_call` stays untouched.
         if let Some(usage) = &selection.usage {
-            let _ = StatsRepo::record_request(
-                &self.db,
-                CallKind::Router,
-                &Uuid::new_v4().to_string(),
-                &usage.model,
-                Some(profile_id),
-                usage.input_tokens,
-                usage.output_tokens,
-                usage.input_tokens + usage.output_tokens,
-                0,
-                0,
-                usage.cost,
-                Some(usage.duration_ms),
-                &usage.status,
-                None,
-                None,
-                None,
-            )
-            .await;
+            self.persist_router_usage(profile_id, usage).await;
         }
 
         // `core ∪ skills_seleccionadas ∩ habilitadas`. Computed once, outside
@@ -5688,6 +5698,50 @@ mod tests {
         assert_eq!(
             router_rows, 0,
             "a disabled router never calls the classifier, so it must persist no router row"
+        );
+    }
+
+    /// D7: persisting the classifier call writes a `kind='router'` row and,
+    /// crucially, never touches `last_api_call` — the chat call stays the last
+    /// one. The orchestrator starts with an empty `last_api_call`; after
+    /// persisting a router usage it must still be empty.
+    #[tokio::test]
+    async fn persist_router_usage_inserts_router_row_and_keeps_last_api_call() {
+        let pool = setup_test_db().await;
+        let orchestrator =
+            build_routed_orchestrator(pool.clone(), Arc::new(Mutex::new(None)), None).await;
+
+        assert!(
+            orchestrator.last_api_call.read().unwrap().is_none(),
+            "the orchestrator must start with no last API call"
+        );
+
+        let usage = RouterUsage {
+            model: "typesafe/jev-1.13".to_string(),
+            input_tokens: 120,
+            output_tokens: 30,
+            cost: 0.0012,
+            duration_ms: 42,
+            status: "success".to_string(),
+        };
+        orchestrator.persist_router_usage("profile-1", &usage).await;
+
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests \
+             WHERE kind = 'router' AND model = 'typesafe/jev-1.13' AND status = 'success' \
+               AND cost > 0 AND duration_ms > 0",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows, 1,
+            "persisting the router usage must insert one success router row with cost and latency"
+        );
+
+        assert!(
+            orchestrator.last_api_call.read().unwrap().is_none(),
+            "persisting the router call must not touch last_api_call"
         );
     }
 }

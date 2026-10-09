@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { BackgroundCard } from "./BackgroundCard";
 import type { BackgroundStats } from "../../types";
 
@@ -57,12 +57,20 @@ describe("BackgroundCard", () => {
     expect(screen.getByText("consolidator")).toBeInTheDocument();
     expect(screen.getByText("collapse")).toBeInTheDocument();
 
-    // Cifras del origen con actividad: llamadas, tokens, coste, latencia y errores.
-    expect(screen.getByText("42")).toBeInTheDocument();
-    expect(screen.getByText("1234")).toBeInTheDocument();
-    expect(screen.getByText("$0.056789")).toBeInTheDocument();
-    expect(screen.getByText("250 ms")).toBeInTheDocument();
-    expect(screen.getByText("2")).toBeInTheDocument();
+    // Cifras del origen con actividad, aisladas en su propia fila.
+    const routerRow = within(screen.getByRole("row", { name: /router/ }));
+    expect(routerRow.getByText("42")).toBeInTheDocument();
+    expect(routerRow.getByText("1,234")).toBeInTheDocument();
+    expect(routerRow.getByText("$0.056789")).toBeInTheDocument();
+    expect(routerRow.getByText("250 ms")).toBeInTheDocument();
+    expect(routerRow.getByText("2")).toBeInTheDocument();
+
+    // Las cifras del origen con actividad no se filtran a los orígenes a cero.
+    const archivistRow = within(screen.getByRole("row", { name: /archivist/ }));
+    expect(archivistRow.queryByText("42")).not.toBeInTheDocument();
+    expect(archivistRow.queryByText("1,234")).not.toBeInTheDocument();
+    expect(archivistRow.queryByText("$0.056789")).not.toBeInTheDocument();
+    expect(archivistRow.queryByText("250 ms")).not.toBeInTheDocument();
   });
 
   it("renders an empty state when all origins are zero", () => {
@@ -76,5 +84,27 @@ describe("BackgroundCard", () => {
 
     expect(screen.getByText("No data yet")).toBeInTheDocument();
     expect(screen.queryByText("router")).not.toBeInTheDocument();
+  });
+
+  it("renders an empty state when there is no data", () => {
+    render(<BackgroundCard data={[]} loading={false} />);
+
+    expect(screen.getByText("No data yet")).toBeInTheDocument();
+  });
+
+  it("renders a skeleton while loading", () => {
+    const { container } = render(<BackgroundCard data={mockBackground} loading={true} />);
+
+    expect(container.querySelector(".ant-skeleton")).toBeInTheDocument();
+    expect(screen.queryByText("No data yet")).not.toBeInTheDocument();
+  });
+
+  it("renders N/A when the average duration is null", () => {
+    const nullLatency: BackgroundStats[] = [
+      { ...mockBackground[0], avg_duration_ms: null },
+    ];
+    render(<BackgroundCard data={nullLatency} loading={false} />);
+
+    expect(screen.getByText("N/A")).toBeInTheDocument();
   });
 });

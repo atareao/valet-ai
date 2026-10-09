@@ -138,6 +138,20 @@ impl SkillRouter {
         effective_threshold(&self.config, spec)
     }
 
+    /// Telemetría de error de una llamada fallida al clasificador: cero tokens
+    /// y coste, con la latencia real transcurrida. La comparten los dos caminos
+    /// de fallo de [`SkillRouter::select`] (error/timeout y respuesta ilegible).
+    fn error_usage(&self, started: Instant) -> RouterUsage {
+        RouterUsage {
+            model: self.config.model.clone(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cost: 0.0,
+            duration_ms: started.elapsed().as_millis() as i64,
+            status: "error".to_string(),
+        }
+    }
+
     /// Decide las skills del turno a partir del mensaje actual, los últimos
     /// turnos y las herramientas habilitadas.
     ///
@@ -237,17 +251,7 @@ impl SkillRouter {
         let response = match tokio::time::timeout(timeout, provider.decide(request)).await {
             Ok(Ok(response)) => response,
             Ok(Err(_)) | Err(_) => {
-                return fallback(
-                    SelectionSource::Error,
-                    Some(RouterUsage {
-                        model: self.config.model.clone(),
-                        input_tokens: 0,
-                        output_tokens: 0,
-                        cost: 0.0,
-                        duration_ms: started.elapsed().as_millis() as i64,
-                        status: "error".to_string(),
-                    }),
-                );
+                return fallback(SelectionSource::Error, Some(self.error_usage(started)));
             }
         };
 
@@ -274,17 +278,7 @@ impl SkillRouter {
         // suyo. Se falla abierto. Una respuesta parcial (algunas reconocidas y
         // otras no) sí se aplica con lo reconocido.
         if recognized == 0 {
-            return fallback(
-                SelectionSource::Error,
-                Some(RouterUsage {
-                    model: self.config.model.clone(),
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cost: 0.0,
-                    duration_ms: started.elapsed().as_millis() as i64,
-                    status: "error".to_string(),
-                }),
-            );
+            return fallback(SelectionSource::Error, Some(self.error_usage(started)));
         }
 
         // R8/D10: la decisión se registra por log, incluyendo su coste y su
