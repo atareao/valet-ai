@@ -2,6 +2,7 @@
 
 **Proyecto:** Valet (Rust/Axum + React + SQLite)
 **Estado:** 🟢 Activo
+**Tema 1:** ✅ Cerrado (PR #155, merge `d109f8d`)
 **Fecha:** 2026-10-09
 **Metodología:** OpenSpec (SDD) + TDD (Red-Green-Refactor)
 
@@ -19,6 +20,8 @@
 ---
 
 ## Tema 1 — Selección por skills
+
+**Estado:** ✅ Completado en el PR #155 (merge `d109f8d`). Implementado y archivado en OpenSpec como `2026-10-09-skill-selection`.
 
 ### Objetivo
 
@@ -74,56 +77,56 @@ Frontend:
 
 ### F0 — Change OpenSpec (`skill-selection`)
 
-- [ ] Crear el change proposal (`skill-selection`): proposal + specs (contratos + escenarios Given/When/Then).
-- [ ] Escenarios cubiertos: skill deshabilitada no enruta ni expone tools **con router on y off**; umbral per-skill; `GET /api/skills` con `enabled`.
-- [ ] Poblar `tasks.md` con el checklist TDD.
-- [ ] **STOP** y esperar aprobación explícita del usuario.
+- [x] Crear el change proposal (`skill-selection`): proposal + specs (contratos + escenarios Given/When/Then).
+- [x] Escenarios cubiertos: skill deshabilitada no enruta ni expone tools **con router on y off**; umbral per-skill; `GET /api/skills` con `enabled`.
+- [x] Poblar `tasks.md` con el checklist TDD.
+- [x] **STOP** y esperar aprobación explícita del usuario.
 
 ### F1 — Backend (rojo→verde→refactor)
 
-- [ ] Config del router: `read_router_config` con `enabled` por skill y umbral per-skill **sin global**.
-- [ ] `effective_threshold` sin `ROUTER_THRESHOLD`; fallback al `threshold` compilado del catálogo.
-- [ ] Filtrado absoluto de skills deshabilitadas (no enruta, no expone tools, no inyecta fragmento) con `ROUTER_ENABLED` on y off.
-- [ ] `compose_skill_fragments` salta las skills deshabilitadas.
-- [ ] `GET /api/skills` expone `enabled` por skill (`SkillView`).
-- [ ] Retirada del toggle de tools (handler, ruta, repo, modelo, registro, cableado en `main.rs`).
-- [ ] Migración nueva (seed `ROUTER_SKILL_<ID>_ENABLED`, materialización de umbrales, retirada de `ROUTER_THRESHOLD`, `DROP COLUMN enabled`).
-- [ ] Tests unitarios en `skill_router.rs`/`skills.rs` y de handler.
+- [x] Config del router: `read_router_config` con `enabled` por skill y umbral per-skill **sin global**.
+- [x] `effective_threshold` sin `ROUTER_THRESHOLD`; fallback al `threshold` compilado del catálogo.
+- [x] Filtrado absoluto de skills deshabilitadas (no enruta, no expone tools, no inyecta fragmento) con `ROUTER_ENABLED` on y off.
+- [x] `compose_skill_fragments` salta las skills deshabilitadas.
+- [x] `GET /api/skills` expone `enabled` por skill (`SkillView`).
+- [x] Retirada del toggle de tools (handler, ruta, repo, modelo, registro, cableado en `main.rs`).
+- [x] Migración nueva (seed `ROUTER_SKILL_<ID>_ENABLED`, materialización de umbrales, retirada de `ROUTER_THRESHOLD`, `DROP COLUMN enabled`).
+- [x] Tests unitarios en `skill_router.rs`/`skills.rs` y de handler.
 
 ### F2 — Frontend (rojo→verde→refactor)
 
-- [ ] Pestaña top-level `Skills` con una pestaña por skill (switch + umbral + 4 textos).
-- [ ] Pestaña `Enrutador de skills` sin umbral global ni lista de tools (solo activar enrutado + modelo de decisiones).
-- [ ] `RouterControl` depurado; helpers en `skillRouter.ts` (clave `enabled`, umbral per-skill).
-- [ ] Eliminar `ToolsTab` y `useTools`; limpiar `getTools`/`toggleTool` del cliente.
-- [ ] Tipos: añadir `enabled` a las skills en `types/index.ts` y `useSkills.ts`.
-- [ ] Tests de `SettingsDialog`/componentes con vitest + testing-library.
+- [x] Pestaña top-level `Skills` con una pestaña por skill (switch + umbral + 4 textos).
+- [x] Pestaña `Enrutador de skills` sin umbral global ni lista de tools (solo activar enrutado + modelo de decisiones).
+- [x] `RouterControl` depurado; helpers en `skillRouter.ts` (clave `enabled`, umbral per-skill).
+- [x] Eliminar `ToolsTab` y `useTools`; limpiar `getTools`/`toggleTool` del cliente.
+- [x] Tipos: añadir `enabled` a las skills en `types/index.ts` y `useSkills.ts`.
+- [x] Tests de `SettingsDialog`/componentes con vitest + testing-library.
 
 ### F3 — Limpieza en cascada
 
-- [ ] `clippy -D warnings` en verde (0 warnings).
-- [ ] Eliminar código muerto (rutas/handlers/repo/modelo/registro/tests).
-- [ ] `cargo fmt`.
-- [ ] `tsc --noEmit`.
-- [ ] Lint de frontend.
-- [ ] `openspec validate --all --strict`.
+- [x] `clippy -D warnings` en verde (0 warnings).
+- [x] Eliminar código muerto (rutas/handlers/repo/modelo/registro/tests).
+- [x] `cargo fmt`.
+- [x] `tsc --noEmit`.
+- [x] Lint de frontend.
+- [x] `openspec validate --all --strict`.
 
 ### F4 — Cierre
 
-- [ ] Archivar el change.
-- [ ] Actualizar `AGENTS.md § V` si procede.
+- [x] Archivar el change.
+- [x] Actualizar `AGENTS.md § V` si procede.
 
 ---
 
 ## Definición de Hecho (DoD)
 
-- [ ] Skill deshabilitada nunca enruta ni expone sus tools ni inyecta su fragmento, con `ROUTER_ENABLED` on y off (test que lo verifica).
-- [ ] Umbral por skill funcional sin `ROUTER_THRESHOLD`; fallback al default del catálogo.
-- [ ] `GET /api/skills` expone `enabled`.
-- [ ] Toggle de tools eliminado (sin código muerto; `clippy` 0 warnings).
-- [ ] Migración verificada (materializa umbrales, añade claves enabled, retira global, dropea columna).
-- [ ] UI: `Skills` top-level con pestaña por skill; `Enrutador de skills` sin umbral global; `ToolsTab` fuera.
-- [ ] `cargo test`, `npx vitest run`, `tsc --noEmit`, lint y `openspec validate --all --strict` en verde.
+- [x] Skill deshabilitada nunca enruta ni expone sus tools ni inyecta su fragmento, con `ROUTER_ENABLED` on y off (test que lo verifica).
+- [x] Umbral por skill funcional sin `ROUTER_THRESHOLD`; fallback al default del catálogo.
+- [x] `GET /api/skills` expone `enabled`.
+- [x] Toggle de tools eliminado (sin código muerto; `clippy` 0 warnings).
+- [x] Migración verificada (materializa umbrales, añade claves enabled, retira global, dropea columna).
+- [x] UI: `Skills` top-level con pestaña por skill; `Enrutador de skills` sin umbral global; `ToolsTab` fuera.
+- [x] `cargo test`, `npx vitest run`, `tsc --noEmit`, lint y `openspec validate --all --strict` en verde.
 
 ---
 
