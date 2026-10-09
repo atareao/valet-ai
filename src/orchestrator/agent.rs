@@ -263,6 +263,12 @@ const TEMPORAL_SECTION_LABEL: &str = "Fecha y hora actual:";
 const TEMPORAL_SECTION_INSTRUCTION: &str =
     "Evalúa 'hoy', 'ayer' y 'mañana' respecto a este timestamp.";
 
+/// Instruction that closes the temporal section, telling the model that the
+/// inline `[YYYY-MM-DD HH:MM]` stamp on the messages is metadata and must not
+/// be echoed back into its answers.
+const TEMPORAL_SECTION_MARKER_INSTRUCTION: &str =
+    "No reproduzcas la marca '[YYYY-MM-DD HH:MM]' de los mensajes en tus respuestas.";
+
 /// Compose the temporal section from the effective turn instant and timezone.
 ///
 /// The section is always non-empty: when the instant cannot be parsed it falls
@@ -273,22 +279,59 @@ fn compose_temporal_section(iso_utc: &str, tz: &str) -> String {
     let stamp = format_prompt_now(iso_utc, tz)
         .or_else(|| format_prompt_now(&chrono::Utc::now().to_rfc3339(), "UTC"))
         .unwrap_or_default();
-    format!("{TEMPORAL_SECTION_LABEL} {stamp}. {TEMPORAL_SECTION_INSTRUCTION}")
+    format!(
+        "{TEMPORAL_SECTION_LABEL} {stamp}. {TEMPORAL_SECTION_INSTRUCTION} {TEMPORAL_SECTION_MARKER_INSTRUCTION}"
+    )
 }
 
 /// Prefix a conversational message with its inline `[YYYY-MM-DD HH:MM]` stamp.
 ///
-/// Only `user` and `assistant` messages with non-whitespace content are
-/// stamped, and only when the timestamp parses. Anything else — `tool`,
-/// `system`, empty content, or an unreadable timestamp — is returned unchanged.
-/// The stamp is request-only: it is never persisted.
+/// Only `user` messages with non-whitespace content are stamped, and only when
+/// the timestamp parses. `assistant` messages are deliberately **not** stamped:
+/// the model imitates the format of its own turns and would echo the marker
+/// back into its answers. Anything else — `assistant`, `tool`, `system`, empty
+/// content, or an unreadable timestamp — is returned unchanged. The stamp is
+/// request-only: it is never persisted.
 fn stamp_message(role: &str, content: &str, created_at_iso: &str, tz: &str) -> String {
-    if matches!(role, "user" | "assistant") && !content.trim().is_empty() {
+    if role == "user" && !content.trim().is_empty() {
         if let Some(stamp) = format_inline_timestamp(created_at_iso, tz) {
             return format!("[{stamp}] {content}");
         }
     }
     content.to_string()
+}
+
+/// Remove an exact leading `[YYYY-MM-DD HH:MM] ` marker from a stored message.
+///
+/// A previous bug stamped `assistant` rows before sending them to the LLM, so
+/// some persisted rows carry the marker in their content. The model imitates
+/// it and duplicates it, so it is stripped here, request-only: the stored row
+/// is never modified. Only the exact marker — `[`, ten digits arranged as
+/// `YYYY-MM-DD HH:MM`, `]` and a trailing space — is removed; anything else,
+/// including a bracket that does not match the marker, is left untouched.
+fn strip_legacy_timestamp(content: &str) -> String {
+    /// Byte length of the exact marker `[YYYY-MM-DD HH:MM] `.
+    const MARKER_LEN: usize = 19;
+    let bytes = content.as_bytes();
+    let is_marker = bytes.len() >= MARKER_LEN
+        && bytes[0] == b'['
+        && bytes[5] == b'-'
+        && bytes[8] == b'-'
+        && bytes[11] == b' '
+        && bytes[14] == b':'
+        && bytes[17] == b']'
+        && bytes[18] == b' '
+        && bytes[1..5].iter().all(u8::is_ascii_digit)
+        && bytes[6..8].iter().all(u8::is_ascii_digit)
+        && bytes[9..11].iter().all(u8::is_ascii_digit)
+        && bytes[12..14].iter().all(u8::is_ascii_digit)
+        && bytes[15..17].iter().all(u8::is_ascii_digit);
+    if is_marker {
+        // `MARKER_LEN` is an ASCII boundary, so the slice is always valid.
+        content[MARKER_LEN..].to_string()
+    } else {
+        content.to_string()
+    }
 }
 
 /// Compose the episodic-memory block from the already-formatted cards, or
@@ -836,18 +879,27 @@ impl Orchestrator {
         });
 
         // Append the conversation history pre-loaded above (same content and
-        // same order as before: `[system, ...history..., user]`). Each `user`
-        // and `assistant` message is prefixed with its inline stamp in the
-        // effective turn zone; the stamp is request-only and never persisted.
+        // same order as before: `[system, ...history..., user]`). `user`
+        // messages are prefixed with their inline stamp in the effective turn
+        // zone; `assistant` messages are left unstamped, and any exact legacy
+        // `[YYYY-MM-DD HH:MM] ` marker already stored in their content is
+        // stripped before sending. `tool`/`system` rows travel intact. The
+        // stamp is request-only and never persisted.
         for msg in &history {
             let tool_calls: Option<Vec<ToolCall>> = msg
                 .tool_calls
                 .as_ref()
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
 
+            let content = match msg.role.as_str() {
+                "user" => stamp_message("user", &msg.content, &msg.created_at, &effective_tz),
+                "assistant" => strip_legacy_timestamp(&msg.content),
+                _ => msg.content.clone(),
+            };
+
             messages.push(ChatMessage {
                 role: msg.role.clone(),
-                content: stamp_message(&msg.role, &msg.content, &msg.created_at, &effective_tz),
+                content,
                 tool_calls,
                 tool_result: msg.tool_results.clone(),
                 tool_call_id: None,
@@ -1939,7 +1991,7 @@ mod tests {
             location_pos < temporal_pos,
             "the location section precedes the temporal one"
         );
-        assert!(content.ends_with(TEMPORAL_SECTION_INSTRUCTION));
+        assert!(content.ends_with(TEMPORAL_SECTION_MARKER_INSTRUCTION));
 
         Ok(())
     }
@@ -2129,7 +2181,7 @@ mod tests {
             "the location section must precede the temporal one"
         );
         assert!(
-            content.ends_with(TEMPORAL_SECTION_INSTRUCTION),
+            content.ends_with(TEMPORAL_SECTION_MARKER_INSTRUCTION),
             "the temporal section must close the message, got: {content:?}"
         );
         // The location section, isolated from the temporal one, must carry only
@@ -2257,12 +2309,11 @@ mod tests {
     // ─── temporal-awareness: composed temporal section ──────────────────────
 
     #[test]
-    fn compose_temporal_section_is_never_empty_and_formats_the_instant() {
-        let section = compose_temporal_section("2026-10-09T17:00:00Z", "Europe/Madrid");
-        assert!(!section.is_empty());
-        assert!(section.starts_with("Fecha y hora actual: "));
-        assert!(section.contains("2026-10-09 19:00:00 (viernes)"));
-        assert!(section.contains("Evalúa 'hoy', 'ayer' y 'mañana' respecto a este timestamp."));
+    fn compose_temporal_section_matches_the_exact_expected_text() {
+        assert_eq!(
+            compose_temporal_section("2026-10-09T17:00:00Z", "Europe/Madrid"),
+            "Fecha y hora actual: 2026-10-09 19:00:00 (viernes). Evalúa 'hoy', 'ayer' y 'mañana' respecto a este timestamp. No reproduzcas la marca '[YYYY-MM-DD HH:MM]' de los mensajes en tus respuestas."
+        );
     }
 
     #[test]
@@ -2281,14 +2332,16 @@ mod tests {
     // ─── temporal-awareness: message stamping ───────────────────────────────
 
     #[test]
-    fn stamp_message_prefixes_user_and_assistant() {
+    fn stamp_message_prefixes_only_user() {
         assert_eq!(
             stamp_message("user", "hola", "2026-07-15T20:15:00Z", "Europe/Madrid"),
             "[2026-07-15 22:15] hola"
         );
+        // The assistant must NOT be stamped: the model imitates its own turns
+        // and would echo the marker back into its answers.
         assert_eq!(
             stamp_message("assistant", "vale", "2026-07-15T20:15:00Z", "Europe/Madrid"),
-            "[2026-07-15 22:15] vale"
+            "vale"
         );
     }
 
@@ -2310,6 +2363,139 @@ mod tests {
             stamp_message("user", "hola", "no-fecha", "Europe/Madrid"),
             "hola"
         );
+    }
+
+    // ─── temporal-awareness: legacy assistant stamp stripping ───────────────
+
+    #[test]
+    fn strip_legacy_timestamp_removes_only_the_exact_marker() {
+        // An inherited, exact `[YYYY-MM-DD HH:MM] ` prefix is removed.
+        assert_eq!(strip_legacy_timestamp("[2026-07-15 22:15] vale"), "vale");
+        // Plain content is untouched.
+        assert_eq!(strip_legacy_timestamp("vale"), "vale");
+        // Brackets that are not the exact marker (with its trailing space) stay.
+        assert_eq!(
+            strip_legacy_timestamp("[otra cosa] vale"),
+            "[otra cosa] vale"
+        );
+        // A marker without the separating space is not the marker.
+        assert_eq!(
+            strip_legacy_timestamp("[2026-07-15 22:15]vale"),
+            "[2026-07-15 22:15]vale"
+        );
+        // Empty content stays empty.
+        assert_eq!(strip_legacy_timestamp(""), "");
+        // A lone opening bracket is too short to be the marker.
+        assert_eq!(strip_legacy_timestamp("["), "[");
+        // A truncated marker is not the marker.
+        assert_eq!(strip_legacy_timestamp("[2026"), "[2026");
+        // A multibyte prefix that does not start with the marker is kept whole.
+        assert_eq!(
+            strip_legacy_timestamp("á[2026-07-15 22:15] vale"),
+            "á[2026-07-15 22:15] vale"
+        );
+        // The marker is stripped from multibyte content at a byte boundary,
+        // leaving the multibyte remainder intact.
+        assert_eq!(
+            strip_legacy_timestamp("[2026-07-15 22:15] café ☕"),
+            "café ☕"
+        );
+    }
+
+    /// Request level — an `assistant` history row whose stored content begins
+    /// with a legacy `[YYYY-MM-DD HH:MM] ` marker travels to the LLM without
+    /// it, a clean `assistant` travels intact, and a `user` history row does
+    /// carry its inline stamp. The stored rows are never modified.
+    #[tokio::test]
+    async fn history_assistant_stamp_is_stripped_and_user_keeps_its_stamp(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        // A previous turn: a stamped assistant reply (the persisted legacy
+        // marker), a clean assistant reply, and a user message.
+        crate::db::repos::messages::MessagesRepo::create(
+            &pool,
+            "user",
+            "turno previo del usuario",
+            None,
+            None,
+            None,
+            None,
+            100_000,
+            None,
+        )
+        .await?;
+        crate::db::repos::messages::MessagesRepo::create(
+            &pool,
+            "assistant",
+            "[2026-07-15 22:15] vale",
+            None,
+            None,
+            None,
+            None,
+            100_000,
+            None,
+        )
+        .await?;
+        crate::db::repos::messages::MessagesRepo::create(
+            &pool,
+            "assistant",
+            "respuesta limpia",
+            None,
+            None,
+            None,
+            None,
+            100_000,
+            None,
+        )
+        .await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+
+        // The user history row is prefixed with its inline stamp.
+        let user_history = messages
+            .iter()
+            .find(|m| m.role == "user" && m.content.ends_with("turno previo del usuario"))
+            .expect("user history row present");
+        assert!(
+            user_history.content.starts_with('['),
+            "a user history row must carry its stamp, got: {:?}",
+            user_history.content
+        );
+        assert!(
+            user_history.content.ends_with("] turno previo del usuario"),
+            "the stamp must precede the content, got: {:?}",
+            user_history.content
+        );
+
+        // The stamped assistant row travels stripped of the legacy marker.
+        let legacy_assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant" && m.content.contains("vale"))
+            .expect("legacy assistant row present");
+        assert_eq!(legacy_assistant.content, "vale");
+
+        // A clean assistant row travels intact.
+        let clean_assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant" && m.content.contains("respuesta limpia"))
+            .expect("clean assistant row present");
+        assert_eq!(clean_assistant.content, "respuesta limpia");
+
+        Ok(())
     }
 
     /// Request level — with no persistent state, the assembled request carries
@@ -2403,7 +2589,7 @@ mod tests {
         assert!(prompt_pos < episodic_pos, "prompt before episodic");
         assert!(episodic_pos < location_pos, "episodic before location");
         assert!(location_pos < temporal_pos, "location before temporal");
-        assert!(content.ends_with(TEMPORAL_SECTION_INSTRUCTION));
+        assert!(content.ends_with(TEMPORAL_SECTION_MARKER_INSTRUCTION));
         assert!(
             content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
             "the absent persistent section leaves no text between prompt and episodic"
