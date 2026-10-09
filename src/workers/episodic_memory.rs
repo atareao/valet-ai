@@ -14,6 +14,7 @@ use crate::db::repos::stats::StatsRepo;
 use crate::embeddings::EmbeddingProvider;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider, ResponseFormat};
 use crate::models::message::estimate_markdown_tokens_heuristic;
+use crate::models::stats::CallKind;
 use crate::persistent_memory::{
     evaluate_compressed, payload_token_count, resolve_updated_at, validate_payload,
     CompressionOutcome,
@@ -618,6 +619,7 @@ impl EpisodicMemoryWorker {
                 let duration_ms = start.elapsed().as_millis() as i64;
                 let _ = StatsRepo::record_request(
                     db,
+                    CallKind::Archivist,
                     &Uuid::new_v4().to_string(),
                     &config.model,
                     None,
@@ -654,6 +656,7 @@ impl EpisodicMemoryWorker {
         let total_tokens = prompt_tokens + completion_tokens;
         let _ = StatsRepo::record_request(
             db,
+            CallKind::Archivist,
             &Uuid::new_v4().to_string(),
             &config.model,
             None,
@@ -824,6 +827,7 @@ impl EpisodicMemoryWorker {
                 let duration_ms = start.elapsed().as_millis() as i64;
                 let _ = StatsRepo::record_request(
                     db,
+                    CallKind::Consolidator,
                     &Uuid::new_v4().to_string(),
                     &config.semantic_model,
                     None,
@@ -860,6 +864,7 @@ impl EpisodicMemoryWorker {
         let total_tokens = prompt_tokens + completion_tokens;
         let _ = StatsRepo::record_request(
             db,
+            CallKind::Consolidator,
             &Uuid::new_v4().to_string(),
             &config.semantic_model,
             None,

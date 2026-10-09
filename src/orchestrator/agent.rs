@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use crate::models::stats::LastApiCall;
+use crate::models::stats::{CallKind, LastApiCall};
 use tokio::sync::mpsc;
 
 use crate::db::repos::stats::StatsRepo;
@@ -15,7 +15,8 @@ use crate::orchestrator::context_builder::ContextBuilder;
 use crate::orchestrator::context_classifier::ContextClassifier;
 use crate::orchestrator::guardrails::{ApprovalOutcome, GuardrailResult, Guardrails};
 use crate::orchestrator::skill_router::{
-    compose_skill_fragments, exposed_tools, read_router_config, read_skill_fragments, SkillRouter,
+    compose_skill_fragments, exposed_tools, read_router_config, read_skill_fragments, RouterUsage,
+    SkillRouter,
 };
 use crate::tools::geo_utils::reverse_geocode;
 use crate::tools::r#trait::ToolResult;
@@ -407,6 +408,33 @@ impl Orchestrator {
         self
     }
 
+    /// Persist the classifier call as a `kind='router'` row. Never touches
+    /// `last_api_call`: the chat call stays the last one (D7).
+    async fn persist_router_usage(&self, profile_id: &str, usage: &RouterUsage) {
+        if let Err(error) = StatsRepo::record_request(
+            &self.db,
+            CallKind::Router,
+            &Uuid::new_v4().to_string(),
+            &usage.model,
+            Some(profile_id),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.input_tokens + usage.output_tokens,
+            0,
+            0,
+            usage.cost,
+            Some(usage.duration_ms),
+            &usage.status,
+            None,
+            None,
+            None,
+        )
+        .await
+        {
+            tracing::warn!(%error, model = %usage.model, status = %usage.status, "failed to persist router usage");
+        }
+    }
+
     /// Save the last API call data in memory so it can be served by the stats endpoint.
     #[allow(clippy::too_many_arguments)]
     fn save_last_call(
@@ -452,6 +480,7 @@ impl Orchestrator {
     async fn record_stream_failure(&self, profile_id: &str, duration_ms: i64, error_message: &str) {
         let _ = StatsRepo::record_request(
             &self.db,
+            CallKind::Chat,
             &Uuid::new_v4().to_string(),
             &self.config.model,
             Some(profile_id),
@@ -608,6 +637,14 @@ impl Orchestrator {
         let selection = router
             .select(user_message, &history_for_router, &enabled_tools)
             .await;
+
+        // D4/D5: when the router actually called the classifier (source `Router`
+        // or `Error`) it exposes telemetry; persist it as a `kind='router'` row.
+        // Sources without a classifier call (`Disabled`, `NoRoutableSkills`)
+        // expose no usage and write nothing. `last_api_call` stays untouched.
+        if let Some(usage) = &selection.usage {
+            self.persist_router_usage(profile_id, usage).await;
+        }
 
         // `core ∪ skills_seleccionadas ∩ habilitadas`. Computed once, outside
         // the loop: every iteration advertises the same set and never decides
@@ -885,6 +922,7 @@ impl Orchestrator {
 
                         let _ = StatsRepo::record_request(
                             &self.db,
+                            CallKind::Chat,
                             &Uuid::new_v4().to_string(),
                             &self.config.model,
                             Some(profile_id),
@@ -1418,6 +1456,7 @@ Respond in JSON format:
                 let total_tokens = prompt_tokens + completion_tokens;
                 let _ = StatsRepo::record_request(
                     db,
+                    CallKind::Chat,
                     &Uuid::new_v4().to_string(),
                     "default",
                     Some(profile_id),
@@ -1523,6 +1562,7 @@ Respond in JSON format:
                 let duration_ms = start.elapsed().as_millis() as i64;
                 let _ = StatsRepo::record_request(
                     db,
+                    CallKind::Chat,
                     &Uuid::new_v4().to_string(),
                     "default",
                     Some(profile_id),
@@ -5584,17 +5624,14 @@ mod tests {
         );
     }
 
-    /// R8: a routed turn writes no classifier row to the stats table — only the
-    /// chat model appears.
+    /// D4/R8: a routed turn with a successful classifier persists exactly one
+    /// `kind='router'` row with `status='success'` and the router's model. The
+    /// obsolete characterisation this replaces asserted the opposite (that the
+    /// classifier never wrote a row); the new contract inverts it.
     #[tokio::test]
-    async fn routed_turn_writes_no_classifier_stats_row() {
+    async fn routed_turn_persists_router_success_row() {
         let pool = setup_test_db().await;
         crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
-            .await
-            .unwrap();
-
-        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
-            .fetch_one(&pool)
             .await
             .unwrap();
 
@@ -5602,25 +5639,109 @@ mod tests {
         let decisions = counting_decisions(calls.clone(), &[("agenda", 0.9)], false);
         let _request = run_routed_turn(pool.clone(), Some(decisions)).await;
 
-        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            after - before,
-            1,
-            "only the single chat call must record a stats row"
-        );
-
-        let classifier_rows: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM llm_requests WHERE model = 'typesafe/jev-1.13'",
+        let router_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests \
+             WHERE kind = 'router' AND status = 'success' AND model = 'typesafe/jev-1.13'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
         assert_eq!(
-            classifier_rows, 0,
-            "the classifier must not write to the stats table"
+            router_rows, 1,
+            "a routed turn must persist exactly one success row for the classifier"
+        );
+    }
+
+    /// D5: a classifier failure is persisted as a `kind='router'` row with
+    /// `status='error'`.
+    #[tokio::test]
+    async fn routed_turn_persists_router_error_row() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[], true);
+        let _request = run_routed_turn(pool.clone(), Some(decisions)).await;
+
+        let error_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests WHERE kind = 'router' AND status = 'error'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            error_rows, 1,
+            "a classifier failure must be persisted as a router error row"
+        );
+    }
+
+    /// D4: with the router off there was no classifier call, so no `kind='router'`
+    /// row is persisted.
+    #[tokio::test]
+    async fn disabled_router_persists_no_router_row() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "false")
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[("agenda", 1.0)], false);
+        let _request = run_routed_turn(pool.clone(), Some(decisions)).await;
+
+        let router_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests WHERE kind = 'router'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            router_rows, 0,
+            "a disabled router never calls the classifier, so it must persist no router row"
+        );
+    }
+
+    /// D7: persisting the classifier call writes a `kind='router'` row and,
+    /// crucially, never touches `last_api_call` — the chat call stays the last
+    /// one. The orchestrator starts with an empty `last_api_call`; after
+    /// persisting a router usage it must still be empty.
+    #[tokio::test]
+    async fn persist_router_usage_inserts_router_row_and_keeps_last_api_call() {
+        let pool = setup_test_db().await;
+        let orchestrator =
+            build_routed_orchestrator(pool.clone(), Arc::new(Mutex::new(None)), None).await;
+
+        assert!(
+            orchestrator.last_api_call.read().unwrap().is_none(),
+            "the orchestrator must start with no last API call"
+        );
+
+        let usage = RouterUsage {
+            model: "typesafe/jev-1.13".to_string(),
+            input_tokens: 120,
+            output_tokens: 30,
+            cost: 0.0012,
+            duration_ms: 42,
+            status: "success".to_string(),
+        };
+        orchestrator.persist_router_usage("profile-1", &usage).await;
+
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests \
+             WHERE kind = 'router' AND model = 'typesafe/jev-1.13' AND status = 'success' \
+               AND cost > 0 AND duration_ms > 0",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows, 1,
+            "persisting the router usage must insert one success router row with cost and latency"
+        );
+
+        assert!(
+            orchestrator.last_api_call.read().unwrap().is_none(),
+            "persisting the router call must not touch last_api_call"
         );
     }
 }

@@ -9,6 +9,7 @@ import type {
   Profile,
   StatsSummary,
   ModelStats,
+  BackgroundStats,
   DayStats,
   ToolStats,
   TableSize,
@@ -146,6 +147,8 @@ export const api = {
 
   getStatsSummary: () => request<StatsSummary>("/stats/llm/summary"),
   getStatsByModel: () => request<ModelStats[]>("/stats/llm/by-model"),
+  getStatsBackground: () =>
+    request<BackgroundStats[]>("/stats/llm/background"),
   getStatsByDay: (days = 30) => request<DayStats[]>(`/stats/llm/by-day?days=${days}`),
   getStatsTools: () => request<ToolStats[]>("/stats/llm/tools"),
   getDbSizes: () => request<TableSize[]>("/stats/db/sizes"),

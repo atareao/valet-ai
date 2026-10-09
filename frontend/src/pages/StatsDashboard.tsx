@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { Row, Col, Spin, Alert, Empty, Tabs } from "antd";
 import { api } from "../api/client";
-import type { StatsSummary, ModelStats, DayStats, ToolStats, TableSize, MemoryStats, LastApiCall } from "../types";
+import type { StatsSummary, ModelStats, DayStats, ToolStats, TableSize, MemoryStats, LastApiCall, BackgroundStats } from "../types";
 import { SummaryCard } from "../components/stats/SummaryCard";
 import { MemoryCard } from "../components/stats/MemoryCard";
+import { BackgroundCard } from "../components/stats/BackgroundCard";
 import { ModelChart } from "../components/stats/ModelChart";
 import { DailyChart } from "../components/stats/DailyChart";
 import { ToolsChart } from "../components/stats/ToolsChart";
@@ -18,6 +19,7 @@ export const StatsDashboard: React.FC = () => {
   const [tools, setTools] = useState<ToolStats[]>([]);
   const [dbSizes, setDbSizes] = useState<TableSize[]>([]);
   const [memory, setMemory] = useState<MemoryStats | null>(null);
+  const [background, setBackground] = useState<BackgroundStats[]>([]);
   const [lastCall, setLastCall] = useState<LastApiCall | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedDays, setSelectedDays] = useState(30);
@@ -31,16 +33,18 @@ export const StatsDashboard: React.FC = () => {
       api.getStatsTools(),
       api.getDbSizes(),
       api.getMemoryStats(),
+      api.getStatsBackground(),
       api.getLastApiCall(),
     ])
       .then(
-        ([summaryData, modelData, dayData, toolsData, dbData, memoryData, lastCallData]) => {
+        ([summaryData, modelData, dayData, toolsData, dbData, memoryData, backgroundData, lastCallData]) => {
           setSummary(summaryData);
           setByModel(modelData);
           setByDay(dayData);
           setTools(toolsData);
           setDbSizes(dbData);
           setMemory(memoryData);
+          setBackground(backgroundData);
           setLastCall(lastCallData);
         },
       )
@@ -117,6 +121,7 @@ export const StatsDashboard: React.FC = () => {
     byDay.length > 0 ||
     tools.length > 0 ||
     dbSizes.length > 0 ||
+    background.some((entry) => entry.calls > 0) ||
     (memory && memory.total_memories > 0);
 
   if (!loading && !hasData) {
@@ -160,6 +165,9 @@ export const StatsDashboard: React.FC = () => {
                     onRangeChange={handleRangeChange}
                     selectedDays={selectedDays}
                   />
+                </Col>
+                <Col span={24}>
+                  <BackgroundCard data={background} loading={loading} />
                 </Col>
               </Row>
             ),

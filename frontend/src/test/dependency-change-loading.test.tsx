@@ -80,6 +80,7 @@ vi.mock("../api/client", () => ({
     getStatsTools: vi.fn(),
     getDbSizes: vi.fn(),
     getMemoryStats: vi.fn(),
+    getStatsBackground: vi.fn(),
     getLastApiCall: vi.fn(),
     getRetention: vi.fn(),
     setRetention: vi.fn(),
@@ -172,6 +173,7 @@ describe("recarga al cambiar dependencias", () => {
     vi.mocked(api.getStatsTools).mockResolvedValue(mockTools);
     vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
     vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getStatsBackground).mockResolvedValue([]);
     vi.mocked(api.getLastApiCall).mockResolvedValue(null);
 
     renderDashboard(<StatsDashboard />);

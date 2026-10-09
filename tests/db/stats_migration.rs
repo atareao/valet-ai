@@ -256,3 +256,72 @@ async fn test_stats_repo_inserts_llm_request() {
     assert!(csv.contains(&id), "CSV should contain the inserted row id");
     assert!(csv.contains("gpt-4o"), "CSV should contain the model name");
 }
+
+/// Asserts the `kind` column added by `20261009000001_llm_requests_kind.sql`:
+/// `TEXT`, `NOT NULL`, default `'chat'`, with a `CHECK` over the five origins.
+#[tokio::test]
+async fn test_llm_requests_kind_column_schema() {
+    let pool = setup().await;
+
+    #[derive(sqlx::FromRow)]
+    struct ColumnInfo {
+        name: String,
+        r#type: String,
+        notnull: bool,
+        dflt_value: Option<String>,
+    }
+
+    let columns: Vec<ColumnInfo> =
+        sqlx::query_as("SELECT * FROM pragma_table_info('llm_requests')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+    let kind = columns
+        .iter()
+        .find(|c| c.name == "kind")
+        .expect("llm_requests must have a 'kind' column");
+
+    assert_eq!(kind.r#type, "TEXT", "'kind' must be TEXT");
+    assert!(kind.notnull, "'kind' must be NOT NULL");
+    assert_eq!(
+        kind.dflt_value.as_deref(),
+        Some("'chat'"),
+        "'kind' default must be 'chat'"
+    );
+
+    // The CHECK constraint is stored verbatim in the table SQL.
+    let table_sql: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='llm_requests'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    for value in ["chat", "router", "archivist", "consolidator", "collapse"] {
+        assert!(
+            table_sql.contains(value),
+            "CHECK constraint must allow '{value}'; table SQL was: {table_sql}"
+        );
+    }
+
+    // Round-trip: an allowed origin is accepted…
+    sqlx::query("INSERT INTO llm_requests (id, model, kind) VALUES (?1, 'gpt-4o', 'router')")
+        .bind(uuid::Uuid::new_v4().to_string())
+        .execute(&pool)
+        .await
+        .expect("kind='router' must be accepted by the CHECK constraint");
+
+    // …and a bogus origin is rejected.
+    let invalid = sqlx::query(
+        "INSERT INTO llm_requests (id, model, kind) VALUES (?1, 'gpt-4o', 'invalid_kind')",
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .execute(&pool)
+    .await;
+
+    assert!(
+        invalid.is_err(),
+        "kind='invalid_kind' must be rejected by the CHECK constraint"
+    );
+}
