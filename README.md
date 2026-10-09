@@ -167,7 +167,7 @@ No PocketID container, volume or DNS name is created by this repo.
 
 The database lives in the named volume `valet_data` mounted at `/app/data` (see `DATABASE_URL`). On a fresh volume Podman seeds its ownership from the image. The app runs with whatever user the image defines — the monolithic `Dockerfile` runs as `root`, matching the development image.
 
-**Known gap: the container does not survive a host reboot.** `docker-compose.yml` omits `restart:`, so if the machine goes down the service stays down until it is started by hand — on 2026-10-01 that meant about 9.5 hours of downtime. Enabling auto-start is deliberately deferred; the verified fix is in `AGENTS.md` § V.
+**Known gap: the container does not survive a host reboot.** `docker-compose.yml` omits `restart:`, so if the machine goes down the service stays down until it is started by hand.
 
 ## 🏛️ Architecture
 

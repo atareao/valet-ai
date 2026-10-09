@@ -2,7 +2,7 @@
 
 **Proyecto:** Valet (Rust/Axum + React + SQLite)
 **Fecha:** 2026-10-06
-**Estado:** ✅ Cerrado (documento archivado). El Bloque D queda como decisión aplazada, no como trabajo ejecutado; ver `AGENTS.md` §V.
+**Estado:** ✅ Cerrado (documento archivado).
 
 ## Cerrado — 2026-10-06: OIDC (PocketID) + producción tras Traefik
 
@@ -51,17 +51,6 @@
 
 No aplica: la verificación pasó. Se mantiene como referencia: si algo fallara, **no reabrir** el change archivado; abrir un **delta nuevo** con SDD + TDD.
 
-## Bloque D — Infra aplazada: autoarranque tras reinicio del host [CERRADO — no se ejecuta por ahora]
-
-**Problema:** `docker-compose.yml` no declara `restart:`; el contenedor quedó con `RestartPolicy: no`; `podman-restart.service` está `disabled`. Ya ocurrió una caída de ~9 h 30 min tras un reinicio del host.
-
-**Arreglo viable, ya comprobado** (requiere orden explícita del usuario):
-1. Añadir `restart: unless-stopped` al servicio en `docker-compose.yml`.
-2. `systemctl --user enable --now podman-restart.service`.
-   - La unidad filtra por `should-start-on-boot=true`, que cubre `always` y `unless-stopped`.
-
-**Restricción:** `docker-compose.prod.yml` **no se toca** sin orden explícita.
-
 ## Bloque E — Pulido menor (opcional, aplazado)
 
 - [x] Descartado de momento: valorar los mensajes de error del flujo de auth (claridad para el operador).
@@ -73,7 +62,6 @@ No aplica: la verificación pasó. Se mantiene como referencia: si algo fallara,
 - [x] Tarea 6.4 verificada en el VPS y documentada.
 - [x] PR #131 mergeado a `development`.
 - [x] Change `prod-traefik` archivado y mergeado.
-- [x] Decisión tomada (Bloque D): no se aplica por ahora.
 - [x] `openspec list` sin changes activos.
 
 ---
@@ -83,4 +71,3 @@ No aplica: la verificación pasó. Se mantiene como referencia: si algo fallara,
 - El change `oidc-auth` está archivado: cualquier arreglo posterior es un **delta nuevo**, no una reapertura.
 - La imagen de producción es **un único servicio** (`valet`, `Dockerfile` monolítico); no hay nginx intermedio ni puertos publicados: el único ingress es el Traefik existente por la red externa.
 - Este plan vive en `plans/PLAN-002-COMPLETED.md` y está trackeado en git (renombrado el 2026-10-09).
-- Verificado el 2026-10-09: el autoarranque **no** está aplicado en este host (`RestartPolicy: no`, `podman-restart.service` disabled). El Bloque D se cierra como decisión, no como trabajo ejecutado.
