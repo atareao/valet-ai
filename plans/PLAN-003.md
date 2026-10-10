@@ -4,7 +4,7 @@
 **Estado:** 🟢 Activo
 **Tema 1:** ✅ Cerrado (PR #155, merge `d109f8d`)
 **Tema 2:** ✅ Cerrado (PR #159, merge `bd2892e`)
-**Tema 3:** 🟢 En curso — skill de running (Strava)
+**Tema 3:** ✅ Cerrado (PR #163, merge `46b3e0d`)
 **Fecha:** 2026-10-09
 **Metodología:** OpenSpec (SDD) + TDD (Red-Green-Refactor)
 
@@ -176,7 +176,7 @@ Que el modelo sepa **qué hora es realmente** en cada turno y **cuándo** se dij
 
 ## Tema 3 — Skill de running (Strava)
 
-**Estado:** 🟢 En curso (aprobado el 2026-10-10). Change OpenSpec: `strava-running`.
+**Estado:** ✅ Completado en el PR #163 (merge `46b3e0d`). Implementado y archivado en OpenSpec como `2026-10-10-strava-running`.
 
 ### Objetivo
 
@@ -235,20 +235,20 @@ Frontend:
 
 ### Tareas técnicas (TDD — checklist)
 
-- [ ] F0 — Change OpenSpec `strava-running` (proposal + specs + tasks) → **STOP** y aprobación.
-- [ ] F1 — RED: contrato de las tools (args/errores) con el cliente HTTP mockeado; OAuth (state, callback, persistencia); **rotación** del refresh token con dos refrescos concurrentes; catálogo de 7 skills.
-- [ ] F2 — GREEN: servicio Strava + tools + rutas + catálogo + migración.
-- [ ] F3 — REFACTOR: `cargo fmt`, `clippy -D warnings`, canarios actualizados.
-- [ ] F4 — VERIFY: `cargo test`, review, archivo del change; UI con `vitest`.
-- [ ] F5 — Cierre: actualizar este plan y `AGENTS.md §V` si procede.
+- [x] F0 — Change OpenSpec `strava-running` (proposal + specs + tasks) → **STOP** y aprobación.
+- [x] F1 — RED: contrato de las tools (args/errores) con el cliente HTTP mockeado; OAuth (state, callback, persistencia); **rotación** del refresh token con dos refrescos concurrentes; catálogo de 7 skills.
+- [x] F2 — GREEN: servicio Strava + tools + rutas + catálogo + migración.
+- [x] F3 — REFACTOR: `cargo fmt`, `clippy -D warnings`, canarios actualizados.
+- [x] F4 — VERIFY: `cargo test`, review, archivo del change; UI con `vitest`.
+- [x] F5 — Cierre: actualizar este plan y `AGENTS.md §V` si procede.
 
 ### DoD
 
-- [ ] `cargo test`, `npx vitest run`, `tsc --noEmit`, lint y `openspec validate --all --strict` en verde.
-- [ ] Las 4 tools se anuncian con la skill activa y no sin ella.
-- [ ] El refresco persiste el refresh token nuevo y sobrevive a dos refrescos concurrentes (test).
-- [ ] Un `429` de Strava devuelve un mensaje claro, no un error crudo.
-- [ ] `openspec archive strava-running`.
+- [x] `cargo test`, `npx vitest run`, `tsc --noEmit`, lint y `openspec validate --all --strict` en verde.
+- [x] Las 4 tools se anuncian con la skill activa y no sin ella.
+- [x] El refresco persiste el refresh token nuevo y sobrevive a dos refrescos concurrentes (test).
+- [x] Un `429` de Strava devuelve un mensaje claro, no un error crudo.
+- [x] `openspec archive strava-running`.
 
 ### Riesgos / notas
 
@@ -260,6 +260,13 @@ Frontend:
 
 ---
 
+### Notas de cierre
+
+- **Requisito previo del usuario**: registrar la app en `strava.com/settings/api` (Single Player Mode, un atleta), fijar el *Authorization Callback Domain* y pegar `client_id`/`client_secret` en la sección «Integraciones» (o definirlos por `STRAVA_CLIENT_ID`/`STRAVA_CLIENT_SECRET`).
+- **Los tokens OAuth no viajan al navegador**: `/api/settings` omite `strava_access_token` y `strava_refresh_token` y los ignora en escritura (`SENSITIVE_KEYS`).
+- **Refuerzos tras la revisión**: el `refresh_token` rotado se confirma en su propia transacción (un fallo posterior no lo pierde); la caché purga lo caducado; `before`/`after` aceptan ISO 8601 o epoch.
+- **Segunda iteración**: el widget de gráficas (ritmo/volumen semanal).
+
 ## Temas pendientes
 
-Temas 1 y 2 cerrados (PR #155 y #159). **Tema 3 en curso** (skill de running / Strava). Después, los temas que definas.
+Temas 1, 2 y 3 cerrados (PR #155, #159 y #163). Pendiente de definir el **Tema 4** y siguientes.
