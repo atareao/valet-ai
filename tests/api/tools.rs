@@ -23,7 +23,7 @@ async fn test_list_tools() {
 async fn test_list_tools_includes_all_registered_tools() {
     // Given the tools table is reconciled from the production registry
     // When GET /api/tools is called
-    // Then the response lists the 20 real tool names and no legacy ones
+    // Then the response lists the 24 real tool names and no legacy ones
     let app = TestApp::new().await;
 
     let resp = app.get("/api/tools").await;
@@ -57,6 +57,10 @@ async fn test_list_tools_includes_all_registered_tools() {
         "timeline_get_events",
         "timeline_add_event",
         "timeline_delete_event",
+        "email_list_unread",
+        "email_get_body",
+        "email_mark_read",
+        "email_send",
     ] {
         assert!(names.contains(&expected), "Expected tool {expected}");
     }
@@ -170,9 +174,9 @@ async fn test_list_tools_includes_the_timeline_tools() {
 
 #[tokio::test]
 async fn test_list_skills_returns_the_catalog_and_core_tools() {
-    // Given the closed eight-domain skills catalog lives in code
+    // Given the closed nine-domain skills catalog lives in code
     // When GET /api/skills is called
-    // Then it returns the eight skills (with their prompt fragment key and
+    // Then it returns the nine skills (with their prompt fragment key and
     //      tools) and the non-routable core set, sourced from the catalog.
     let app = TestApp::new().await;
 
@@ -183,7 +187,7 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
     let skills = body["skills"]
         .as_array()
         .expect("GET /api/skills must return a `skills` array");
-    assert_eq!(skills.len(), 8, "the closed catalog has eight skills");
+    assert_eq!(skills.len(), 9, "the closed catalog has nine skills");
 
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
     for expected in [

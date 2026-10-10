@@ -1,6 +1,7 @@
 pub mod calendar;
 pub mod current_location;
 pub mod current_time;
+pub mod email;
 pub mod geo;
 pub mod geo_utils;
 pub mod google_places;
