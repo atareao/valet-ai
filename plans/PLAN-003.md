@@ -4,6 +4,7 @@
 **Estado:** 🟢 Activo
 **Tema 1:** ✅ Cerrado (PR #155, merge `d109f8d`)
 **Tema 2:** ✅ Cerrado (PR #159, merge `bd2892e`)
+**Tema 3:** 🟢 En curso — skill de running (Strava)
 **Fecha:** 2026-10-09
 **Metodología:** OpenSpec (SDD) + TDD (Red-Green-Refactor)
 
@@ -173,6 +174,92 @@ Que el modelo sepa **qué hora es realmente** en cada turno y **cuándo** se dij
 
 ---
 
+## Tema 3 — Skill de running (Strava)
+
+**Estado:** 🟢 En curso (aprobado el 2026-10-10). Change OpenSpec: `strava-running`.
+
+### Objetivo
+
+Que el asistente pueda **consultar y analizar tus sesiones de running** desde la API de Strava v3: qué has corrido, cómo fue una sesión concreta, el detalle fino (ritmo/FC/cadencia) y los totales. **Solo lectura**: no se crea ni se modifica nada en Strava.
+
+### Decisiones de diseño (BLOQUEADAS — aprobadas el 2026-10-10)
+
+1. **Solo lectura.** Scopes `read,activity:read_all`. Fuera `activity:write`.
+2. **OAuth dentro de la app.** Rutas propias `GET /api/strava/authorize` (redirige a `https://www.strava.com/oauth/authorize` con `state`) y `GET /api/strava/callback` (canjea el `code`), más `GET /api/strava/status` y `POST /api/strava/disconnect`. Los tokens viven en `settings`, como el resto de claves.
+3. **Rotación del refresh token.** Cada respuesta de `POST /oauth/token` trae un refresh token **nuevo** que invalida el anterior: hay que **persistir el nuevo en cada refresco** y hacerlo en **un único punto de refresco por atleta** (lock), o dos turnos simultáneos se pisan y la integración queda muerta hasta reconectar.
+4. **Consulta en vivo con caché corta.** Nada de sincronizar a una tabla local. Se respeta `X-RateLimit-*` y se degrada con un mensaje claro ante `429`.
+5. **Skill nueva `running`** (7ª del catálogo) con 4 tools. Los canarios de integridad del catálogo (6 skills / 13 tools) suben a **7 / 17** en el mismo cambio. El fragmento `SKILL_RUNNING_PROMPT` se siembra por migración.
+6. **Sin widget** de gráficas en esta entrega (segunda iteración).
+7. **No se guardan actividades**; solo los tokens.
+
+### Tools de la skill (4)
+
+| Tool | Endpoint | Para qué |
+|:--|:--|:--|
+| `strava_recent_activities` | `GET /athlete/activities` (`before`, `after`, `page`, `per_page`) | listado con filtro de deporte (Run/TrailRun/VirtualRun) |
+| `strava_activity_detail` | `GET /activities/{id}` | una sesión con vueltas y splits |
+| `strava_activity_streams` | `GET /activities/{id}/streams` (`keys`, `key_by_type`) | series de ritmo/FC/cadencia/altitud |
+| `strava_athlete_stats` | `GET /athlete` + `GET /athletes/{id}/stats` | perfil y totales (año/recientes) |
+
+Prerrequisito del usuario: registrar la app en `strava.com/settings/api` y fijar el *Authorization Callback Domain* al dominio público de la instancia (`localhost`/`127.0.0.1` valen en local). Las apps nuevas nacen en **Single Player Mode** (capacidad de 1 atleta).
+
+### Claves en `settings` (con respaldo ENV)
+
+`strava_client_id` (`STRAVA_CLIENT_ID`), `strava_client_secret` (`STRAVA_CLIENT_SECRET`), `strava_refresh_token`, y el estado derivado `strava_access_token` / `strava_expires_at` / `strava_athlete_id` / `strava_scope`.
+
+### Mapa arquitectónico
+
+Backend:
+
+- `src/tools/strava.rs` (o `src/tools/strava/`) — cliente HTTP + las 4 tools.
+- `src/services/strava.rs` (o `src/integrations/strava.rs`) — OAuth, refresco con rotación y lock, lectura de credenciales.
+- `src/routes/strava.rs` + `src/handlers/strava.rs` — authorize / callback / status / disconnect.
+- `src/orchestrator/skills.rs` — variante `Skill::Running` + `SkillSpec` + actualización de canarios.
+- `src/lib.rs` — registrar las 4 tools en `build_tool_registry` (13 → 17).
+- `src/config.rs` — `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` (respaldo).
+- `src/db/repos/settings.rs` — seed de las claves nuevas.
+- Migración nueva — seed de claves + `SKILL_RUNNING_PROMPT`.
+
+Frontend:
+
+- `SettingsDialog.tsx` — sección «Integraciones» (o sub-pestaña en Skills) con el botón oficial **«Connect with Strava»**, estado y desconectar.
+- `api/client.ts`, `types/index.ts`, hook `useStrava` — estado de la conexión.
+- La 7ª skill aparece sola en `SkillsTab` (el catálogo lo sirve la API).
+
+### Specs afectadas
+
+- **Nueva** `openspec/specs/strava/spec.md` (OAuth, tokens, rotación, tools, errores, límites).
+- `orchestrator/skill-router` (MODIFIED: catálogo de 7 skills + fragmento + umbral).
+- `tools` (MODIFIED: las 4 tools nuevas).
+- `frontend` (MODIFIED: UI de conexión), si procede.
+
+### Tareas técnicas (TDD — checklist)
+
+- [ ] F0 — Change OpenSpec `strava-running` (proposal + specs + tasks) → **STOP** y aprobación.
+- [ ] F1 — RED: contrato de las tools (args/errores) con el cliente HTTP mockeado; OAuth (state, callback, persistencia); **rotación** del refresh token con dos refrescos concurrentes; catálogo de 7 skills.
+- [ ] F2 — GREEN: servicio Strava + tools + rutas + catálogo + migración.
+- [ ] F3 — REFACTOR: `cargo fmt`, `clippy -D warnings`, canarios actualizados.
+- [ ] F4 — VERIFY: `cargo test`, review, archivo del change; UI con `vitest`.
+- [ ] F5 — Cierre: actualizar este plan y `AGENTS.md §V` si procede.
+
+### DoD
+
+- [ ] `cargo test`, `npx vitest run`, `tsc --noEmit`, lint y `openspec validate --all --strict` en verde.
+- [ ] Las 4 tools se anuncian con la skill activa y no sin ella.
+- [ ] El refresco persiste el refresh token nuevo y sobrevive a dos refrescos concurrentes (test).
+- [ ] Un `429` de Strava devuelve un mensaje claro, no un error crudo.
+- [ ] `openspec archive strava-running`.
+
+### Riesgos / notas
+
+- **La rotación del refresh token** es la fuente #1 de fallos; el test de concurrencia es obligatorio.
+- El `redirect_uri` debe colgar del dominio registrado; en producción, la URL pública tras Traefik.
+- Rate limits: 100 req/15 min y 1000/día (no-upload) → caché y nada de polling.
+- Los tokens quedan **en claro** en `settings`, como el resto de claves; el refresh token es el más sensible (lectura completa de la cuenta).
+- El botón de conexión debe ser el oficial «Connect with Strava» (condiciones de la API).
+
+---
+
 ## Temas pendientes
 
-Temas 1 y 2 cerrados (PR #155 y #159). Pendiente de definir el **Tema 3** y siguientes.
+Temas 1 y 2 cerrados (PR #155 y #159). **Tema 3 en curso** (skill de running / Strava). Después, los temas que definas.
