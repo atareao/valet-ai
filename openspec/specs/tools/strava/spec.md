@@ -1,4 +1,10 @@
-## ADDED Requirements
+# tools/strava Specification
+
+## Purpose
+
+Integración con la API de Strava v3 en **solo lectura** para un único atleta: el flujo OAuth2 (autorización, canje y revocación), el almacenamiento de los tokens en `settings` con el refresco **rotando el refresh token sin perderlo**, y las cuatro herramientas de consulta de la actividad (salidas recientes, detalle con vueltas y splits, series temporales y estadísticas del atleta).
+
+## Requirements
 
 ### Requirement: La conexión con Strava SHALL establecerse por OAuth2 en nombre del atleta y en solo lectura
 
@@ -79,7 +85,10 @@ hora** de margen.
 `GET /api/strava/status` SHALL devolver el estado de la conexión —si está conectada, el atleta y el
 `scope`— y SHALL **nunca** incluir los tokens en la respuesta. `POST /api/strava/disconnect` SHALL
 revocar el acceso en Strava (`POST https://www.strava.com/oauth/revoke`, autenticado con Basic
-`client_id:client_secret`) y SHALL borrar los tokens de `settings`.
+`client_id:client_secret`) y SHALL borrar los tokens de `settings`. La API de ajustes
+(`GET`/`PUT /api/settings`) SHALL NOT exponer las claves `strava_access_token` ni
+`strava_refresh_token`, ni SHALL aceptar su escritura: son material sensible gestionado por el flujo
+OAuth y SHALL permanecer fuera del alcance de un cliente.
 
 **Given** la aplicación Valet con la integración de Strava
 **When** se consulta `GET /api/strava/status`
@@ -91,6 +100,12 @@ revocar el acceso en Strava (`POST https://www.strava.com/oauth/revoke`, autenti
 - **When** se consulta `GET /api/strava/status`
 - **Then** la respuesta indica que está conectada y el atleta
 - **And** no contiene el access token ni el refresh token
+
+#### Scenario: Los tokens no viajan en los ajustes
+- **Given** una integración conectada cuyos tokens viven en `settings`
+- **When** se consulta `GET /api/settings` o se envía `PUT /api/settings` con las claves de tokens
+- **Then** la respuesta de `GET /api/settings` no contiene `strava_access_token` ni `strava_refresh_token`
+- **And** `PUT /api/settings` ignora esas claves y no modifica sus valores
 
 #### Scenario: Desconectar revoca y limpia
 - **Given** una integración conectada

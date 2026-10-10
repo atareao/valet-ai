@@ -149,3 +149,7 @@ path = "tests/api/persistent_memory.rs"
 [[test]]
 name = "auth"
 path = "tests/api/auth.rs"
+
+[[test]]
+name = "settings"
+path = "tests/api/settings.rs"

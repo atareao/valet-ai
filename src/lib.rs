@@ -49,7 +49,7 @@ pub struct AppState {
     pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
 }
 
-/// Build the production tool registry with all 13 built-in tools.
+/// Build the production tool registry with all 17 built-in tools.
 ///
 /// Exposed so the evaluation harness (`valet-route-eval`) can resolve the same
 /// advertised tool set the running application uses.
@@ -85,6 +85,18 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
         crate::tools::unified_search::UnifiedSearchTool::new(pool.clone()),
     ));
     registry.register(Box::new(crate::tools::widget::RenderWidgetTool::new()));
+    registry.register(Box::new(
+        crate::tools::strava::StravaRecentActivitiesTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(
+        crate::tools::strava::StravaActivityDetailTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(
+        crate::tools::strava::StravaActivityStreamsTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(crate::tools::strava::StravaAthleteStatsTool::new(
+        pool.clone(),
+    )));
     registry
 }
 
@@ -472,6 +484,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::stream::routes())
         // Authentication (OIDC login / callback / me / logout)
         .merge(routes::auth::routes())
+        // Strava integration (OAuth authorize/callback, status, disconnect)
+        .merge(routes::strava::routes())
         // Session middleware: enforces a valid session on `/api/*` when auth
         // is enabled; a no-op when it is disabled (dev mode).
         .layer(axum::middleware::from_fn_with_state(

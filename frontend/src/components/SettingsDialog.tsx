@@ -18,6 +18,7 @@ import { useProfileContext } from "../contexts/ProfileContext";
 import { PersistentMemoryPanel } from "./PersistentMemoryPanel";
 import { RouterControl } from "./RouterControl";
 import { SkillsTab } from "./SkillsTab";
+import { StravaIntegration } from "./StravaIntegration";
 
 const { TextArea } = Input;
 
@@ -743,6 +744,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             key: "router",
             label: "Enrutador de skills",
             children: <RouterControl key={routerOpenKey} />,
+          },
+          {
+            key: "integrations",
+            label: "Integraciones",
+            children: settingsLoading ? (
+              renderSettingsLoading()
+            ) : (
+              <StravaIntegration
+                key={routerOpenKey}
+                settings={settings}
+                updateSettings={updateSettings}
+              />
+            ),
           },
         ]}
       />

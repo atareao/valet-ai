@@ -18,6 +18,7 @@ import type {
   UpdateProfile,
   PersistentMemoryState,
   SkillsResponse,
+  StravaStatus,
 } from "../types";
 import type { AuthUser } from "../contexts/AuthContext";
 
@@ -182,4 +183,13 @@ export const api = {
     request<void>("/persistent-memory", { method: "DELETE" }),
 
   getSkills: () => request<SkillsResponse>("/skills"),
+
+  // --- Strava -------------------------------------------------------------
+  // El flujo OAuth se inicia **navegando** a `/api/strava/authorize` (el
+  // backend responde 302 hacia Strava), no con `fetch`. Los tokens jamás
+  // cruzan el cliente: `status` solo devuelve el atleta y el scope.
+  getStravaStatus: () => request<StravaStatus>("/strava/status"),
+
+  disconnectStrava: () =>
+    request<{ connected: boolean }>("/strava/disconnect", { method: "POST" }),
 };
