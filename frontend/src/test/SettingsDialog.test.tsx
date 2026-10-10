@@ -53,6 +53,8 @@ const defaultSettings: Record<string, string> = {
   openweather_api_key: "",
   google_places_api_key: "",
   brave_search_api_key: "",
+  apimail_base_url: "",
+  apimail_api_key: "",
   MEMORY_HALF_LIFE_DAYS: "30",
   SIMILARITY_THRESHOLD: "0.4",
   RAG_BUDGET_TOKENS: "400",
@@ -541,15 +543,103 @@ describe("SettingsDialog", () => {
     });
   });
 
-  it("renders API Keys tab with three password fields", async () => {
+  it("renders API Keys tab with the four password fields and the apimail URL base field", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByText("API Keys"));
 
-    expect(screen.getByText("OpenWeatherMap API Key")).toBeInTheDocument();
-    expect(screen.getByText("Google Places API Key")).toBeInTheDocument();
-    expect(screen.getByText("Brave Search API Key")).toBeInTheDocument();
+    // Cada clave se comprueba por su propio campo (etiqueta), nunca por un
+    // conteo global de `input[type="password"]`: así el test no se rompe si
+    // otra pestaña añade un `Input.Password`.
+    expect(screen.getByLabelText("OpenWeatherMap API Key")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    expect(screen.getByLabelText("Google Places API Key")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    expect(screen.getByLabelText("Brave Search API Key")).toHaveAttribute(
+      "type",
+      "password",
+    );
+    expect(screen.getByLabelText("apimail · API Key")).toHaveAttribute(
+      "type",
+      "password",
+    );
+
+    // El campo de URL base es de texto y, sin `apimail_base_url` en settings,
+    // muestra el placeholder con el endpoint por defecto.
+    const baseUrl = screen.getByLabelText("apimail · URL base");
+    expect(baseUrl).toHaveAttribute("type", "text");
+    expect(baseUrl).toHaveAttribute(
+      "placeholder",
+      "https://apimail.territoriolinux.es",
+    );
+  });
+
+  it("muestra la URL base vigente y guarda la configuración de apimail", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    mockSettings = {
+      ...mockSettings,
+      apimail_base_url: "https://apimail.test.local",
+      apimail_api_key: "clave-previa",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("API Keys"));
+
+    // El campo de URL base muestra el valor vigente.
+    expect(screen.getByLabelText("apimail · URL base")).toHaveValue(
+      "https://apimail.test.local",
+    );
+
+    // La API key se edita y se envía al guardar.
+    const apiKey = screen.getByLabelText("apimail · API Key");
+    await user.clear(apiKey);
+    await user.type(apiKey, "nueva-clave-apimail");
+
+    const form = apiKey.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ apimail_api_key: "nueva-clave-apimail" }),
+      );
+    });
+  });
+
+  it("conserva la URL base de apimail al guardar desde otra pestaña", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    mockSettings = {
+      ...mockSettings,
+      apimail_base_url: "https://apimail.test.local",
+      apimail_api_key: "clave",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // Se abre «API Keys» para que los campos de apimail queden registrados en
+    // el formulario compartido.
+    await user.click(screen.getByText("API Keys"));
+
+    // Se cambia a otra pestaña y se guarda desde ella: la URL base vigente no
+    // debe perderse en el payload.
+    await user.click(screen.getByText("Interfaz"));
+
+    const fontSize = screen.getByLabelText("Tamaño de fuente");
+    const form = fontSize.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          apimail_base_url: "https://apimail.test.local",
+        }),
+      );
+    });
   });
 
   it("calls resetToDefaults when clicking restore button", async () => {

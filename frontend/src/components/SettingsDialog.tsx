@@ -100,6 +100,8 @@ export interface SettingsFormValues {
   openweather_api_key: string;
   google_places_api_key: string;
   brave_search_api_key: string;
+  apimail_base_url: string;
+  apimail_api_key: string;
   MEMORY_HALF_LIFE_DAYS: number;
   SIMILARITY_THRESHOLD: number;
   RAG_BUDGET_TOKENS: number;
@@ -173,6 +175,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         openweather_api_key: settings.openweather_api_key || "",
         google_places_api_key: settings.google_places_api_key || "",
         brave_search_api_key: settings.brave_search_api_key || "",
+        apimail_base_url: settings.apimail_base_url || "",
+        apimail_api_key: settings.apimail_api_key || "",
         MEMORY_HALF_LIFE_DAYS: parseFloat(
           settings.MEMORY_HALF_LIFE_DAYS || "90",
         ),
@@ -279,6 +283,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         openweather_api_key: values.openweather_api_key ?? settings?.openweather_api_key ?? "",
         google_places_api_key: values.google_places_api_key ?? settings?.google_places_api_key ?? "",
         brave_search_api_key: values.brave_search_api_key ?? settings?.brave_search_api_key ?? "",
+        apimail_base_url: values.apimail_base_url ?? settings?.apimail_base_url ?? "",
+        apimail_api_key: values.apimail_api_key ?? settings?.apimail_api_key ?? "",
         MEMORY_HALF_LIFE_DAYS: (
           values.MEMORY_HALF_LIFE_DAYS ??
           parseFloat(settings?.MEMORY_HALF_LIFE_DAYS || "90")
@@ -375,6 +381,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         openweather_api_key: "",
         google_places_api_key: "",
         brave_search_api_key: "",
+        apimail_base_url: "",
+        apimail_api_key: "",
       });
       messageApi.success("Valores por defecto restaurados");
     } catch {
@@ -630,6 +638,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <Form.Item
                   label="Brave Search API Key"
                   name="brave_search_api_key"
+                >
+                  <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
+                </Form.Item>
+                <Form.Item
+                  label="apimail · URL base"
+                  name="apimail_base_url"
+                >
+                  <Input placeholder="https://apimail.territoriolinux.es" />
+                </Form.Item>
+                <Form.Item
+                  label="apimail · API Key"
+                  name="apimail_api_key"
                 >
                   <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
                 </Form.Item>
