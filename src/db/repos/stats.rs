@@ -168,6 +168,7 @@ impl StatsRepo {
             "reminders",
             "settings",
             "tasks",
+            "timeline_events",
             "tools",
         ];
 
@@ -321,7 +322,7 @@ impl StatsRepo {
     }
 
     /// Aggregate LLM usage per non-chat origin (router, archivist,
-    /// consolidator, collapse).
+    /// consolidator, collapse, timeline).
     ///
     /// Returns one [`BackgroundStats`] per background origin, with the counters
     /// at zero for origins that have no rows.
@@ -349,19 +350,25 @@ impl StatsRepo {
 
         // One entry per background origin, in the canonical order, so origins
         // with no rows still appear at zero.
-        let mut stats: Vec<BackgroundStats> = ["router", "archivist", "consolidator", "collapse"]
-            .iter()
-            .map(|kind| BackgroundStats {
-                kind: (*kind).to_string(),
-                calls: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
-                total_cost: 0.0,
-                total_errors: 0,
-                avg_duration_ms: None,
-            })
-            .collect();
+        let mut stats: Vec<BackgroundStats> = [
+            "router",
+            "archivist",
+            "consolidator",
+            "collapse",
+            "timeline",
+        ]
+        .iter()
+        .map(|kind| BackgroundStats {
+            kind: (*kind).to_string(),
+            calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            total_cost: 0.0,
+            total_errors: 0,
+            avg_duration_ms: None,
+        })
+        .collect();
 
         for row in &rows {
             let kind: String = row.get(0);
@@ -1118,6 +1125,33 @@ mod tests {
         assert_eq!(profiles_size.rows, 1);
     }
 
+    /// `db_sizes` must include the `timeline_events` table with its row count.
+    #[tokio::test]
+    async fn test_db_sizes_includes_timeline_events() {
+        let pool = setup().await;
+
+        sqlx::query(
+            "INSERT INTO timeline_events (id, timestamp, category, fact) VALUES ('t1', '2026-10-10T09:00:00', 'sport', 'Ran 5km')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO timeline_events (id, timestamp, category, fact) VALUES ('t2', '2026-10-10T10:00:00', 'lifestyle', 'Bought groceries')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let sizes = StatsRepo::db_sizes(&pool).await.unwrap();
+
+        let timeline_size = sizes
+            .iter()
+            .find(|t| t.table == "timeline_events")
+            .expect("db_sizes must include the 'timeline_events' table");
+        assert_eq!(timeline_size.rows, 2);
+    }
+
     // ── 7. export_csv ──────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -1536,7 +1570,7 @@ mod tests {
         .await;
 
         let bg = StatsRepo::background_summary(&pool).await.unwrap();
-        assert_eq!(bg.len(), 4, "one entry per non-chat origin");
+        assert_eq!(bg.len(), 5, "one entry per non-chat origin");
 
         let find = |kind: &str| {
             bg.iter()
@@ -1571,7 +1605,7 @@ mod tests {
         assert!(consolidator.avg_duration_ms.is_none());
     }
 
-    /// With only chat rows the four background origins are still returned, all
+    /// With only chat rows the five background origins are still returned, all
     /// at zero.
     #[tokio::test]
     async fn test_background_summary_no_background_calls() {
@@ -1594,9 +1628,15 @@ mod tests {
         .await;
 
         let bg = StatsRepo::background_summary(&pool).await.unwrap();
-        assert_eq!(bg.len(), 4, "one entry per non-chat origin");
+        assert_eq!(bg.len(), 5, "one entry per non-chat origin");
 
-        for kind in ["router", "archivist", "consolidator", "collapse"] {
+        for kind in [
+            "router",
+            "archivist",
+            "consolidator",
+            "collapse",
+            "timeline",
+        ] {
             let entry = bg
                 .iter()
                 .find(|b| b.kind == kind)
@@ -1607,6 +1647,53 @@ mod tests {
             assert_eq!(entry.total_errors, 0);
             assert!(entry.avg_duration_ms.is_none());
         }
+    }
+
+    /// `background_summary` must aggregate the `timeline` origin like any other
+    /// background origin, counting calls and errors.
+    #[tokio::test]
+    async fn test_background_summary_counts_timeline_origin() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "timeline-1",
+            "timeline",
+            "gpt-4o-mini",
+            10,
+            5,
+            15,
+            0.001,
+            Some(50),
+            "success",
+            None,
+            None,
+        )
+        .await;
+        insert_request_with_kind(
+            &pool,
+            "timeline-2",
+            "timeline",
+            "gpt-4o-mini",
+            20,
+            10,
+            30,
+            0.002,
+            Some(60),
+            "error",
+            None,
+            None,
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool).await.unwrap();
+
+        let timeline = bg
+            .iter()
+            .find(|b| b.kind == "timeline")
+            .expect("background_summary must include the 'timeline' origin");
+        assert_eq!(timeline.calls, 2);
+        assert_eq!(timeline.total_errors, 1);
     }
 
     // ── 15. export_csv incluye kind ────────────────────────────────────────

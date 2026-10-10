@@ -298,7 +298,14 @@ async fn test_llm_requests_kind_column_schema() {
     .await
     .unwrap();
 
-    for value in ["chat", "router", "archivist", "consolidator", "collapse"] {
+    for value in [
+        "chat",
+        "router",
+        "archivist",
+        "consolidator",
+        "collapse",
+        "timeline",
+    ] {
         assert!(
             table_sql.contains(value),
             "CHECK constraint must allow '{value}'; table SQL was: {table_sql}"
