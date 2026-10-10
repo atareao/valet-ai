@@ -6,6 +6,7 @@
 **Tema 2:** ✅ Cerrado (PR #159, merge `bd2892e`)
 **Tema 3:** ✅ Cerrado (PR #163, merge `46b3e0d`)
 **Tema 4:** ✅ Cerrado (PRs #166/#167)
+**Tema 5:** ⏸️ Aparcado (change `llm-worker-resilience` escrito y validado, sin aprobar)
 **Fecha:** 2026-10-09
 **Metodología:** OpenSpec (SDD) + TDD (Red-Green-Refactor)
 
@@ -333,6 +334,41 @@ cuerpo de la respuesta y mostraba «Conectada como \<atleta\>» mientras todo fa
 - **Hueco conocido que NO cubre este cambio**: el callback OAuth sigue desviando **cualquier** fallo a `/?strava=error`, sin motivo. Si el canje falla por una app inactiva, el usuario ve `?strava=error` y nada más. Candidato a un cambio futuro (requiere spec: el requisito OAuth y su mensaje en la UI).
 - **No-objetivos congelados**: `approval_prompt=force` al reconectar, persistir el último error en `settings`, widget de gráficas y MCP oficial de Strava.
 
+## Tema 5 — Resiliencia de los workers ante respuestas LLM inservibles
+
+**Estado:** ⏸️ Aparcado por decisión del usuario el 2026-10-10, con el diagnóstico ya cerrado. El change `llm-worker-resilience` está escrito y validado en `openspec/changes/llm-worker-resilience/`, **sin aprobar y sin una línea de código escrita**. La mitigación por configuración (modelos de los roles mecánicos) **sí** quedó aplicada en producción.
+
+### Objetivo
+
+Que un fallo del consolidador o del colapso (contenido vacío, truncado o JSON inválido) nunca sea silencioso ni detenga la memoria: diagnóstico visible, presupuesto escalado en el reintento y degradación de la pasada.
+
+### Contexto
+
+Incidente del 2026-10-10 en producción: `SEMANTIC_MODEL` apuntaba a un modelo que razona (`deepseek/deepseek-v4.1-flash`), que ignora el `reasoning: {"enabled": false}` y consume el `max_tokens` entero; el consolidador devolvió contenido vacío en los dos intentos, la pasada se abortó y el lote quedó reintentándose cada 30 minutos, con el fallo registrado como `success`. Mitigado por configuración (bake-off de 60 tiradas: `qwen/qwen3-235b-a22b-2507` con 0 pérdidas frente a las 20 de `mistral-small` y los 3 JSON inválidos de `mistral-nemo`); este cambio arregla lo que no depende del modelo.
+
+### Tareas técnicas
+
+- [ ] F0 — Aprobar el change (`openspec/changes/llm-worker-resilience/`).
+- [ ] F1 — `ChatResponse` expone `finish_reason`; un cuerpo 200 sin `choices` es un error (RED → GREEN).
+- [ ] F2 — Reintento con presupuesto doblado al truncar; degradación de la pasada (ficha sí, estado anterior); fila `status='error'` en `llm_requests`.
+- [ ] F3 — Guarda del colapso: nunca escribir un resumen vacío o degenerado.
+- [ ] F4 — Plantillas `.env.j2` / `.env.example` sin modelos razonadores en los roles mecánicos.
+- [ ] F5 — Cierre: `openspec archive llm-worker-resilience` y actualizar este plan.
+
+### DoD
+
+- [ ] Un truncamiento por presupuesto provoca un reintento con el doble de presupuesto (test).
+- [ ] Un fallo del consolidador escribe ficha + marca, conserva el estado anterior y registra una fila de error (test).
+- [ ] Un colapso vacío no se escribe y se registra como error (test).
+- [ ] `cargo test`, `clippy`, `fmt` y `openspec validate --strict` en verde.
+- [ ] `openspec archive llm-worker-resilience`.
+
+### Riesgos / notas
+
+- **Qué queda sin arreglar mientras siga aparcado**: si un modelo futuro devuelve contenido vacío o truncado, la memoria volverá a pararse en silencio (el fallo se registra como `success`), y un colapso vacío se seguirá escribiendo como resumen. El diagnóstico, en cambio, ya no hay que rehacerlo: está en `proposal.md` y `design.md` del change.
+- El bake-off es n=15 por modelo sobre un único estado de partida: la elección de modelo es una decisión de configuración revisable, no un contrato de código.
+- Deriva detectada y NO arreglada aquí: el `docker-compose.prod.yml` del repo no reenvía las variables de modelo y fija `container_name: valet_valet`, mientras el despliegue real de producción corre como `valet` y sí las recibe.
+
 ## Temas pendientes
 
-Temas 1, 2, 3 y 4 cerrados (PRs #155, #159, #163 y #166/#167). Pendiente de definir el **Tema 5** y siguientes.
+Temas 1, 2, 3 y 4 cerrados (PRs #155, #159, #163 y #166/#167). Tema 5 aparcado (change `llm-worker-resilience`, sin aprobar).
