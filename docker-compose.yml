@@ -16,6 +16,7 @@ services:
       - COLLAPSE_MODEL=${COLLAPSE_MODEL:-mistralai/mistral-small-24b-instruct-2501}
       - MEMORY_MODEL=${MEMORY_MODEL:-mistralai/mistral-small-24b-instruct-2501}
       - SEMANTIC_MODEL=${SEMANTIC_MODEL:-mistralai/mistral-small-24b-instruct-2501}
+      - TIMELINE_MODEL=${TIMELINE_MODEL:-mistralai/mistral-small-24b-instruct-2501}
       - MEMORY_BATCH_TOKENS=${MEMORY_BATCH_TOKENS:-2000}
       - MEMORY_INACTIVITY_MINUTES=${MEMORY_INACTIVITY_MINUTES:-30}
       - MEMORY_OVERLAP=${MEMORY_OVERLAP:-2}
