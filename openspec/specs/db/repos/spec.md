@@ -168,12 +168,22 @@ El repositorio SHALL exponer `StatsRepo::db_sizes(pool)` devolviendo el número 
 **Given** una base de datos con tablas pobladas
 **When** se llama a `StatsRepo::db_sizes(pool)`
 **Then** devuelve `Vec<TableSize>` con nombre de tabla y row count para:
-events, llm_requests, memory, message_embeddings, messages, notes, profiles, reminders, settings, tasks, tools
+events, llm_requests, memory, message_embeddings, messages, notes, profiles, reminders, settings, tasks, timeline_events, tools
 
 #### Scenario: Tablas con datos
 **Given** 10 messages, 2 profiles, 5 memories
 **When** `StatsRepo::db_sizes(pool)`
 **Then** messages=10, profiles=2, memories=5, resto=0
+
+#### Scenario: El timeline sale en el recuento de tablas
+**Given** una base de datos con 7 hechos en `timeline_events`
+**When** `StatsRepo::db_sizes(pool)`
+**Then** el resultado incluye una entrada con `table = "timeline_events"` y `rows = 7`
+
+#### Scenario: Una tabla del timeline vacía también aparece
+**Given** una base de datos recién migrada, con `timeline_events` sin filas
+**When** `StatsRepo::db_sizes(pool)`
+**Then** el resultado incluye `table = "timeline_events"` con `rows = 0`
 
 ### Requirement: StatsRepo SHALL provide CSV export with all OpenRouter fields
 
@@ -286,8 +296,8 @@ Los cuatro mandos de la memoria episódica SHALL vivir en la tabla `settings` (c
 
 Los parámetros de generación de cada rol SHALL vivir en la tabla `settings` (como los prompts y los
 mandos de memoria) y SHALL leerse **en cada llamada** al LLM, de modo que cambiarlos surta efecto
-sin reiniciar. Habrá cuatro roles —chat, colapso, fichas y consolidador/compresión— y tres claves
-por rol: temperatura, razonamiento y tokens máximos. Una migración SHALL sembrarlas con sus
+sin reiniciar. Habrá cinco roles —chat, colapso, fichas, consolidador/compresión y timeline— y tres
+claves por rol: temperatura, razonamiento y tokens máximos. Una migración SHALL sembrarlas con sus
 valores iniciales, respetando cualquier valor ya existente (solo rellena si la clave falta o está
 vacía).
 
@@ -305,6 +315,9 @@ vacía).
 | `GENERATION_SEMANTIC_TEMPERATURE` | consolidador/compresión | temperatura | `0.1` |
 | `GENERATION_SEMANTIC_REASONING` | consolidador/compresión | razonamiento | `off` |
 | `GENERATION_SEMANTIC_MAX_TOKENS` | consolidador/compresión | tokens máximos | `2048` |
+| `GENERATION_TIMELINE_TEMPERATURE` | timeline | temperatura | `0.2` |
+| `GENERATION_TIMELINE_REASONING` | timeline | razonamiento | `off` |
+| `GENERATION_TIMELINE_MAX_TOKENS` | timeline | tokens máximos | `2048` |
 
 El campo de razonamiento SHALL codificarse como cadena: vacío ⇒ no se envía el campo `reasoning`
 (el modelo decide); `off` ⇒ `ReasoningSpec::Off`; cualquier otro valor ⇒
@@ -314,7 +327,7 @@ warning.
 
 **Given** una base de datos migrada  
 **When** se leen las claves de generación  
-**Then** `settings` SHALL contener las doce claves con sus valores iniciales  
+**Then** `settings` SHALL contener las quince claves con sus valores iniciales  
 **And** cualquier valor no vacío ya existente SHALL respetarse
 
 **Given** un rol y sus claves en `settings`  
@@ -329,10 +342,22 @@ warning.
 **And** existe `GENERATION_SEMANTIC_MAX_TOKENS = 2048`  
 **And** existen las nueve claves restantes con sus valores iniciales
 
+#### Scenario: Las tres claves del timeline se siembran con los defaults de su rol
+**Given** una base de datos migrada  
+**When** se consultan las claves del rol timeline  
+**Then** `GENERATION_TIMELINE_TEMPERATURE` es `0.2`  
+**And** `GENERATION_TIMELINE_REASONING` es `off`  
+**And** `GENERATION_TIMELINE_MAX_TOKENS` es `2048`
+
 #### Scenario: Un valor existente se respeta
 **Given** `GENERATION_CHAT_TEMPERATURE = 0.9` antes de migrar  
 **When** se ejecuta la migración  
 **Then** `GENERATION_CHAT_TEMPERATURE` sigue siendo `0.9`
+
+#### Scenario: Un valor de timeline personalizado no se sobrescribe
+**Given** `GENERATION_TIMELINE_REASONING = low` antes de migrar  
+**When** se ejecuta la migración de defaults del timeline  
+**Then** `GENERATION_TIMELINE_REASONING` sigue siendo `low`
 
 #### Scenario: Un cambio en caliente surte efecto sin reiniciar
 **Given** `GENERATION_COLLAPSE_TEMPERATURE = 0.2`  
@@ -496,7 +521,7 @@ sobre la tabla `tasks`. `list` SHALL aceptar filtros opcionales (`status`, `prio
 
 ### Requirement: StatsRepo SHALL provide background LLM usage aggregation
 
-El repositorio SHALL exponer `StatsRepo::background_summary(pool)` devolviendo un `BackgroundStats` por cada origen no-chat (`router`, `archivist`, `consolidator`, `collapse`). Los orígenes sin filas SHALL aparecer con los contadores a cero.
+El repositorio SHALL exponer `StatsRepo::background_summary(pool)` devolviendo un `BackgroundStats` por cada origen no-chat (`router`, `archivist`, `consolidator`, `collapse`, `timeline`). Los orígenes sin filas SHALL aparecer con los contadores a cero.
 
 **Given** una tabla `llm_requests` con filas de varios orígenes
 **When** se llama a `StatsRepo::background_summary(pool)`
@@ -510,12 +535,18 @@ El repositorio SHALL exponer `StatsRepo::background_summary(pool)` devolviendo u
 **And** las filas de chat no se cuentan.
 
 #### Scenario: Una entrada por origen
-**Given** 2 llamadas `router`, 1 `collapse` y ninguna `archivist` ni `consolidator`
+**Given** 2 llamadas `router`, 1 `collapse` y ninguna `archivist`, `consolidator` ni `timeline`
 **When** `StatsRepo::background_summary(pool)`
-**Then** devuelve 4 entradas (una por origen)
-**And** `router` tiene `calls=2`, `collapse` tiene `calls=1`, y `archivist` y `consolidator` tienen `calls=0`
+**Then** devuelve 5 entradas (una por origen)
+**And** `router` tiene `calls=2`, `collapse` tiene `calls=1`, y `archivist`, `consolidator` y `timeline` tienen `calls=0`
+
+#### Scenario: El extractor de timeline se cuenta como un origen más
+**Given** 3 llamadas con `kind='timeline'`, una de ellas con `status='error'`
+**When** `StatsRepo::background_summary(pool)`
+**Then** la entrada de `timeline` tiene `calls=3` y `total_errors=1`
+**And** sus tokens y su coste se suman igual que en los demás orígenes
 
 #### Scenario: Sin procesos de fondo
 **Given** una tabla `llm_requests` solo con filas de chat
 **When** `StatsRepo::background_summary(pool)`
-**Then** las cuatro entradas tienen `calls=0` y `total_cost=0.0`
+**Then** las cinco entradas tienen `calls=0` y `total_cost=0.0`
