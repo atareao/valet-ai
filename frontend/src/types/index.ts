@@ -285,3 +285,15 @@ export interface StravaStatus {
   athlete_name: string | null;
   scope: string | null;
 }
+
+/**
+ * Resultado del sondeo activo de la conexión (`GET /api/strava/check`). La
+ * ruta responde **siempre** `200`: `ok` indica si Strava atendió la petición y
+ * `error` lleva un motivo accionable cuando no. Nunca incluye tokens.
+ */
+export interface StravaCheckResult {
+  ok: boolean;
+  athlete_id: string | null;
+  athlete_name: string | null;
+  error: string | null;
+}

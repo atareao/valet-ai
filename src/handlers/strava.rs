@@ -46,6 +46,21 @@ pub struct StatusResponse {
 #[derive(Debug, Serialize)]
 pub struct DisconnectResponse {
     pub connected: bool,
+    /// Aviso para el usuario si la revocación remota no se pudo confirmar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// Cuerpo de `GET /api/strava/check`. Nunca incluye tokens.
+///
+/// El sondeo responde **siempre** `200`: el resultado viaja en `ok`, y el motivo
+/// del fallo (si lo hay) en `error`.
+#[derive(Debug, Serialize)]
+pub struct StravaCheckResponse {
+    pub ok: bool,
+    pub athlete_id: Option<String>,
+    pub athlete_name: Option<String>,
+    pub error: Option<String>,
 }
 
 /// `GET /api/strava/authorize` — redirige a la autorización de Strava.
@@ -111,12 +126,36 @@ pub async fn status(State(state): State<AppState>) -> Result<Json<StatusResponse
 pub async fn disconnect(
     State(state): State<AppState>,
 ) -> Result<Json<DisconnectResponse>, AppError> {
-    Strava::new()
+    let outcome = Strava::new()
         .disconnect(&state.db)
         .await
         .map_err(map_strava_error)?;
 
-    Ok(Json(DisconnectResponse { connected: false }))
+    Ok(Json(DisconnectResponse {
+        connected: false,
+        warning: outcome.warning,
+    }))
+}
+
+/// `GET /api/strava/check` — sondeo activo del estado real de la conexión.
+///
+/// Responde siempre `200`; el diagnóstico viaja en el cuerpo y nunca se exponen
+/// tokens.
+pub async fn check(State(state): State<AppState>) -> Json<StravaCheckResponse> {
+    match Strava::new().check(&state.db).await {
+        Ok(check) => Json(StravaCheckResponse {
+            ok: true,
+            athlete_id: check.athlete_id,
+            athlete_name: check.athlete_name,
+            error: None,
+        }),
+        Err(error) => Json(StravaCheckResponse {
+            ok: false,
+            athlete_id: None,
+            athlete_name: None,
+            error: Some(error.to_string()),
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +210,8 @@ fn map_strava_error(error: StravaError) -> AppError {
         StravaError::MissingCredentials
         | StravaError::Http(_)
         | StravaError::RateLimited
-        | StravaError::Internal(_) => AppError::Internal(error.to_string()),
+        | StravaError::Internal(_)
+        | StravaError::ApplicationInactive => AppError::Internal(error.to_string()),
         StravaError::NotConnected | StravaError::InvalidState | StravaError::Denied => {
             AppError::BadRequest(error.to_string())
         }

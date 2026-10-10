@@ -153,3 +153,7 @@ path = "tests/api/auth.rs"
 [[test]]
 name = "settings"
 path = "tests/api/settings.rs"
+
+[[test]]
+name = "strava-api"
+path = "tests/api/strava.rs"
