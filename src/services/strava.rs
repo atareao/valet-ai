@@ -36,12 +36,32 @@ const FORM_CONTENT_TYPE: &str = "application/x-www-form-urlencoded";
 /// Ventana (en segundos) durante la cual una lectura repetida se sirve de caché.
 const CACHE_TTL_SECS: u64 = 60;
 
+/// Aviso, ya redactado para el usuario, de que la revocación remota no se pudo
+/// confirmar y el acceso debe retirarse a mano desde la web de Strava.
+const REVOKE_WARNING: &str = "no se pudo confirmar la revocación del acceso en Strava; retíralo también desde https://www.strava.com/settings/apps";
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StravaStatus {
     pub connected: bool,
     pub athlete_id: Option<String>,
     pub athlete_name: Option<String>,
     pub scope: Option<String>,
+}
+
+/// Resultado de una comprobación activa contra la API de Strava.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StravaCheck {
+    pub athlete_id: Option<String>,
+    pub athlete_name: Option<String>,
+}
+
+/// Resultado de la desconexión.
+///
+/// `warning` recoge el aviso, ya redactado para el usuario, de que la revocación
+/// en Strava no pudo completarse y el acceso debe retirarse a mano.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisconnectOutcome {
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +76,8 @@ pub enum StravaError {
     Denied,
     #[error("error de Strava: {0}")]
     Http(String),
+    #[error("tu aplicación de Strava está inactiva: la cuenta que la posee necesita una suscripción activa; reactívala en https://www.strava.com/settings/api")]
+    ApplicationInactive,
     #[error("Strava ha alcanzado el límite de peticiones; inténtalo dentro de unos minutos")]
     RateLimited,
     #[error("error interno: {0}")]
@@ -193,10 +215,9 @@ impl Strava {
             .map_err(|error| StravaError::Http(error.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(StravaError::Http(format!(
-                "el canje del código falló con estado {}",
-                response.status().as_u16()
-            )));
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(strava_error_from_body(status, "al pedir los tokens", &body));
         }
 
         let body: TokenResponse = response
@@ -266,10 +287,13 @@ impl Strava {
             .map_err(|error| StravaError::Http(error.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(StravaError::Http(format!(
-                "el refresco del token falló con estado {}",
-                response.status().as_u16()
-            )));
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            return Err(strava_error_from_body(
+                status,
+                "al refrescar el token",
+                &body,
+            ));
         }
 
         let body: TokenResponse = response
@@ -293,10 +317,28 @@ impl Strava {
         path: &str,
         query: &[(&str, String)],
     ) -> Result<serde_json::Value, StravaError> {
+        self.api_get_inner(pool, path, query, true).await
+    }
+
+    /// Núcleo de [`Strava::api_get`] con la caché parametrizable.
+    ///
+    /// `use_cache` es lo único que separa el camino normal del sondeo [`Strava::check`]:
+    /// con `false` cada llamada sale a la red por obligación. El resto del flujo
+    /// (`Bearer`, `401` con refresco y reintento, `429` y el parseo del cuerpo de
+    /// error) es idéntico en ambos casos y vive aquí una sola vez.
+    async fn api_get_inner(
+        &self,
+        pool: &SqlitePool,
+        path: &str,
+        query: &[(&str, String)],
+        use_cache: bool,
+    ) -> Result<serde_json::Value, StravaError> {
         let url = build_url(&self.api_base, path, query);
         let cache_key = format!("{}:{url}", self.cache_ns);
-        if let Some(cached) = cache_get(&cache_key) {
-            return Ok(cached);
+        if use_cache {
+            if let Some(cached) = cache_get(&cache_key) {
+                return Ok(cached);
+            }
         }
 
         let token = self.access_token(pool).await?;
@@ -305,7 +347,9 @@ impl Strava {
         match response.status().as_u16() {
             200..=299 => {
                 let body = parse_json(response).await?;
-                cache_put(&cache_key, &body);
+                if use_cache {
+                    cache_put(&cache_key, &body);
+                }
                 Ok(body)
             }
             401 => {
@@ -320,21 +364,25 @@ impl Strava {
 
                 let token = self.refresh(pool).await?;
                 let response = self.send_get(&url, &token).await?;
-                if !response.status().is_success() {
-                    return Err(StravaError::Http(format!(
-                        "Strava respondió {} tras refrescar el token",
-                        response.status().as_u16()
-                    )));
+                let status = response.status().as_u16();
+                if !(200..=299).contains(&status) {
+                    let body = response.text().await.unwrap_or_default();
+                    let context = format!("al consultar {path}");
+                    return Err(strava_error_from_body(status, &context, &body));
                 }
 
                 let body = parse_json(response).await?;
-                cache_put(&cache_key, &body);
+                if use_cache {
+                    cache_put(&cache_key, &body);
+                }
                 Ok(body)
             }
             429 => Err(StravaError::RateLimited),
-            status => Err(StravaError::Http(format!(
-                "Strava respondió {status} al consultar {path}"
-            ))),
+            status => {
+                let body = response.text().await.unwrap_or_default();
+                let context = format!("al consultar {path}");
+                Err(strava_error_from_body(status, &context, &body))
+            }
         }
     }
 
@@ -348,11 +396,30 @@ impl Strava {
             .map_err(|error| StravaError::Http(error.to_string()))
     }
 
+    /// Comprueba en vivo la conexión consultando el perfil del atleta.
+    ///
+    /// A diferencia de las herramientas de consulta, **no** pasa por la caché
+    /// corta: cada llamada sale a la red para diagnosticar el estado real.
+    pub async fn check(&self, pool: &SqlitePool) -> Result<StravaCheck, StravaError> {
+        let body = self.api_get_inner(pool, "/athlete", &[], false).await?;
+        let athlete: Athlete =
+            serde_json::from_value(body).map_err(|error| StravaError::Http(error.to_string()))?;
+
+        let name = athlete_name(&athlete);
+        Ok(StravaCheck {
+            athlete_id: Some(athlete.id.to_string()),
+            athlete_name: if name.is_empty() { None } else { Some(name) },
+        })
+    }
+
     /// Revoca el acceso en Strava (best-effort) y borra los tokens locales.
     ///
     /// No falla si no había conexión: en ese caso solo limpia (si acaso) las claves.
-    pub async fn disconnect(&self, pool: &SqlitePool) -> Result<(), StravaError> {
+    /// Si la revocación remota falla, la desconexión local se completa igual y el
+    /// fallo se devuelve como `warning` para que el usuario retire el acceso a mano.
+    pub async fn disconnect(&self, pool: &SqlitePool) -> Result<DisconnectOutcome, StravaError> {
         let refresh_token = self.setting(pool, "strava_refresh_token").await?;
+        let mut warning = None;
 
         if !refresh_token.is_empty() {
             if let Ok((client_id, client_secret)) = self.credentials(pool).await {
@@ -360,8 +427,9 @@ impl Strava {
                 let credentials = base64::engine::general_purpose::STANDARD
                     .encode(format!("{client_id}:{client_secret}"));
 
-                // Best-effort: si la revocación falla, igualmente limpiamos.
-                let _ = self
+                // Best-effort: si la revocación no se confirma, igualmente limpiamos
+                // y dejamos constancia con un aviso.
+                let revoke = self
                     .http
                     .post(format!("{}/oauth/revoke", self.oauth_base))
                     .header(
@@ -372,6 +440,15 @@ impl Strava {
                     .body(form_body(&[("token", refresh_token.as_str())]))
                     .send()
                     .await;
+
+                let confirmed = matches!(&revoke, Ok(response) if response.status().is_success());
+                if !confirmed {
+                    warning = Some(REVOKE_WARNING.to_string());
+                }
+            } else {
+                // Hay refresh token pero no hay credenciales con las que
+                // autenticar la revocación: no se puede confirmar.
+                warning = Some(REVOKE_WARNING.to_string());
             }
         }
 
@@ -379,7 +456,7 @@ impl Strava {
             SettingsRepo::set(pool, key, "").await.map_err(internal)?;
         }
 
-        Ok(())
+        Ok(DisconnectOutcome { warning })
     }
 
     /// Estado de la conexión, sin revelar jamás los tokens.
@@ -650,6 +727,86 @@ async fn parse_json(response: reqwest::Response) -> Result<serde_json::Value, St
         .json()
         .await
         .map_err(|error| StravaError::Http(error.to_string()))
+}
+
+/// Cuerpo de error de la API de Strava, con tolerancia a campos ausentes.
+#[derive(Debug, Deserialize)]
+struct ApiErrorBody {
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    errors: Vec<ApiErrorItem>,
+}
+
+/// Una entrada de `errors[]` del cuerpo de error de Strava.
+#[derive(Debug, Deserialize)]
+struct ApiErrorItem {
+    #[serde(default)]
+    resource: Option<String>,
+    #[serde(default)]
+    field: Option<String>,
+    #[serde(default)]
+    code: Option<String>,
+}
+
+/// Traduce una respuesta de error de Strava al [`StravaError`] correcto.
+///
+/// El parseo es **tolerante**: si el cuerpo no es JSON, viene vacío o no encaja,
+/// se cae al mensaje genérico conservando el prefijo `Strava respondió {status}
+/// {contexto}`. Si hay `message` y/o `errors[]`, se añaden a continuación. El
+/// caso especial de la aplicación inactiva se reconoce por su firma exacta
+/// (`Application`/`Status`/`Inactive`) y devuelve [`StravaError::ApplicationInactive`].
+///
+/// `context` es una frase corta que ya empieza por «al …» (p. ej. `al consultar
+/// /athlete`). Nunca entra en pánico.
+fn strava_error_from_body(status: u16, context: &str, body: &str) -> StravaError {
+    let fallback = || StravaError::Http(format!("Strava respondió {status} {context}"));
+
+    let Ok(parsed) = serde_json::from_str::<ApiErrorBody>(body) else {
+        return fallback();
+    };
+
+    let inactive = parsed.errors.iter().any(|item| {
+        item.resource.as_deref() == Some("Application")
+            && item.field.as_deref() == Some("Status")
+            && item.code.as_deref() == Some("Inactive")
+    });
+    if inactive {
+        return StravaError::ApplicationInactive;
+    }
+
+    let mut parts = Vec::new();
+    if let Some(message) = parsed
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(message.to_string());
+    }
+
+    let details = parsed
+        .errors
+        .iter()
+        .filter_map(|item| {
+            let field = item.field.as_deref()?;
+            let code = item.code.as_deref()?;
+            Some(format!("{field}:{code}"))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if !details.is_empty() {
+        parts.push(details);
+    }
+
+    if parts.is_empty() {
+        return fallback();
+    }
+
+    StravaError::Http(format!(
+        "Strava respondió {status} {context} · {}",
+        parts.join(" · ")
+    ))
 }
 
 #[cfg(test)]
@@ -1030,7 +1187,11 @@ mod tests {
             .await;
 
         let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
-        strava.disconnect(&pool).await.unwrap();
+        let outcome = strava.disconnect(&pool).await.unwrap();
+        assert!(
+            outcome.warning.is_none(),
+            "una revocación correcta no deja aviso: {outcome:?}"
+        );
 
         for key in TOKEN_KEYS {
             assert_eq!(get(&pool, key).await, "", "{key} must be cleared");
@@ -1229,5 +1390,333 @@ mod tests {
             !cache.contains_key("stale"),
             "cache_put debe purgar las entradas caducadas"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Diagnóstico: parseo del cuerpo de error y sondeo activo (change
+    // strava-diagnostics). Aserciones por subcadenas, no por igualdad literal.
+    // -----------------------------------------------------------------------
+
+    /// Cuerpo con el que Strava señala que la aplicación está inactiva.
+    fn inactive_body() -> serde_json::Value {
+        serde_json::json!({
+            "message": "Forbidden",
+            "errors": [
+                { "resource": "Application", "field": "Status", "code": "Inactive" }
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn api_get_maps_application_inactive_to_a_dedicated_error() {
+        let pool = setup_pool().await;
+        seed_connected(&pool, "VALID").await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/athlete/activities"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(inactive_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let err = strava
+            .api_get(
+                &pool,
+                "/athlete/activities",
+                &[("per_page", "10".to_string())],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, StravaError::ApplicationInactive),
+            "err: {err:?}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("suscripción"), "msg: {message}");
+        assert!(
+            message.contains("https://www.strava.com/settings/api"),
+            "msg: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_get_reports_the_body_of_other_forbidden_responses() {
+        let pool = setup_pool().await;
+        seed_connected(&pool, "VALID").await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/athlete/activities"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "message": "Authorization Error",
+                "errors": [
+                    {
+                        "resource": "AccessToken",
+                        "field": "activity:read_permission",
+                        "code": "missing"
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let err = strava
+            .api_get(
+                &pool,
+                "/athlete/activities",
+                &[("per_page", "10".to_string())],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, StravaError::Http(_)), "err: {err:?}");
+        let message = err.to_string();
+        assert!(message.contains("Authorization Error"), "msg: {message}");
+        assert!(
+            message.contains("activity:read_permission"),
+            "msg: {message}"
+        );
+        assert!(message.contains("missing"), "msg: {message}");
+        assert!(message.contains("403"), "msg: {message}");
+    }
+
+    #[tokio::test]
+    async fn api_get_with_a_non_json_error_body_does_not_panic() {
+        let pool = setup_pool().await;
+        seed_connected(&pool, "VALID").await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/athlete/activities"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("<html>403</html>"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let err = strava
+            .api_get(
+                &pool,
+                "/athlete/activities",
+                &[("per_page", "10".to_string())],
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, StravaError::Http(_)), "err: {err:?}");
+        assert!(err.to_string().contains("403"), "msg: {err}");
+    }
+
+    #[tokio::test]
+    async fn callback_exchange_maps_application_inactive() {
+        let pool = setup_pool().await;
+        seed_creds(&pool).await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(inactive_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let url = strava.authorize_url(&pool, REDIRECT).await.unwrap();
+        let state = extract_state(&url);
+
+        let err = strava
+            .handle_callback(&pool, "thecode", &state, REDIRECT)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(err, StravaError::ApplicationInactive),
+            "err: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn token_refresh_maps_application_inactive() {
+        let pool = setup_pool().await;
+        seed_creds(&pool).await;
+        SettingsRepo::set(&pool, "strava_refresh_token", "REF")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "strava_access_token", "OLDACC")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "strava_expires_at", "1000")
+            .await
+            .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(inactive_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let err = strava.access_token(&pool).await.unwrap_err();
+
+        assert!(
+            matches!(err, StravaError::ApplicationInactive),
+            "err: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_reports_the_athlete() {
+        let pool = setup_pool().await;
+        seed_connected(&pool, "VALID").await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/athlete"))
+            .and(header("authorization", "Bearer VALID"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1202720,
+                "firstname": "Lorenzo",
+                "lastname": "Carbonell"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let check = strava.check(&pool).await.unwrap();
+
+        assert_eq!(check.athlete_id.as_deref(), Some("1202720"));
+        assert_eq!(check.athlete_name.as_deref(), Some("Lorenzo Carbonell"));
+    }
+
+    #[tokio::test]
+    async fn check_maps_application_inactive() {
+        let pool = setup_pool().await;
+        seed_connected(&pool, "VALID").await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/athlete"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(inactive_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let err = strava.check(&pool).await.unwrap_err();
+
+        assert!(
+            matches!(err, StravaError::ApplicationInactive),
+            "err: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_bypasses_the_short_cache() {
+        let pool = setup_pool().await;
+        seed_connected(&pool, "VALID").await;
+
+        let server = MockServer::start().await;
+        // El sondeo sale a la red en cada llamada, aunque `/athlete` sería una
+        // URL cacheable por `api_get`: se exigen dos peticiones.
+        Mock::given(method("GET"))
+            .and(path("/api/v3/athlete"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1202720,
+                "firstname": "Lorenzo",
+                "lastname": "Carbonell"
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let first = strava.check(&pool).await.unwrap();
+        let second = strava.check(&pool).await.unwrap();
+
+        assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn disconnect_warns_when_revocation_fails_and_still_clears() {
+        let pool = setup_pool().await;
+        seed_creds(&pool).await;
+        SettingsRepo::set(&pool, "strava_refresh_token", "REF")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "strava_access_token", "ACC")
+            .await
+            .unwrap();
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth/revoke"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let outcome = strava.disconnect(&pool).await.unwrap();
+
+        let warning = outcome
+            .warning
+            .expect("una revocación fallida debe dejar aviso");
+        assert!(
+            warning.contains("https://www.strava.com/settings/apps"),
+            "warning: {warning}"
+        );
+        for key in TOKEN_KEYS {
+            assert_eq!(get(&pool, key).await, "", "{key} must be cleared");
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnect_warns_when_credentials_missing_and_still_clears() {
+        let pool = setup_pool().await;
+        // Hay refresh token, pero el usuario vació las credenciales de la app:
+        // sin client_id/client_secret no se puede intentar revocar.
+        SettingsRepo::set(&pool, "strava_client_id", "")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "strava_client_secret", "")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "strava_refresh_token", "REF")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "strava_access_token", "ACC")
+            .await
+            .unwrap();
+
+        let server = MockServer::start().await;
+        // Sin credenciales no debe salir ninguna petición de revocación.
+        Mock::given(method("POST"))
+            .and(path("/oauth/revoke"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let strava = Strava::with_bases(server.uri(), format!("{}/api/v3", server.uri()));
+        let outcome = strava.disconnect(&pool).await.unwrap();
+
+        let warning = outcome
+            .warning
+            .expect("sin credenciales la revocación no se confirma y debe dejar aviso");
+        assert!(
+            warning.contains("https://www.strava.com/settings/apps"),
+            "warning: {warning}"
+        );
+        for key in TOKEN_KEYS {
+            assert_eq!(get(&pool, key).await, "", "{key} must be cleared");
+        }
     }
 }
