@@ -1,7 +1,7 @@
 # PLAN-005 — Activity Timeline (línea temporal de hechos)
 
 **Proyecto:** Valet (Rust/Axum + React + SQLite)
-**Estado:** ✅ Completado — change `activity-timeline` aprobado, implementado (TDD) y archivado; PR en curso.
+**Estado:** ✅ Completado — change `activity-timeline` aprobado, implementado (TDD) y archivado; PR #169.
 **Origen:** especificación técnica «Activity Timeline & Life Journal», aportada por el usuario el 2026-10-10
 **Fecha:** 2026-10-10
 **Metodología:** OpenSpec (SDD) + TDD (Red-Green-Refactor)
@@ -23,7 +23,7 @@
 
 ## Tema 1 — Activity Timeline
 
-**Estado:** ✅ Completado. Las 27 tareas de código/documentación están en verde (`1120 passed / 0 failed`, clippy y fmt limpios) y solo queda la comprobación en producción (tarea 5.4). Change archivado con `openspec archive activity-timeline`.
+**Estado:** ✅ Completado. Las 27 tareas de código/documentación están en verde (`1120 passed / 0 failed`, clippy y fmt limpios) y solo queda la comprobación en producción (tarea 5.4). Change archivado con `openspec archive activity-timeline`. PR #169.
 
 ### Objetivo
 
