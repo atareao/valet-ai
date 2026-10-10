@@ -1,4 +1,32 @@
 # Changelog
+## [0.12.0] - 2026-10-11
+
+### Bug Fixes
+
+- *(stream)* El SSE declara no-transform y no-buffering para proxies
+
+### Documentation
+
+- *(plan-003)* Tema 5 aparcado (resiliencia de workers) con su change
+- *(openspec)* Change timeline-observability-wiring (cableado en stats y ajustes)
+- *(openspec)* Archiva timeline-observability-wiring (fusiona los deltas en specs/)
+- *(openspec)* Archiva email-skill
+- *(openspec)* Cierra la tarea 4.4 (PR y merge) de los changes archivados
+
+### Features
+
+- *(stats)* El timeline sale como proceso de fondo y en Database Sizes
+- *(frontend)* Rol y prompt del timeline en ajustes, y su etiqueta en estadísticas
+- *(services)* Cliente de la API de apimail
+- *(tools)* Las cuatro herramientas de correo
+- *(skills)* La skill email en el catálogo y en el registro
+- *(frontend)* URL y API key de apimail en la pestaña API Keys
+
+### Miscellaneous Tasks
+
+- *(just)* Receta push para publicar la imagen en el registro
+- *(db)* Siembra las claves GENERATION_TIMELINE_* del rol timeline
+- *(db)* Migración de la skill email y la conexión con apimail
 ## [0.11.0] - 2026-10-10
 
 ### Bug Fixes
