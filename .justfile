@@ -9,8 +9,12 @@
 # escribir '{{{{.Image}}}}' haría que podman recibiera '{{.Image}}}}' y
 # añadiera dos llaves al valor. Con una variable el formato se escribe una
 # sola vez, tal cual, y se interpola.
-podman_fmt_image := '{{.Image}}'
-podman_fmt_id := '{{.Id}}'
+user                    := 'atareao'
+name                    := `basename ${PWD}`
+version                 := `vampus show`
+registry                := 'docker.io'
+podman_fmt_image        := '{{.Image}}'
+podman_fmt_id           := '{{.Id}}'
 podman_fmt_config_image := '{{.Config.Image}}'
 
 # Levanta el servidor con frontend embebido (Podman)
@@ -28,6 +32,13 @@ dev-docker:
 # descarga y recrea el servicio SIN compilar; `deploy-local` compila
 # desde el working tree. Ambos verifican /api/health y fallan con
 # código distinto de cero si el servicio no queda sano.
+
+push:
+    @podman build \
+        --tag {{registry}}/{{user}}/{{name}}:{{version}} \
+        --tag {{registry}}/{{user}}/{{name}}:latest .
+    @podman push {{registry}}/{{user}}/{{name}}:{{version}}
+    @podman push {{registry}}/{{user}}/{{name}}:latest
 
 # Construye la imagen local
 build:
