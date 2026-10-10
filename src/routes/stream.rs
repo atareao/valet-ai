@@ -9,8 +9,10 @@
 //! * `POST /api/approval/{request_id}` — Resolve a pending approval
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::header::CACHE_CONTROL;
+use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::sse::{Event, Sse};
+use axum::response::IntoResponse;
 use axum::Json;
 use futures::stream::Stream;
 use serde::Deserialize;
@@ -41,17 +43,38 @@ pub struct ApprovalBody {
 // Handlers
 // ---------------------------------------------------------------------------
 
+/// Wrap an SSE stream into a response that tells intermediaries (proxies,
+/// nginx) neither to transform nor to buffer the event stream.
+fn sse_response(
+    stream: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>,
+) -> axum::response::Response {
+    let mut response = Sse::new(stream).into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-transform"),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    response
+}
+
 /// `POST /api/chat/stream`
 ///
 /// Sends a message to the orchestrator and returns the response as an SSE
 /// stream of [`SSEEvent`] values.
+///
+/// The response declares `cache-control: no-cache, no-transform` and
+/// `x-accel-buffering: no` so intermediaries (proxies, nginx) neither
+/// transform nor buffer the event stream.
 ///
 /// When the orchestrator is not available (e.g. in tests), falls back to a
 /// single static chunk to preserve backward compatibility.
 pub async fn stream_message(
     State(state): State<AppState>,
     Json(query): Json<MessageQuery>,
-) -> Sse<Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>> {
+) -> axum::response::Response {
     tracing::info!(
         content_len = %query.content.len(),
         "📥 SSE stream request received"
@@ -65,7 +88,7 @@ pub async fn stream_message(
         };
         let stream =
             futures::stream::once(async move { Ok(Event::default().data(event.to_json_string())) });
-        return Sse::new(Box::pin(stream));
+        return sse_response(Box::pin(stream));
     }
 
     let orchestrator = state.orchestrator.unwrap();
@@ -85,7 +108,7 @@ pub async fn stream_message(
                 futures::stream::once(
                     async move { Ok::<_, Infallible>(Event::default().data("")) },
                 );
-            return Sse::new(Box::pin(stream));
+            return sse_response(Box::pin(stream));
         }
     };
 
@@ -132,7 +155,7 @@ pub async fn stream_message(
         }
     };
 
-    Sse::new(Box::pin(stream))
+    sse_response(Box::pin(stream))
 }
 
 /// `POST /api/approval/{request_id}`
@@ -294,6 +317,64 @@ mod tests {
             content_type.contains("text/event-stream"),
             "Expected SSE content-type, got: {}",
             content_type
+        );
+    }
+
+    /// The stream response must tell intermediaries not to transform the body.
+    #[tokio::test]
+    async fn test_stream_response_declares_no_transform() {
+        let app = crate::app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/chat/stream")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"content":"Hello"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let cache_control = response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            cache_control.contains("no-cache") && cache_control.contains("no-transform"),
+            "Expected cache-control to declare no-cache, no-transform, got: {cache_control}"
+        );
+    }
+
+    /// The stream response must tell nginx not to buffer the SSE body.
+    #[tokio::test]
+    async fn test_stream_response_declares_no_buffering() {
+        let app = crate::app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/chat/stream")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"content":"Hello"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let x_accel_buffering = response
+            .headers()
+            .get("x-accel-buffering")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert_eq!(
+            x_accel_buffering, "no",
+            "Expected x-accel-buffering: no, got: {x_accel_buffering}"
         );
     }
 

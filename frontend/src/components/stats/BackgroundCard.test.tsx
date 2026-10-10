@@ -73,6 +73,27 @@ describe("BackgroundCard", () => {
     expect(archivistRow.queryByText("250 ms")).not.toBeInTheDocument();
   });
 
+  it("etiqueta el origen timeline con su nombre legible", () => {
+    const withTimeline: BackgroundStats[] = [
+      {
+        kind: "timeline",
+        calls: 3,
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        total_cost: 0.001,
+        total_errors: 0,
+        avg_duration_ms: 120,
+      },
+    ];
+    render(<BackgroundCard data={withTimeline} loading={false} />);
+
+    const row = within(screen.getByRole("row", { name: /timeline/ }));
+    // Etiqueta legible y `kind` crudo conviven en la fila.
+    expect(row.getByText("Línea temporal")).toBeInTheDocument();
+    expect(row.getByText("timeline")).toBeInTheDocument();
+  });
+
   it("renders an empty state when all origins are zero", () => {
     const empty: BackgroundStats[] = [
       zero("router"),

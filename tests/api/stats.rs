@@ -568,8 +568,8 @@ async fn test_background_summary() {
         .expect("the background summary must be a JSON array");
     assert_eq!(
         origins.len(),
-        4,
-        "one entry per non-chat origin (router, archivist, consolidator, collapse)"
+        5,
+        "one entry per non-chat origin (router, archivist, consolidator, collapse, timeline)"
     );
 
     let mut kinds: Vec<&str> = origins
@@ -579,7 +579,13 @@ async fn test_background_summary() {
     kinds.sort_unstable();
     assert_eq!(
         kinds,
-        vec!["archivist", "collapse", "consolidator", "router"],
+        vec![
+            "archivist",
+            "collapse",
+            "consolidator",
+            "router",
+            "timeline"
+        ],
         "every non-chat origin must appear"
     );
 }

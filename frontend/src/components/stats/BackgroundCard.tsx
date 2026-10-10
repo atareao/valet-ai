@@ -14,6 +14,7 @@ const ORIGIN_LABELS: Record<string, string> = {
   archivist: "Archivista",
   consolidator: "Consolidador",
   collapse: "Colapso",
+  timeline: "Línea temporal",
 };
 
 const originLabel = (kind: string): string => ORIGIN_LABELS[kind] ?? kind;

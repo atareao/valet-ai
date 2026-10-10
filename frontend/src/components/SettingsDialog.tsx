@@ -64,7 +64,7 @@ function getMissingConsolidatorPlaceholders(
   );
 }
 
-// Los cuatro roles de generación y el prefijo de sus tres claves en `settings`.
+// Los cinco roles de generación y el prefijo de sus tres claves en `settings`.
 // El `heading` es la etiqueta de la sub-pestaña; el `key` es su identificador
 // estable; el `prefix` compone los `name`/`id` del form (que son la clave cruda,
 // como en la pestaña "Memoria").
@@ -73,6 +73,7 @@ const GENERATION_BLOCKS = [
   { key: "collapse", heading: "Colapso", prefix: "GENERATION_COLLAPSE" },
   { key: "memory", heading: "Fichas", prefix: "GENERATION_MEMORY" },
   { key: "semantic", heading: "Consolidación", prefix: "GENERATION_SEMANTIC" },
+  { key: "timeline", heading: "Línea temporal", prefix: "GENERATION_TIMELINE" },
 ] as const;
 
 // `default` (vacío) significa "no enviar razonamiento" y deja decidir al modelo.
@@ -94,10 +95,13 @@ export interface SettingsFormValues {
   archivist_prompt: string;
   collapse_prompt: string;
   consolidator_prompt: string;
+  timeline_prompt: string;
   message_page_size: number;
   openweather_api_key: string;
   google_places_api_key: string;
   brave_search_api_key: string;
+  apimail_base_url: string;
+  apimail_api_key: string;
   MEMORY_HALF_LIFE_DAYS: number;
   SIMILARITY_THRESHOLD: number;
   RAG_BUDGET_TOKENS: number;
@@ -114,6 +118,9 @@ export interface SettingsFormValues {
   GENERATION_SEMANTIC_TEMPERATURE: number;
   GENERATION_SEMANTIC_REASONING: string;
   GENERATION_SEMANTIC_MAX_TOKENS: number;
+  GENERATION_TIMELINE_TEMPERATURE: number;
+  GENERATION_TIMELINE_REASONING: string;
+  GENERATION_TIMELINE_MAX_TOKENS: number;
 }
 
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({
@@ -163,10 +170,13 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         archivist_prompt: settings.archivist_prompt || "",
         collapse_prompt: settings.collapse_prompt || "",
         consolidator_prompt: settings.consolidator_prompt || "",
+        timeline_prompt: settings.timeline_prompt || "",
         message_page_size: parseInt(settings.message_page_size || "50"),
         openweather_api_key: settings.openweather_api_key || "",
         google_places_api_key: settings.google_places_api_key || "",
         brave_search_api_key: settings.brave_search_api_key || "",
+        apimail_base_url: settings.apimail_base_url || "",
+        apimail_api_key: settings.apimail_api_key || "",
         MEMORY_HALF_LIFE_DAYS: parseFloat(
           settings.MEMORY_HALF_LIFE_DAYS || "90",
         ),
@@ -208,6 +218,14 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           settings.GENERATION_SEMANTIC_REASONING || "low",
         GENERATION_SEMANTIC_MAX_TOKENS: parseInt(
           settings.GENERATION_SEMANTIC_MAX_TOKENS || "2048",
+        ),
+        GENERATION_TIMELINE_TEMPERATURE: parseFloat(
+          settings.GENERATION_TIMELINE_TEMPERATURE || "0.2",
+        ),
+        GENERATION_TIMELINE_REASONING:
+          settings.GENERATION_TIMELINE_REASONING || "off",
+        GENERATION_TIMELINE_MAX_TOKENS: parseInt(
+          settings.GENERATION_TIMELINE_MAX_TOKENS || "2048",
         ),
       });
     }
@@ -258,12 +276,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         collapse_prompt: values.collapse_prompt ?? settings?.collapse_prompt ?? "",
         consolidator_prompt:
           values.consolidator_prompt ?? settings?.consolidator_prompt ?? "",
+        timeline_prompt: values.timeline_prompt ?? settings?.timeline_prompt ?? "",
         message_page_size: (
           values.message_page_size ?? parseInt(settings?.message_page_size || "50")
         ).toString(),
         openweather_api_key: values.openweather_api_key ?? settings?.openweather_api_key ?? "",
         google_places_api_key: values.google_places_api_key ?? settings?.google_places_api_key ?? "",
         brave_search_api_key: values.brave_search_api_key ?? settings?.brave_search_api_key ?? "",
+        apimail_base_url: values.apimail_base_url ?? settings?.apimail_base_url ?? "",
+        apimail_api_key: values.apimail_api_key ?? settings?.apimail_api_key ?? "",
         MEMORY_HALF_LIFE_DAYS: (
           values.MEMORY_HALF_LIFE_DAYS ??
           parseFloat(settings?.MEMORY_HALF_LIFE_DAYS || "90")
@@ -328,6 +349,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           values.GENERATION_SEMANTIC_MAX_TOKENS ??
           parseInt(settings?.GENERATION_SEMANTIC_MAX_TOKENS || "2048")
         ).toString(),
+        GENERATION_TIMELINE_TEMPERATURE: (
+          values.GENERATION_TIMELINE_TEMPERATURE ??
+          parseFloat(settings?.GENERATION_TIMELINE_TEMPERATURE || "0.2")
+        ).toString(),
+        GENERATION_TIMELINE_REASONING:
+          values.GENERATION_TIMELINE_REASONING ??
+          settings?.GENERATION_TIMELINE_REASONING ??
+          "off",
+        GENERATION_TIMELINE_MAX_TOKENS: (
+          values.GENERATION_TIMELINE_MAX_TOKENS ??
+          parseInt(settings?.GENERATION_TIMELINE_MAX_TOKENS || "2048")
+        ).toString(),
       };
       await updateSettings(payload);
       messageApi.success("Ajustes guardados");
@@ -348,6 +381,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         openweather_api_key: "",
         google_places_api_key: "",
         brave_search_api_key: "",
+        apimail_base_url: "",
+        apimail_api_key: "",
       });
       messageApi.success("Valores por defecto restaurados");
     } catch {
@@ -548,6 +583,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                         </Form.Item>
                       ),
                     },
+                    {
+                      key: "timeline",
+                      label: "Timeline",
+                      forceRender: true,
+                      children: (
+                        <Form.Item
+                          label="Timeline Prompt"
+                          name="timeline_prompt"
+                        >
+                          <TextArea rows={10} />
+                        </Form.Item>
+                      ),
+                    },
                   ]}
                 />
                 {missingConsolidatorPlaceholders.length > 0 && (
@@ -590,6 +638,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 <Form.Item
                   label="Brave Search API Key"
                   name="brave_search_api_key"
+                >
+                  <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
+                </Form.Item>
+                <Form.Item
+                  label="apimail · URL base"
+                  name="apimail_base_url"
+                >
+                  <Input placeholder="https://apimail.territoriolinux.es" />
+                </Form.Item>
+                <Form.Item
+                  label="apimail · API Key"
+                  name="apimail_api_key"
                 >
                   <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
                 </Form.Item>

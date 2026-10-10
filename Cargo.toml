@@ -1,6 +1,6 @@
 [package]
 name = "valet"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 autobins = false
 
@@ -161,3 +161,7 @@ path = "tests/api/strava.rs"
 [[test]]
 name = "timeline-migration"
 path = "tests/db/timeline_migration.rs"
+
+[[test]]
+name = "email-migration"
+path = "tests/db/email_migration.rs"
