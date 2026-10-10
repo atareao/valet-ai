@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// The origin of an LLM request, stored in `llm_requests.kind`.
 ///
-/// Five processes share the `llm_requests` table; `CallKind` tells them apart
-/// so chat aggregates can exclude background work.
+/// Several processes share the `llm_requests` table; `CallKind` tells them
+/// apart so chat aggregates can exclude background work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallKind {
     Chat,
@@ -11,6 +11,7 @@ pub enum CallKind {
     Archivist,
     Consolidator,
     Collapse,
+    Timeline,
 }
 
 impl CallKind {
@@ -22,6 +23,7 @@ impl CallKind {
             CallKind::Archivist => "archivist",
             CallKind::Consolidator => "consolidator",
             CallKind::Collapse => "collapse",
+            CallKind::Timeline => "timeline",
         }
     }
 }

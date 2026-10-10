@@ -6,48 +6,6 @@ cuáles se exponen en cada petición y en qué condiciones se permite su ejecuci
 
 ## Requirements
 
-### Requirement: El registry SHALL omitir las herramientas deshabilitadas de las definiciones
-
-`definitions()` SHALL devolver únicamente las herramientas cuyo estado sea habilitado.
-
-#### Scenario: Una herramienta deshabilitada no se ofrece al LLM
-
-**Given** un registry con las herramientas `weather` y `tasks`, y `weather` deshabilitada
-**When** se solicitan las definiciones de herramientas
-**Then** la lista contiene `tasks`
-**And** la lista NO contiene `weather`
-
-### Requirement: El registry SHALL rechazar la ejecución de herramientas deshabilitadas
-
-`execute(nombre, args)` SHALL devolver un error para una herramienta deshabilitada, aunque esté
-registrada, sin invocarla.
-
-#### Scenario: La ejecución de una herramienta deshabilitada se rechaza
-
-**Given** un registry con `weather` deshabilitada
-**When** se invoca `execute("weather", args)`
-**Then** se devuelve `Err(ToolError)`
-**And** la herramienta NO se ejecuta
-
-### Requirement: El estado habilitado SHALL proceder de la tabla tools y actualizarse en caliente
-
-El registry SHALL cargar el estado habilitado desde la tabla `tools` al arrancar y SHALL reflejar de
-inmediato las habilitaciones y deshabilitaciones disparadas desde la API de administración.
-
-#### Scenario: Deshabilitar una herramienta surte efecto sin reiniciar
-
-**Given** un registry con `weather` habilitada
-**When** se deshabilita `weather` a través de la API de administración
-**Then** las definiciones posteriores omiten `weather`
-**And** `execute("weather", args)` devuelve error
-
-#### Scenario: Habilitar de nuevo una herramienta la reexpone
-
-**Given** un registry con `weather` deshabilitada
-**When** se habilita `weather` a través de la API de administración
-**Then** las definiciones posteriores vuelven a contener `weather`
-**And** `execute("weather", args)` vuelve a invocarla
-
 ### Requirement: La interfaz Tool SHALL declarar el permiso en función de los argumentos
 
 `Tool::permission(&self, args: &Value) -> Permission` SHALL recibir los argumentos de la llamada para
@@ -110,18 +68,19 @@ sus operaciones.
 ### Requirement: El registry SHALL registrar todas las herramientas integradas sin nombres duplicados
 
 La construcción del registry de producción SHALL registrar todas las herramientas integradas
-(incluidas `notes`, `unified_search` y `render_widget`), garantizando nombres únicos.
+(incluidas `notes`, `unified_search`, `render_widget`, las cuatro herramientas `strava_*` y las tres
+`timeline_*`), garantizando nombres únicos.
 
 **Given** la aplicación Valet con su registro de herramientas de producción
 **When** se consulta el catálogo de herramientas registradas
-**Then** figuran entre ellas `notes`, `unified_search` y `render_widget`
+**Then** figuran entre ellas `notes`, `unified_search`, `render_widget`, las cuatro `strava_*` y las tres `timeline_*`
 **And** no hay dos herramientas con el mismo nombre
 
 #### Scenario: El registry de producción incluye todas las herramientas integradas
 
 **Given** la aplicación Valet construida con su registro de herramientas de producción
 **When** se consulta el catálogo de herramientas registradas
-**Then** `notes`, `unified_search` y `render_widget` figuran entre ellas
+**Then** `notes`, `unified_search`, `render_widget`, las cuatro `strava_*` y las tres `timeline_*` figuran entre ellas
 **And** no hay dos herramientas con el mismo nombre
 
 ### Requirement: El registry SHALL registrar la herramienta `render_widget`
@@ -141,33 +100,6 @@ no requiera aprobación.
 **When** se solicitan las definiciones de herramientas
 **Then** la lista contiene una definición `render_widget` con un parámetro `widget_name` de tipo string y un parámetro `data` de tipo objeto
 **And** su permiso es `NoConfirm`
-
-### Requirement: La herramienta `render_widget` SHALL gestionarse como el resto desde la tabla `tools`
-
-La sincronización de la tabla `tools` con el registry (`ToolsRepo::sync_from_registry`) SHALL insertar
-`render_widget` al arrancar, de modo que `GET /api/tools` la devuelva con su `name`, su `description` y
-`enabled: true` por defecto, y la pestaña «Herramientas» la muestre como a cualquier otra. Su estado
-habilitado SHALL gobernar si se ofrece al LLM y si su ejecución se rechaza, y alternarlo desde la UI
-SHALL surtir efecto en caliente.
-
-#### Scenario: Aparece en la API de herramientas
-
-**Given** una base de datos sin la fila de `render_widget`
-**When** la aplicación arranca y sincroniza la tabla `tools` con el registry
-**Then** `GET /api/tools` devuelve una tool `render_widget` habilitada
-
-#### Scenario: Deshabilitarla la oculta del LLM
-
-**Given** la tool `render_widget` habilitada
-**When** el usuario la deshabilita desde la pestaña «Herramientas»
-**Then** las definiciones ofrecidas al LLM omiten `render_widget`
-**And** la ejecución de `render_widget` se rechaza
-
-#### Scenario: Habilitarla de nuevo la reexpone
-
-**Given** la tool `render_widget` deshabilitada
-**When** el usuario la habilita desde la pestaña «Herramientas»
-**Then** las definiciones ofrecidas al LLM vuelven a contener `render_widget`
 
 ### Requirement: `render_widget` SHALL validar `widget_name` contra una lista permitida
 
@@ -262,15 +194,23 @@ Todas las tools integradas SHALL exponer `description()` y las descripciones de 
 - **Then** indica que, si solo se dispone del nombre de la ciudad, debe resolverse antes con `geocode`
 - **And** `required` sigue siendo `["latitude", "longitude"]`
 
-### Requirement: El registry SHALL poder devolver las definiciones de un subconjunto
+### Requirement: El registry SHALL exponer las definiciones de todas las herramientas registradas
 
-El registry SHALL exponer un método que devuelva las definiciones correspondientes a una lista de nombres, incluyendo **únicamente** las que estén habilitadas y en un **orden determinista por nombre**, de modo que la petición al LLM sea reproducible. Los nombres desconocidos SHALL ignorarse sin error.
+`definitions()` SHALL devolver las definiciones de **todas** las herramientas registradas, sin filtrar por ningún estado de habilitación por herramienta. El filtrado por dominio SHALL ser responsabilidad del enrutador, que pide el subconjunto de las skills seleccionadas y habilitadas.
 
-#### Scenario: El subconjunto omite las deshabilitadas
-- **Given** un registry con `weather` y `tasks`, y `weather` deshabilitada
+#### Scenario: Todas las herramientas registradas se ofrecen por el registro completo
+- **Given** un registry con las herramientas `weather` y `tasks`
+- **When** se solicitan las definiciones
+- **Then** la lista contiene `weather` y `tasks`
+
+### Requirement: El registry SHALL devolver las definiciones de un subconjunto pedido
+
+El registry SHALL exponer un método que devuelva las definiciones correspondientes a una lista de nombres, en un **orden determinista por nombre**, de modo que la petición al LLM sea reproducible. Los nombres desconocidos SHALL ignorarse sin error. El subconjunto lo decide el enrutador (`core ∪ (skills seleccionadas ∩ habilitadas)`); el registry SHALL NOT filtrar por ningún estado de habilitación por herramienta.
+
+#### Scenario: El subconjunto devuelve exactamente las definiciones pedidas
+- **Given** un registry con `weather` y `tasks`
 - **When** se solicitan las definiciones del subconjunto `weather` y `tasks`
-- **Then** la lista contiene `tasks`
-- **And** no contiene `weather`
+- **Then** la lista contiene ambas
 
 #### Scenario: El orden es estable entre llamadas
 - **Given** un subconjunto de varios nombres

@@ -17,8 +17,9 @@ import type {
   Task,
   UpdateProfile,
   PersistentMemoryState,
-  Tool,
   SkillsResponse,
+  StravaCheckResult,
+  StravaStatus,
 } from "../types";
 import type { AuthUser } from "../contexts/AuthContext";
 
@@ -182,10 +183,24 @@ export const api = {
   clearPersistentMemory: () =>
     request<void>("/persistent-memory", { method: "DELETE" }),
 
-  getTools: () => request<Tool[]>("/tools"),
-
   getSkills: () => request<SkillsResponse>("/skills"),
 
-  toggleTool: (id: string) =>
-    request<Tool>(`/tools/${id}/toggle`, { method: "PUT" }),
+  // --- Strava -------------------------------------------------------------
+  // El flujo OAuth se inicia **navegando** a `/api/strava/authorize` (el
+  // backend responde 302 hacia Strava), no con `fetch`. Los tokens jamás
+  // cruzan el cliente: `status` solo devuelve el atleta y el scope.
+  getStravaStatus: () => request<StravaStatus>("/strava/status"),
+
+  // Sondeo activo del estado real de la conexión. **Siempre** `200`: el
+  // diagnóstico viaja en `ok`/`error`, por eso no rechaza ante un fallo de
+  // Strava (solo si la propia petición HTTP falla).
+  checkStrava: () => request<StravaCheckResult>("/strava/check"),
+
+  disconnectStrava: () =>
+    // `warning` solo llega cuando la revocación remota no se pudo confirmar; se
+    // omite del JSON cuando no hay aviso.
+    request<{ connected: boolean; warning?: string | null }>(
+      "/strava/disconnect",
+      { method: "POST" },
+    ),
 };

@@ -153,21 +153,52 @@ Lo **decidido**, esté aplazado o resuelto. Lo que está en marcha no se apunta 
 
 ### Aplazado por decisión del usuario — no ejecutar sin nueva orden
 
-**1. El servicio no arranca solo tras reiniciar el host.**
-
-Estado verificado el 2026-10-01: `docker-compose.yml` no declara `restart:` en el servicio; el contenedor quedó con `RestartPolicy: no`; `podman-restart.service` está `disabled`; y `Linger=yes` para el usuario, así que la unidad de usuario sí podría arrancar — el problema es que no está habilitada.
-
-Ya se ha sufrido: el host se apagó a las 09:25:50, el contenedor salió con `Exited (0)` y el host no volvió hasta las 18:55. **El servicio estuvo unas 9 h 30 min caído** y solo se levantó a mano, encontrando el volumen `valet_valet_data` intacto y la imagen alineada con `latest`.
-
-Arreglo viable, ya comprobado: añadir `restart: unless-stopped` al servicio y ejecutar `systemctl --user enable --now podman-restart.service`. La unidad filtra por `should-start-on-boot=true`, que cubre `always` y `unless-stopped`, así que la política del compose encajaría sin tocar la unidad.
-
-**2. `docker-compose.prod.yml` no se toca.**
+**1. `docker-compose.prod.yml` no se toca.**
 
 Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El despliegue de trabajo se hace con `docker-compose.yml` sobre Podman. Cambiarlo requiere orden explícita.
 
-### Resuelto — no volver a abrir
+### Cerrado — no volver a abrir
+
+**2. Autoarranque tras reinicio del host.** Descartado por decisión del usuario (2026-10-09): **no se habilita**. El contenedor no sobrevive a un reinicio del host y se levanta a mano si hace falta.
 
 **3. Los ficheros sueltos de la raíz.**
 
 `assets.svg` y `temporal.svg` llevaban sin trackear desde el 2026-09-29 y los vieron tres sesiones seguidas, que se limitaron a clasificarlos como "preexistentes y ajenos" sin decidir nada. El 2026-10-01 quedaron movidos a `~/.local/share/valet-scratch/`, con un `NOTAS.md` allí que explica qué son. Eran restos inválidos de la generación de iconos (uno de ellos ni siquiera es un SVG: es un fragmento pegado sin etiqueta `<svg>`), nunca estuvieron en git, y los iconos reales y versionados están en `frontend/src/assets/valet-icon.svg`, `assets/linux/hicolor/scalable/apps/valet.svg` y `assets/icono.svg`. Si vuelven a aparecer en la raíz, es que alguien los ha traído de vuelta a propósito.
 
+**4. Los tokens OAuth de Strava no se exponen por la API de ajustes.** Decidido el 2026-10-10 al cerrar el Tema 3 del PLAN-003: `GET /api/settings` omite `strava_access_token` y `strava_refresh_token`, y `PUT /api/settings` los ignora. Son material de gestión interna, no ajustes editables. La lista vive en `SENSITIVE_KEYS` (`src/db/repos/settings.rs`).
+
+
+---
+
+## VI. GESTIÓN DE PLANES (`plans/`)
+
+Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la raíz.
+
+### Nomenclatura
+
+- **Plan nuevo:** `plans/PLAN-XXX.md`, con `XXX` de tres dígitos y cero a la izquierda
+  (`001`, `002`, …). El número se asigna en orden creciente y **no se reutiliza** mientras
+  el plan siga existiendo.
+- **Excepción — reordenación:** un número puede volver a usarse si el plan que lo tenía
+  **nunca llegó a ejecutarse** y pasó a `-PENDING`/`-COMPLETED` dejando libre el ordinal.
+  Precedente: el `003` se reutilizó al reorganizar `plans/` y aparcar el roadmap v2 como
+  `PLAN-004-PENDING`.
+- **Plan completado:** se renombra a `plans/PLAN-XXX-COMPLETED.md`. El cuerpo del plan
+  **no se reescribe**: es un registro histórico de lo que se decidió e hizo.
+- **Plan parado / backlog:** se renombra a `plans/PLAN-XXX-PENDING.md`. No está activo ni se
+  trabaja en él ahora: queda aparcado, para retomarlo o cerrarlo más adelante.
+- Un plan completado **no se reabre**. El trabajo nuevo —aunque sea un ajuste sobre algo ya
+  cerrado— genera un `plans/PLAN-XXX.md` nuevo.
+
+### Índice
+
+| Fichero | Origen | Estado |
+|:---|:---|:---:|
+| `plans/PLAN-001-COMPLETED.md` | Plan maestro original (`PLAN.md`): fases F0–F4 | ✅ Completado |
+| `plans/PLAN-002-COMPLETED.md` | OIDC (PocketID), producción tras Traefik y cierres (`PLAN-PENDIENTE.md`) | ✅ Completado |
+| `plans/PLAN-003.md` | Selección por skills y otros temas (Temas 1–3 ✅: PR #155, #159, #163) | 🟢 Activo |
+| `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log, observabilidad | ⏸️ Pending |
+| `plans/PLAN-005-COMPLETED.md` | Activity Timeline & Life Journal (línea temporal de hechos) (PR #169) | ✅ Completado |
+
+> Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
+> un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

@@ -1,6 +1,6 @@
 [package]
 name = "valet"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 autobins = false
 
@@ -149,3 +149,15 @@ path = "tests/api/persistent_memory.rs"
 [[test]]
 name = "auth"
 path = "tests/api/auth.rs"
+
+[[test]]
+name = "settings"
+path = "tests/api/settings.rs"
+
+[[test]]
+name = "strava-api"
+path = "tests/api/strava.rs"
+
+[[test]]
+name = "timeline-migration"
+path = "tests/db/timeline_migration.rs"

@@ -20,6 +20,8 @@ pub enum Skill {
     Entorno,
     Web,
     Widgets,
+    Running,
+    Timeline,
 }
 
 /// Especificación cerrada de una skill.
@@ -54,7 +56,7 @@ pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 6] = [
+static CATALOG: [SkillSpec; 8] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
@@ -124,6 +126,37 @@ static CATALOG: [SkillSpec; 6] = [
         // it even when the user edited the block and it was not removed.
         prompt_heading: "# Instrucciones de Interfaz y Widgets Interactivos",
     },
+    SkillSpec {
+        skill: Skill::Running,
+        id: "running",
+        instructions: "¿La respuesta requiere mirar las sesiones de running del usuario (qué ha corrido, cómo fue una sesión, su ritmo o su frecuencia cardíaca, o sus totales)?",
+        criteria_true: "El mensaje se refiere a las carreras o sesiones de running del usuario: qué ha corrido o cuándo, cómo fue una sesión concreta, su ritmo (min/km), su frecuencia cardíaca, su cadencia o su desnivel, o sus totales y estadísticas de atleta.",
+        criteria_false: "El mensaje no pregunta por las sesiones de running del usuario ni por sus estadísticas de atleta.",
+        threshold: 0.10,
+        tools: &[
+            "strava_recent_activities",
+            "strava_activity_detail",
+            "strava_activity_streams",
+            "strava_athlete_stats",
+        ],
+        prompt_key: "SKILL_RUNNING_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: RUNNING",
+    },
+    SkillSpec {
+        skill: Skill::Timeline,
+        id: "timeline",
+        instructions: "¿La respuesta requiere consultar o anotar hechos de la vida del usuario (qué hizo un día, un registro cronológico, un diario de actividad)?",
+        criteria_true: "El mensaje pide saber qué hizo el usuario un día, repasa su diario de actividad o pide anotar algo vivido, hecho o decidido en un registro cronológico.",
+        criteria_false: "El mensaje no pregunta por hechos vividos por el usuario ni pide anotar lo que uno ha hecho.",
+        threshold: 0.10,
+        tools: &[
+            "timeline_get_events",
+            "timeline_add_event",
+            "timeline_delete_event",
+        ],
+        prompt_key: "SKILL_TIMELINE_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: TIMELINE",
+    },
 ];
 
 /// Catálogo cerrado de skills, en el orden canónico del sistema.
@@ -165,15 +198,17 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las seis variantes del enum, para exigir que el catálogo las cubra
+    /// Las ocho variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 6] = [
+    const ALL_SKILLS: [Skill; 8] = [
         Skill::Agenda,
         Skill::Pendientes,
         Skill::Recuerdos,
         Skill::Entorno,
         Skill::Web,
         Skill::Widgets,
+        Skill::Running,
+        Skill::Timeline,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -349,6 +384,10 @@ mod tests {
         assert_eq!(skill_of_tool("calendar"), Some(Skill::Agenda));
         assert_eq!(skill_of_tool("weather"), Some(Skill::Entorno));
         assert_eq!(skill_of_tool("render_widget"), Some(Skill::Widgets));
+        assert_eq!(
+            skill_of_tool("strava_recent_activities"),
+            Some(Skill::Running)
+        );
         assert_eq!(skill_of_tool("get_current_time"), None);
         assert_eq!(skill_of_tool("get_current_location"), None);
         assert_eq!(skill_of_tool("no_existe"), None);
@@ -384,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_declares_exactly_the_six_wide_domain_ids() {
+    fn catalog_declares_exactly_the_eight_wide_domain_ids() {
         let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
 
         for id in [
@@ -394,6 +433,8 @@ mod tests {
             "entorno",
             "web",
             "widgets",
+            "running",
+            "timeline",
         ] {
             assert!(
                 ids.contains(&id),
@@ -402,8 +443,8 @@ mod tests {
         }
         assert_eq!(
             ids.len(),
-            6,
-            "el catálogo debe tener exactamente seis skills; tiene {ids:?}"
+            8,
+            "el catálogo debe tener exactamente ocho skills; tiene {ids:?}"
         );
     }
 
@@ -468,6 +509,31 @@ mod tests {
             "widgets debe cubrir render_widget: {:?}",
             tools_of("widgets")
         );
+
+        let running = tools_of("running");
+        for tool in [
+            "strava_recent_activities",
+            "strava_activity_detail",
+            "strava_activity_streams",
+            "strava_athlete_stats",
+        ] {
+            assert!(
+                running.contains(&tool),
+                "running debe cubrir {tool}: {running:?}"
+            );
+        }
+
+        let timeline = tools_of("timeline");
+        for tool in [
+            "timeline_get_events",
+            "timeline_add_event",
+            "timeline_delete_event",
+        ] {
+            assert!(
+                timeline.contains(&tool),
+                "timeline debe cubrir {tool}: {timeline:?}"
+            );
+        }
     }
 
     #[test]
@@ -496,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_thirteen_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_twenty_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -508,8 +574,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            13,
-            "el core más las seis skills deben cubrir las trece herramientas: {covered:?}"
+            20,
+            "el core más las ocho skills deben cubrir las veinte herramientas: {covered:?}"
         );
         for spec in catalog() {
             assert!(
@@ -521,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_keys_are_the_six_canonical_keys() {
+    fn prompt_keys_are_the_eight_canonical_keys() {
         let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
 
         for key in [
@@ -531,12 +597,19 @@ mod tests {
             "SKILL_ENTORNO_PROMPT",
             "SKILL_WEB_PROMPT",
             "SKILL_WIDGETS_PROMPT",
+            "SKILL_RUNNING_PROMPT",
+            "SKILL_TIMELINE_PROMPT",
         ] {
             assert!(
                 keys.contains(&key),
                 "falta la clave de fragmento {key}; tiene {keys:?}"
             );
         }
+        assert_eq!(
+            keys.len(),
+            8,
+            "el catálogo debe declarar exactamente ocho claves de fragmento; tiene {keys:?}"
+        );
         for legacy in [
             "SKILL_TAREAS_PROMPT",
             "SKILL_RECORDATORIOS_PROMPT",
@@ -569,7 +642,15 @@ mod tests {
 
     #[test]
     fn domain_skills_share_threshold_010_and_widgets_is_020() {
-        for id in ["agenda", "pendientes", "recuerdos", "entorno", "web"] {
+        for id in [
+            "agenda",
+            "pendientes",
+            "recuerdos",
+            "entorno",
+            "web",
+            "running",
+            "timeline",
+        ] {
             let t = threshold_of(id).unwrap_or(-1.0);
             assert_eq!(
                 pct(t),
@@ -587,7 +668,15 @@ mod tests {
     #[test]
     fn widgets_threshold_is_strictly_above_every_domain() {
         let widgets = threshold_of("widgets").unwrap_or(0.0);
-        for id in ["agenda", "pendientes", "recuerdos", "entorno", "web"] {
+        for id in [
+            "agenda",
+            "pendientes",
+            "recuerdos",
+            "entorno",
+            "web",
+            "running",
+            "timeline",
+        ] {
             let domain = threshold_of(id).unwrap_or(0.0);
             assert!(
                 widgets > domain,

@@ -21,7 +21,7 @@ use crate::orchestrator::skill_router::{
 use crate::tools::geo_utils::reverse_geocode;
 use crate::tools::r#trait::ToolResult;
 use crate::tools::registry::ToolRegistry;
-use crate::tools::time_format::format_browser_timestamp;
+use crate::tools::time_format::{format_inline_timestamp, format_prompt_now};
 use crate::tools::widget::RENDER_WIDGET_TOOL_NAME;
 use futures::StreamExt;
 use uuid::Uuid;
@@ -254,6 +254,86 @@ const PERSISTENT_MEMORY_INSTRUCTION: &str = "Estado estable del usuario (perfil 
 /// it were the user's current message.
 const EPISODIC_MEMORY_INSTRUCTION: &str = "Las fichas siguientes son antecedentes recuperados de conversaciones anteriores. NO forman parte del turno actual del usuario; úsalas solo como contexto para entender sus preferencias e historia.";
 
+/// Label that opens the code-composed temporal section. The section is always
+/// present and closes the system message, even without a `BrowserContext`.
+const TEMPORAL_SECTION_LABEL: &str = "Fecha y hora actual:";
+
+/// Instruction that closes the temporal section, telling the model to resolve
+/// relative days against the injected timestamp rather than guessing.
+const TEMPORAL_SECTION_INSTRUCTION: &str =
+    "Evalúa 'hoy', 'ayer' y 'mañana' respecto a este timestamp.";
+
+/// Instruction that closes the temporal section, telling the model that the
+/// inline `[YYYY-MM-DD HH:MM]` stamp on the messages is metadata and must not
+/// be echoed back into its answers.
+const TEMPORAL_SECTION_MARKER_INSTRUCTION: &str =
+    "No reproduzcas la marca '[YYYY-MM-DD HH:MM]' de los mensajes en tus respuestas.";
+
+/// Compose the temporal section from the effective turn instant and timezone.
+///
+/// The section is always non-empty: when the instant cannot be parsed it falls
+/// back to the current UTC clock, and an invalid timezone falls back to UTC
+/// inside [`format_prompt_now`]. This guarantees the system message always ends
+/// with the temporal block, never aborting and never omitting it.
+fn compose_temporal_section(iso_utc: &str, tz: &str) -> String {
+    let stamp = format_prompt_now(iso_utc, tz)
+        .or_else(|| format_prompt_now(&chrono::Utc::now().to_rfc3339(), "UTC"))
+        .unwrap_or_default();
+    format!(
+        "{TEMPORAL_SECTION_LABEL} {stamp}. {TEMPORAL_SECTION_INSTRUCTION} {TEMPORAL_SECTION_MARKER_INSTRUCTION}"
+    )
+}
+
+/// Prefix a conversational message with its inline `[YYYY-MM-DD HH:MM]` stamp.
+///
+/// Only `user` messages with non-whitespace content are stamped, and only when
+/// the timestamp parses. `assistant` messages are deliberately **not** stamped:
+/// the model imitates the format of its own turns and would echo the marker
+/// back into its answers. Anything else — `assistant`, `tool`, `system`, empty
+/// content, or an unreadable timestamp — is returned unchanged. The stamp is
+/// request-only: it is never persisted.
+fn stamp_message(role: &str, content: &str, created_at_iso: &str, tz: &str) -> String {
+    if role == "user" && !content.trim().is_empty() {
+        if let Some(stamp) = format_inline_timestamp(created_at_iso, tz) {
+            return format!("[{stamp}] {content}");
+        }
+    }
+    content.to_string()
+}
+
+/// Remove an exact leading `[YYYY-MM-DD HH:MM] ` marker from a stored message.
+///
+/// A previous bug stamped `assistant` rows before sending them to the LLM, so
+/// some persisted rows carry the marker in their content. The model imitates
+/// it and duplicates it, so it is stripped here, request-only: the stored row
+/// is never modified. Only the exact marker — `[`, ten digits arranged as
+/// `YYYY-MM-DD HH:MM`, `]` and a trailing space — is removed; anything else,
+/// including a bracket that does not match the marker, is left untouched.
+fn strip_legacy_timestamp(content: &str) -> String {
+    /// Byte length of the exact marker `[YYYY-MM-DD HH:MM] `.
+    const MARKER_LEN: usize = 19;
+    let bytes = content.as_bytes();
+    let is_marker = bytes.len() >= MARKER_LEN
+        && bytes[0] == b'['
+        && bytes[5] == b'-'
+        && bytes[8] == b'-'
+        && bytes[11] == b' '
+        && bytes[14] == b':'
+        && bytes[17] == b']'
+        && bytes[18] == b' '
+        && bytes[1..5].iter().all(u8::is_ascii_digit)
+        && bytes[6..8].iter().all(u8::is_ascii_digit)
+        && bytes[9..11].iter().all(u8::is_ascii_digit)
+        && bytes[12..14].iter().all(u8::is_ascii_digit)
+        && bytes[15..17].iter().all(u8::is_ascii_digit);
+    if is_marker {
+        // `MARKER_LEN` is an ASCII boundary, so the slice is always valid.
+        content[MARKER_LEN..].to_string()
+    } else {
+        content.to_string()
+    }
+}
+
 /// Compose the episodic-memory block from the already-formatted cards, or
 /// `None` when there is nothing to inject.
 ///
@@ -322,19 +402,23 @@ fn compose_user_name_section(name: &str) -> Option<String> {
 ///   1. the prompt (`settings.system_prompt`),
 ///   2. the user-name section, when the profile has a real name,
 ///   3. the persistent-memory section (Capa C), when the state is non-empty,
-///   4. the episodic-memory section, when there are cards, and
-///   5. the date/time/location section, when the browser sent context.
+///   4. the episodic-memory section, when there are cards,
+///   5. the location section, when there are coordinates, and
+///   6. the temporal section, which is **always** present and closes the
+///      message.
 ///
 /// An absent section leaves no trace: no title, marker, separator or stray
-/// blank line. With only the prompt the result is *exactly* the prompt.
+/// blank line. With only the prompt the result is the prompt followed by the
+/// temporal section.
 fn compose_system_message(
     prompt: &str,
     user_name: Option<String>,
     persistent_memory: Option<String>,
     episodic_memory: Option<String>,
-    browser_section: Option<String>,
+    location_section: Option<String>,
+    temporal_section: String,
 ) -> String {
-    let mut sections: Vec<String> = Vec::with_capacity(5);
+    let mut sections: Vec<String> = Vec::with_capacity(6);
     sections.push(prompt.to_string());
     if let Some(section) = user_name {
         sections.push(section);
@@ -345,9 +429,10 @@ fn compose_system_message(
     if let Some(section) = episodic_memory {
         sections.push(section);
     }
-    if let Some(section) = browser_section {
+    if let Some(section) = location_section {
         sections.push(section);
     }
+    sections.push(temporal_section);
     sections.join("\n\n")
 }
 
@@ -613,15 +698,9 @@ impl Orchestrator {
         // Skill routing: one decision per turn, taken before the ReAct loop
         // (D1). The router reads its settings on every turn, so toggling it
         // takes effect without a restart. On any failure it falls open by
-        // exposing every enabled tool — the behaviour without a router.
-        let router = SkillRouter::new(self.decisions.clone(), read_router_config(&self.db).await);
-
-        let enabled_tools: Vec<String> = self
-            .registry
-            .definitions()
-            .iter()
-            .map(|d| d.name.clone())
-            .collect();
+        // exposing every enabled skill — the behaviour without a router.
+        let router_config = read_router_config(&self.db).await;
+        let router = SkillRouter::new(self.decisions.clone(), router_config.clone());
 
         // Conversational state for the classifier: each turn is truncated so
         // the state cannot grow without bound; `select` keeps only the last
@@ -634,9 +713,7 @@ impl Orchestrator {
             })
             .collect();
 
-        let selection = router
-            .select(user_message, &history_for_router, &enabled_tools)
-            .await;
+        let selection = router.select(user_message, &history_for_router).await;
 
         // D4/D5: when the router actually called the classifier (source `Router`
         // or `Error`) it exposes telemetry; persist it as a `kind='router'` row.
@@ -649,7 +726,7 @@ impl Orchestrator {
         // `core ∪ skills_seleccionadas ∩ habilitadas`. Computed once, outside
         // the loop: every iteration advertises the same set and never decides
         // again nor re-reads settings.
-        let exposed_names = exposed_tools(&selection, &enabled_tools);
+        let exposed_names = exposed_tools(&selection, &router_config);
         let exposed_refs: Vec<&str> = exposed_names.iter().map(String::as_str).collect();
 
         tracing::debug!(
@@ -662,7 +739,8 @@ impl Orchestrator {
         // prompt and before the code-composed sections. The base prompt is never
         // modified: the duplicate check uses the original.
         let fragments = read_skill_fragments(&self.db, &selection.skills).await;
-        let skill_sections = compose_skill_fragments(&selection, &system_prompt, &fragments);
+        let skill_sections =
+            compose_skill_fragments(&selection, &system_prompt, &fragments, &router_config);
         let prompt_with_skills = if skill_sections.is_empty() {
             system_prompt.clone()
         } else {
@@ -676,16 +754,39 @@ impl Orchestrator {
             "Context built for ReAct loop"
         );
 
-        // Browser context (date/time/location from the user's browser). It is
-        // composed here because resolving the location name may hit the
-        // network (`reverse_geocode` is async), then handed to the composer as
-        // the closing section. No browser context means no section at all.
-        let browser_section = if let Some(ref ctx) = browser_context {
-            let fecha = format_browser_timestamp(&ctx.timestamp, &ctx.timezone)
-                .unwrap_or_else(|| ctx.timestamp.clone());
+        // Resolve the effective turn instant and timezone ONCE per turn. Both
+        // feed the temporal section and every message stamp, so they must not
+        // diverge. The instant is the browser timestamp when parseable, else
+        // the current UTC clock. The zone is the browser zone, else the stored
+        // `settings.timezone`, else `Europe/Madrid`.
+        let effective_instant = match browser_context.as_ref() {
+            Some(ctx) if format_prompt_now(&ctx.timestamp, "UTC").is_some() => {
+                ctx.timestamp.clone()
+            }
+            _ => chrono::Utc::now().to_rfc3339(),
+        };
+        let effective_tz = {
+            let browser_tz = browser_context
+                .as_ref()
+                .map(|ctx| ctx.timezone.clone())
+                .filter(|tz| !tz.trim().is_empty());
+            match browser_tz {
+                Some(tz) => tz,
+                None => crate::db::repos::settings::SettingsRepo::get(&self.db, "timezone")
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|tz| !tz.trim().is_empty())
+                    .unwrap_or_else(|| "Europe/Madrid".to_string()),
+            }
+        };
 
-            let mut parts = vec![format!("{:}.", fecha)];
-
+        // Location section (from the user's browser). It is composed here
+        // because resolving the location name may hit the network
+        // (`reverse_geocode` is async). It carries ONLY the location or the
+        // coordinates: the date and time live in the temporal section. Without
+        // coordinates there is no section at all.
+        let location_section = if let Some(ref ctx) = browser_context {
             // Reverse‑geocode coordinates if we have them but no location name yet
             let location_name = if let (Some(lat), Some(lon)) = (ctx.latitude, ctx.longitude) {
                 match &ctx.location_name {
@@ -696,14 +797,14 @@ impl Orchestrator {
                 None
             };
 
-            if let (Some(lat), Some(lon)) = (ctx.latitude, ctx.longitude) {
+            let section = if let (Some(lat), Some(lon)) = (ctx.latitude, ctx.longitude) {
                 match &location_name {
-                    Some(name) => {
-                        parts.push(format!("Ubicación: {} ({:.4}, {:.4}).", name, lat, lon))
-                    }
-                    None => parts.push(format!("Coordenadas: ({:.4}, {:.4}).", lat, lon)),
+                    Some(name) => Some(format!("Ubicación: {} ({:.4}, {:.4}).", name, lat, lon)),
+                    None => Some(format!("Coordenadas: ({:.4}, {:.4}).", lat, lon)),
                 }
-            }
+            } else {
+                None
+            };
 
             tracing::info!(
                 timestamp = %ctx.timestamp,
@@ -714,10 +815,14 @@ impl Orchestrator {
                 "🌍 Browser context injected"
             );
 
-            Some(parts.join(" "))
+            section
         } else {
             None
         };
+
+        // Code-composed temporal section: always present, never derived from a
+        // `settings.system_prompt` placeholder, and independent of the browser.
+        let temporal_section = compose_temporal_section(&effective_instant, &effective_tz);
 
         // Layer C: read the persistent state on EVERY request construction and
         // inject its minified section between the prompt and the episodic one.
@@ -754,15 +859,16 @@ impl Orchestrator {
 
         // Single system message: prompt → user-name section (when the profile
         // has a real name) → persistent-memory section (Capa C, when non-empty)
-        // → episodic section → browser context. Absent sections leave no trace,
-        // so with only the prompt the message is exactly the prompt, and the
-        // browser section always closes it.
+        // → episodic section → location section (when there are coordinates) →
+        // temporal section. Absent sections leave no trace, and the temporal
+        // section always closes the message.
         let system_content = compose_system_message(
             &prompt_with_skills,
             user_name,
             persistent_section,
             compose_episodic_memory_block(&ctx.rag_memories),
-            browser_section,
+            location_section,
+            temporal_section,
         );
         messages.push(ChatMessage {
             role: "system".into(),
@@ -773,16 +879,27 @@ impl Orchestrator {
         });
 
         // Append the conversation history pre-loaded above (same content and
-        // same order as before: `[system, ...history..., user]`).
+        // same order as before: `[system, ...history..., user]`). `user`
+        // messages are prefixed with their inline stamp in the effective turn
+        // zone; `assistant` messages are left unstamped, and any exact legacy
+        // `[YYYY-MM-DD HH:MM] ` marker already stored in their content is
+        // stripped before sending. `tool`/`system` rows travel intact. The
+        // stamp is request-only and never persisted.
         for msg in &history {
             let tool_calls: Option<Vec<ToolCall>> = msg
                 .tool_calls
                 .as_ref()
                 .and_then(|v| serde_json::from_value(v.clone()).ok());
 
+            let content = match msg.role.as_str() {
+                "user" => stamp_message("user", &msg.content, &msg.created_at, &effective_tz),
+                "assistant" => strip_legacy_timestamp(&msg.content),
+                _ => msg.content.clone(),
+            };
+
             messages.push(ChatMessage {
                 role: msg.role.clone(),
-                content: msg.content.clone(),
+                content,
                 tool_calls,
                 tool_result: msg.tool_results.clone(),
                 tool_call_id: None,
@@ -791,7 +908,7 @@ impl Orchestrator {
 
         messages.push(ChatMessage {
             role: "user".into(),
-            content: user_message.to_string(),
+            content: stamp_message("user", user_message, &effective_instant, &effective_tz),
             tool_calls: None,
             tool_result: None,
             tool_call_id: None,
@@ -1790,9 +1907,12 @@ mod tests {
             .await?;
         while rx.recv().await.is_some() {}
 
-        assert_eq!(
-            captured.lock().unwrap().as_deref(),
-            Some(DEFAULT_SYSTEM_PROMPT_FALLBACK),
+        assert!(
+            captured
+                .lock()
+                .unwrap()
+                .as_deref()
+                .is_some_and(|c| c.starts_with(DEFAULT_SYSTEM_PROMPT_FALLBACK)),
             "When settings.system_prompt is missing the minimal fallback must be used"
         );
 
@@ -1859,12 +1979,19 @@ mod tests {
         );
         let content = &system_messages[0].content;
         let episodic_pos = content.find(EPISODIC_MEMORY_SECTION_TITLE).unwrap();
-        let location_pos = content.find("Ubicación: Madrid").unwrap();
+        let location_pos = content
+            .find("Ubicación: Madrid (40.4168, -3.7038).")
+            .unwrap();
+        let temporal_pos = content.find(TEMPORAL_SECTION_LABEL).unwrap();
         assert!(
             episodic_pos < location_pos,
-            "episodic precedes the browser section"
+            "episodic precedes the location section"
         );
-        assert!(content.ends_with("Ubicación: Madrid (40.4168, -3.7038)."));
+        assert!(
+            location_pos < temporal_pos,
+            "the location section precedes the temporal one"
+        );
+        assert!(content.ends_with(TEMPORAL_SECTION_MARKER_INSTRUCTION));
 
         Ok(())
     }
@@ -1939,7 +2066,7 @@ mod tests {
             .expect("system message present");
         let history_idx = messages
             .iter()
-            .position(|m| m.content == "previous turn")
+            .position(|m| m.content.contains("previous turn"))
             .expect("history present");
         assert!(
             system_idx < history_idx,
@@ -1978,11 +2105,16 @@ mod tests {
         let system_messages: Vec<&ChatMessage> =
             messages.iter().filter(|m| m.role == "system").collect();
         assert_eq!(system_messages.len(), 1);
-        assert_eq!(
-            system_messages[0].content, prompt,
-            "without cards the single system message must be exactly the prompt"
+        let content = &system_messages[0].content;
+        assert!(
+            content.starts_with(prompt),
+            "without cards the single system message starts with the prompt, got: {content:?}"
         );
-        assert!(!system_messages[0].content.contains("<episodic_memory>"));
+        assert!(
+            content.contains(TEMPORAL_SECTION_LABEL),
+            "the temporal section must always close the message, got: {content:?}"
+        );
+        assert!(!content.contains("<episodic_memory>"));
 
         Ok(())
     }
@@ -2037,17 +2169,34 @@ mod tests {
         let location_pos = content
             .find("Ubicación: Madrid (40.4168, -3.7038).")
             .expect("location present");
+        let temporal_pos = content
+            .find(TEMPORAL_SECTION_LABEL)
+            .expect("temporal section present");
         assert!(
             episodic_pos < location_pos,
-            "the browser section must come after the episodic one"
+            "the location section must come after the episodic one"
         );
         assert!(
-            content.ends_with("Ubicación: Madrid (40.4168, -3.7038)."),
-            "the browser section must be the last one, got: {content:?}"
+            location_pos < temporal_pos,
+            "the location section must precede the temporal one"
         );
         assert!(
-            content.contains("8:23"),
-            "the formatted local time must be present, got: {content:?}"
+            content.ends_with(TEMPORAL_SECTION_MARKER_INSTRUCTION),
+            "the temporal section must close the message, got: {content:?}"
+        );
+        // The location section, isolated from the temporal one, must carry only
+        // the location — no date or time.
+        let location_section = content
+            .split(TEMPORAL_SECTION_LABEL)
+            .next()
+            .expect("temporal label present")
+            .trim_end()
+            .rsplit("\n\n")
+            .next()
+            .expect("a section precedes the temporal one");
+        assert_eq!(
+            location_section, "Ubicación: Madrid (40.4168, -3.7038).",
+            "the location section must carry only the location, got: {location_section:?}"
         );
 
         Ok(())
@@ -2082,9 +2231,13 @@ mod tests {
             messages.iter().filter(|m| m.role == "system").collect();
         assert_eq!(system_messages.len(), 1);
         let content = &system_messages[0].content;
-        assert_eq!(
-            content, prompt,
-            "without context the message is exactly the prompt"
+        assert!(
+            content.starts_with(prompt),
+            "without context the message starts with the prompt, got: {content:?}"
+        );
+        assert!(
+            content.contains(TEMPORAL_SECTION_LABEL),
+            "the temporal section must still close the message, got: {content:?}"
         );
         assert!(!content.contains("Ubicación:"));
         assert!(!content.contains("Coordenadas:"));
@@ -2100,9 +2253,16 @@ mod tests {
     #[test]
     fn compose_system_message_places_persistent_section_between_prompt_and_episodic() {
         // Absent section: prompt + episodic only, no trace of a placeholder.
-        let empty =
-            compose_system_message("PROMPT", None, None, Some("EPISODIC".to_string()), None);
-        assert_eq!(empty, "PROMPT\n\nEPISODIC");
+        // The temporal section is always present and closes the message.
+        let empty = compose_system_message(
+            "PROMPT",
+            None,
+            None,
+            Some("EPISODIC".to_string()),
+            None,
+            "TEMP".to_string(),
+        );
+        assert_eq!(empty, "PROMPT\n\nEPISODIC\n\nTEMP");
 
         // A present section lands exactly between prompt and episodic.
         let filled = compose_system_message(
@@ -2110,9 +2270,232 @@ mod tests {
             None,
             Some("PERSISTENT".to_string()),
             Some("EPISODIC".to_string()),
-            Some("BROWSER".to_string()),
+            Some("LOCATION".to_string()),
+            "TEMP".to_string(),
         );
-        assert_eq!(filled, "PROMPT\n\nPERSISTENT\n\nEPISODIC\n\nBROWSER");
+        assert_eq!(
+            filled,
+            "PROMPT\n\nPERSISTENT\n\nEPISODIC\n\nLOCATION\n\nTEMP"
+        );
+    }
+
+    /// The temporal section always closes the message: with nothing else it is
+    /// only the prompt followed by the temporal block.
+    #[test]
+    fn compose_system_message_with_only_temporal() {
+        assert_eq!(
+            compose_system_message("PROMPT", None, None, None, None, "TEMP".to_string()),
+            "PROMPT\n\nTEMP"
+        );
+    }
+
+    /// The location section, when present, sits between the earlier sections and
+    /// the temporal one that always closes the message.
+    #[test]
+    fn compose_system_message_location_before_temporal() {
+        assert_eq!(
+            compose_system_message(
+                "P",
+                None,
+                None,
+                None,
+                Some("LOC".to_string()),
+                "TEMP".to_string()
+            ),
+            "P\n\nLOC\n\nTEMP"
+        );
+    }
+
+    // ─── temporal-awareness: composed temporal section ──────────────────────
+
+    #[test]
+    fn compose_temporal_section_matches_the_exact_expected_text() {
+        assert_eq!(
+            compose_temporal_section("2026-10-09T17:00:00Z", "Europe/Madrid"),
+            "Fecha y hora actual: 2026-10-09 19:00:00 (viernes). Evalúa 'hoy', 'ayer' y 'mañana' respecto a este timestamp. No reproduzcas la marca '[YYYY-MM-DD HH:MM]' de los mensajes en tus respuestas."
+        );
+    }
+
+    #[test]
+    fn compose_temporal_section_survives_unreadable_instant_and_invalid_tz() {
+        let bad_instant = compose_temporal_section("no-fecha", "Europe/Madrid");
+        assert!(!bad_instant.is_empty());
+        assert!(bad_instant.starts_with("Fecha y hora actual: "));
+        assert!(bad_instant.contains("Evalúa 'hoy', 'ayer' y 'mañana' respecto a este timestamp."));
+
+        let bad_tz = compose_temporal_section("2026-10-09T17:00:00Z", "Bad/Zone");
+        assert!(!bad_tz.is_empty());
+        assert!(bad_tz.starts_with("Fecha y hora actual: "));
+        assert!(bad_tz.contains("Evalúa 'hoy', 'ayer' y 'mañana' respecto a este timestamp."));
+    }
+
+    // ─── temporal-awareness: message stamping ───────────────────────────────
+
+    #[test]
+    fn stamp_message_prefixes_only_user() {
+        assert_eq!(
+            stamp_message("user", "hola", "2026-07-15T20:15:00Z", "Europe/Madrid"),
+            "[2026-07-15 22:15] hola"
+        );
+        // The assistant must NOT be stamped: the model imitates its own turns
+        // and would echo the marker back into its answers.
+        assert_eq!(
+            stamp_message("assistant", "vale", "2026-07-15T20:15:00Z", "Europe/Madrid"),
+            "vale"
+        );
+    }
+
+    #[test]
+    fn stamp_message_leaves_tool_and_blank_content_untouched() {
+        assert_eq!(
+            stamp_message("tool", "{}", "2026-07-15T20:15:00Z", "Europe/Madrid"),
+            "{}"
+        );
+        assert_eq!(
+            stamp_message("user", "   ", "2026-07-15T20:15:00Z", "Europe/Madrid"),
+            "   "
+        );
+    }
+
+    #[test]
+    fn stamp_message_leaves_unparseable_created_at_untouched() {
+        assert_eq!(
+            stamp_message("user", "hola", "no-fecha", "Europe/Madrid"),
+            "hola"
+        );
+    }
+
+    // ─── temporal-awareness: legacy assistant stamp stripping ───────────────
+
+    #[test]
+    fn strip_legacy_timestamp_removes_only_the_exact_marker() {
+        // An inherited, exact `[YYYY-MM-DD HH:MM] ` prefix is removed.
+        assert_eq!(strip_legacy_timestamp("[2026-07-15 22:15] vale"), "vale");
+        // Plain content is untouched.
+        assert_eq!(strip_legacy_timestamp("vale"), "vale");
+        // Brackets that are not the exact marker (with its trailing space) stay.
+        assert_eq!(
+            strip_legacy_timestamp("[otra cosa] vale"),
+            "[otra cosa] vale"
+        );
+        // A marker without the separating space is not the marker.
+        assert_eq!(
+            strip_legacy_timestamp("[2026-07-15 22:15]vale"),
+            "[2026-07-15 22:15]vale"
+        );
+        // Empty content stays empty.
+        assert_eq!(strip_legacy_timestamp(""), "");
+        // A lone opening bracket is too short to be the marker.
+        assert_eq!(strip_legacy_timestamp("["), "[");
+        // A truncated marker is not the marker.
+        assert_eq!(strip_legacy_timestamp("[2026"), "[2026");
+        // A multibyte prefix that does not start with the marker is kept whole.
+        assert_eq!(
+            strip_legacy_timestamp("á[2026-07-15 22:15] vale"),
+            "á[2026-07-15 22:15] vale"
+        );
+        // The marker is stripped from multibyte content at a byte boundary,
+        // leaving the multibyte remainder intact.
+        assert_eq!(
+            strip_legacy_timestamp("[2026-07-15 22:15] café ☕"),
+            "café ☕"
+        );
+    }
+
+    /// Request level — an `assistant` history row whose stored content begins
+    /// with a legacy `[YYYY-MM-DD HH:MM] ` marker travels to the LLM without
+    /// it, a clean `assistant` travels intact, and a `user` history row does
+    /// carry its inline stamp. The stored rows are never modified.
+    #[tokio::test]
+    async fn history_assistant_stamp_is_stripped_and_user_keeps_its_stamp(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        // A previous turn: a stamped assistant reply (the persisted legacy
+        // marker), a clean assistant reply, and a user message.
+        crate::db::repos::messages::MessagesRepo::create(
+            &pool,
+            "user",
+            "turno previo del usuario",
+            None,
+            None,
+            None,
+            None,
+            100_000,
+            None,
+        )
+        .await?;
+        crate::db::repos::messages::MessagesRepo::create(
+            &pool,
+            "assistant",
+            "[2026-07-15 22:15] vale",
+            None,
+            None,
+            None,
+            None,
+            100_000,
+            None,
+        )
+        .await?;
+        crate::db::repos::messages::MessagesRepo::create(
+            &pool,
+            "assistant",
+            "respuesta limpia",
+            None,
+            None,
+            None,
+            None,
+            100_000,
+            None,
+        )
+        .await?;
+
+        let captured: Arc<Mutex<Option<Vec<ChatMessage>>>> = Arc::new(Mutex::new(None));
+        let orchestrator = build_orchestrator_with_full_capture(
+            pool.clone(),
+            captured.clone(),
+            memory_context_builder(pool.clone()),
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let messages = captured.lock().unwrap().clone().unwrap();
+
+        // The user history row is prefixed with its inline stamp.
+        let user_history = messages
+            .iter()
+            .find(|m| m.role == "user" && m.content.ends_with("turno previo del usuario"))
+            .expect("user history row present");
+        assert!(
+            user_history.content.starts_with('['),
+            "a user history row must carry its stamp, got: {:?}",
+            user_history.content
+        );
+        assert!(
+            user_history.content.ends_with("] turno previo del usuario"),
+            "the stamp must precede the content, got: {:?}",
+            user_history.content
+        );
+
+        // The stamped assistant row travels stripped of the legacy marker.
+        let legacy_assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant" && m.content.contains("vale"))
+            .expect("legacy assistant row present");
+        assert_eq!(legacy_assistant.content, "vale");
+
+        // A clean assistant row travels intact.
+        let clean_assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant" && m.content.contains("respuesta limpia"))
+            .expect("clean assistant row present");
+        assert_eq!(clean_assistant.content, "respuesta limpia");
+
+        Ok(())
     }
 
     /// Request level — with no persistent state, the assembled request carries
@@ -2197,12 +2580,16 @@ mod tests {
         let episodic_pos = content
             .find(EPISODIC_MEMORY_SECTION_TITLE)
             .expect("episodic present");
-        let browser_pos = content
-            .find("Ubicación: Madrid")
-            .expect("browser section present");
+        let location_pos = content
+            .find("Ubicación: Madrid (40.4168, -3.7038).")
+            .expect("location section present");
+        let temporal_pos = content
+            .find(TEMPORAL_SECTION_LABEL)
+            .expect("temporal section present");
         assert!(prompt_pos < episodic_pos, "prompt before episodic");
-        assert!(episodic_pos < browser_pos, "episodic before browser");
-        assert!(content.ends_with("Ubicación: Madrid (40.4168, -3.7038)."));
+        assert!(episodic_pos < location_pos, "episodic before location");
+        assert!(location_pos < temporal_pos, "location before temporal");
+        assert!(content.ends_with(TEMPORAL_SECTION_MARKER_INSTRUCTION));
         assert!(
             content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
             "the absent persistent section leaves no text between prompt and episodic"
@@ -2456,7 +2843,7 @@ mod tests {
             .expect("episodic block must be present");
         let history_idx = messages
             .iter()
-            .position(|m| m.content == "previous turn")
+            .position(|m| m.content.contains("previous turn"))
             .expect("conversation history must be present");
         assert!(
             block_idx < history_idx,
@@ -4453,10 +4840,11 @@ mod tests {
 
         // 6. Assert the custom system prompt was used
         let captured_prompt = captured.lock().unwrap().clone();
-        assert_eq!(
-            captured_prompt.as_deref(),
-            Some("Eres un asistente de pruebas. Responde siempre en español."),
-            "System prompt should be the custom value from DB, not the default template. Got: {:?}",
+        assert!(
+            captured_prompt.as_deref().is_some_and(
+                |p| p.starts_with("Eres un asistente de pruebas. Responde siempre en español.")
+            ),
+            "System prompt should start with the custom value from DB. Got: {:?}",
             captured_prompt
         );
 
@@ -4470,28 +4858,6 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    #[test]
-    fn test_format_browser_timestamp_with_timezone() {
-        // 06:23 UTC on 2026-09-26 = 08:23 CEST (Europe/Madrid, UTC+2)
-        let result = format_browser_timestamp("2026-09-26T06:23:55.149Z", "Europe/Madrid");
-        assert!(result.is_some());
-        let s = result.unwrap();
-        // Should say "son las 8:23 de la mañana" (local time), NOT "6:23"
-        assert!(s.contains("8:23"), "Expected local time 8:23, got: {}", s);
-        assert!(s.contains("de la mañana"), "Expected morning, got: {}", s);
-        assert!(s.contains("sábado"), "Expected sábado");
-        assert!(s.contains("26 de septiembre de 2026"));
-    }
-
-    #[test]
-    fn test_format_browser_timestamp_utc() {
-        // UTC timestamp with UTC timezone should show UTC time
-        let result = format_browser_timestamp("2026-09-26T06:23:55.149Z", "UTC");
-        assert!(result.is_some());
-        let s = result.unwrap();
-        assert!(s.contains("6:23"), "Expected UTC time 6:23, got: {}", s);
     }
 
     // -----------------------------------------------------------------------

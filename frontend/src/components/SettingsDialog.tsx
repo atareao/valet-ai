@@ -11,16 +11,14 @@ import {
   Space,
   Spin,
   Alert,
-  Divider,
 } from "antd";
 import { useSettings } from "../hooks/useSettings";
 import { useSkills } from "../hooks/useSkills";
 import { useProfileContext } from "../contexts/ProfileContext";
 import { PersistentMemoryPanel } from "./PersistentMemoryPanel";
-import { ToolsTab } from "./ToolsTab";
 import { RouterControl } from "./RouterControl";
-import { SkillPromptFields } from "./SkillPromptFields";
-import { changedSkillFields } from "./skillRouter";
+import { SkillsTab } from "./SkillsTab";
+import { StravaIntegration } from "./StravaIntegration";
 
 const { TextArea } = Input;
 
@@ -131,13 +129,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     updateSettings,
     resetToDefaults,
   } = useSettings();
-  // El catálogo lo posee el diálogo: lo comparten la sub-pestaña «Skills» (lo
-  // lista), el control del enrutador (lo recibe por props) y el submit (para
-  // guardar solo lo que cambie respecto al efectivo). Un único `GET /api/skills`
-  // por apertura del diálogo.
+  // El catálogo lo posee el diálogo y lo consume la pestaña «Skills». Un único
+  // `GET /api/skills` por apertura del diálogo.
   const {
     skills,
-    coreTools,
     loading: skillsLoading,
     error: skillsError,
     refetch: refetchSkills,
@@ -334,22 +329,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           parseInt(settings?.GENERATION_SEMANTIC_MAX_TOKENS || "2048")
         ).toString(),
       };
-      // Los campos por skill van en el mismo submit y solo si cambian respecto
-      // al valor efectivo vigente: comparar evita crear sobrescrituras
-      // redundantes y deja «sin tocar» un campo que no se ha editado. Un campo
-      // que el usuario deje vacío no bloquea el guardado: avisa y se usará el
-      // valor por defecto del catálogo (enviar `""` equivale a restaurarlo).
-      const skillChanges = changedSkillFields(
-        values as Record<string, unknown>,
-        skills,
-        settings,
-      );
-      if (Object.values(skillChanges).some((value) => value === "")) {
-        messageApi.warning(
-          "Hay campos de skill vacíos: se usará el valor por defecto del catálogo",
-        );
-      }
-      Object.assign(payload, skillChanges);
       await updateSettings(payload);
       messageApi.success("Ajustes guardados");
       onClose();
@@ -569,21 +548,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                         </Form.Item>
                       ),
                     },
-                    {
-                      key: "skills",
-                      label: "Skills",
-                      forceRender: true,
-                      children: (
-                        <SkillPromptFields
-                          key={routerOpenKey}
-                          settings={settings}
-                          skills={skills}
-                          loading={skillsLoading}
-                          error={skillsError}
-                          onRestore={refetchSkills}
-                        />
-                      ),
-                    },
                   ]}
                 />
                 {missingConsolidatorPlaceholders.length > 0 && (
@@ -760,21 +724,38 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             ),
           },
           {
-            key: "tools",
-            label: "Herramientas",
-            children: (
-              <>
-                <RouterControl
-                  key={routerOpenKey}
-                  skills={skills}
-                  coreTools={coreTools}
-                  loading={skillsLoading}
-                  error={skillsError}
-                  refetch={refetchSkills}
-                />
-                <Divider />
-                <ToolsTab />
-              </>
+            key: "skills",
+            label: "Skills",
+            children: settingsLoading ? (
+              renderSettingsLoading()
+            ) : (
+              <SkillsTab
+                key={routerOpenKey}
+                settings={settings}
+                skills={skills}
+                loading={skillsLoading}
+                error={skillsError}
+                updateSettings={updateSettings}
+                onRestore={refetchSkills}
+              />
+            ),
+          },
+          {
+            key: "router",
+            label: "Enrutador de skills",
+            children: <RouterControl key={routerOpenKey} />,
+          },
+          {
+            key: "integrations",
+            label: "Integraciones",
+            children: settingsLoading ? (
+              renderSettingsLoading()
+            ) : (
+              <StravaIntegration
+                key={routerOpenKey}
+                settings={settings}
+                updateSettings={updateSettings}
+              />
             ),
           },
         ]}

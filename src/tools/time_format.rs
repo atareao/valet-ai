@@ -35,45 +35,55 @@ pub fn momento_del_dia(hora: u32) -> &'static str {
     }
 }
 
-/// Parse an ISO‑8601 UTC timestamp and return a human‑readable Spanish string.
+/// Parse an ISO‑8601 timestamp (with `Z`, an explicit offset, or as a naive
+/// UTC value) into a UTC `DateTime`. Returns `None` when it does not parse.
+fn parse_utc(iso: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{DateTime, NaiveDateTime};
+
+    let iso = iso.trim();
+    if let Ok(dt) = DateTime::parse_from_rfc3339(iso) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    // Accept the `Z`-suffixed variants without an explicit offset.
+    let naive =
+        NaiveDateTime::parse_from_str(iso.trim_end_matches('Z'), "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+    Some(DateTime::from_naive_utc_and_offset(naive, chrono::Utc))
+}
+
+/// Convert a UTC instant and a timezone into an inline `"YYYY-MM-DD HH:MM"`
+/// stamp in the effective timezone.
 ///
-/// Returns `None` on parse failure so callers can fall back gracefully.
-pub fn format_browser_timestamp(iso: &str, tz: &str) -> Option<String> {
-    use chrono::{Datelike, NaiveDateTime, Timelike};
+/// An invalid timezone falls back to UTC; an unparseable `iso_utc` yields
+/// `None` so the caller can leave the message unstamped.
+pub fn format_inline_timestamp(iso_utc: &str, tz: &str) -> Option<String> {
     use chrono_tz::Tz;
     use std::str::FromStr;
 
-    // Accept both "2026-09-24T08:00:00Z" and "2026-09-26T10:00:00.000Z"
-    let naive =
-        NaiveDateTime::parse_from_str(iso.trim_end_matches('Z'), "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+    let utc = parse_utc(iso_utc)?;
+    let tz = Tz::from_str(tz).unwrap_or(chrono_tz::UTC);
+    Some(utc.with_timezone(&tz).format("%Y-%m-%d %H:%M").to_string())
+}
 
-    let utc_dt: chrono::DateTime<chrono::Utc> =
-        chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc);
+/// Convert a UTC instant and a timezone into the prompt clock string
+/// `"YYYY-MM-DD HH:MM:SS (weekday)"`, with the Spanish weekday in lowercase.
+///
+/// An invalid timezone falls back to UTC; an unparseable `iso_utc` yields
+/// `None` so the caller can fall back to a safe value.
+pub fn format_prompt_now(iso_utc: &str, tz: &str) -> Option<String> {
+    use chrono_tz::Tz;
+    use std::str::FromStr;
 
-    // Convert to user's timezone
-    let tz = Tz::from_str(tz).ok()?;
-    let dt = utc_dt.with_timezone(&tz);
+    let utc = parse_utc(iso_utc)?;
+    let tz = Tz::from_str(tz).unwrap_or(chrono_tz::UTC);
+    let dt = utc.with_timezone(&tz);
 
-    let wd = dt.format("%u").to_string().parse::<usize>().ok()?; // 1–7
+    let wd = dt.format("%u").to_string().parse::<usize>().ok()?;
     let day_name = DIAS.get(wd - 1)?;
-    let month_name = MESES.get((dt.month0()) as usize)?;
-    let momento = momento_del_dia(dt.hour());
-
-    Some(format!(
-        "Hoy es {}, {} de {} de {}, son las {}:{:02} {}",
-        day_name,
-        dt.day(),
-        month_name,
-        dt.year(),
-        dt.hour(),
-        dt.minute(),
-        momento,
-    ))
+    Some(format!("{} ({})", dt.format("%Y-%m-%d %H:%M:%S"), day_name))
 }
 
 /// Format the current UTC time in the given timezone as a human‑readable
-/// Spanish string.  Returns the same format as [`format_browser_timestamp`]
-/// but computed from the current system clock.
+/// Spanish string, computed from the current system clock.
 pub fn format_time_now(timezone: &str) -> String {
     use chrono::{Datelike, Timelike};
     use chrono_tz::Tz;
@@ -141,36 +151,6 @@ mod tests {
     }
 
     #[test]
-    fn test_format_browser_timestamp_valid() {
-        let result = format_browser_timestamp("2026-09-26T08:00:00Z", "Europe/Madrid");
-        assert!(result.is_some());
-        let s = result.unwrap();
-        // 2026-09-26 is a Saturday → sábado
-        assert!(s.contains("sábado"));
-        assert!(s.contains("26"));
-        assert!(s.contains("septiembre"));
-        assert!(s.contains("2026"));
-        // 08:00 UTC → 10:00 CEST → mañana
-        assert!(s.contains("10:00"));
-        assert!(s.contains("de la mañana"));
-    }
-
-    #[test]
-    fn test_format_browser_timestamp_with_millis() {
-        let result = format_browser_timestamp("2026-09-26T10:00:00.000Z", "Europe/Madrid");
-        assert!(result.is_some());
-        let s = result.unwrap();
-        assert!(s.contains("12:00"));
-        assert!(s.contains("de la tarde"));
-    }
-
-    #[test]
-    fn test_format_browser_timestamp_invalid() {
-        assert!(format_browser_timestamp("not-a-date", "Europe/Madrid").is_none());
-        assert!(format_browser_timestamp("2026-09-26T08:00:00Z", "Invalid/Zone").is_none());
-    }
-
-    #[test]
     fn test_format_time_now_returns_string() {
         let s = format_time_now("Europe/Madrid");
         assert!(s.starts_with("Hoy es "));
@@ -182,5 +162,51 @@ mod tests {
         // Invalid timezone should fall back to UTC without panicking.
         let s = format_time_now("Bad/Zone");
         assert!(s.starts_with("Hoy es "));
+    }
+
+    // ─── temporal-awareness: inline timestamp + prompt clock ────────────────
+
+    #[test]
+    fn test_format_inline_timestamp_madrid() {
+        // 20:15 UTC on 2026-07-15 = 22:15 CEST (Europe/Madrid, UTC+2).
+        assert_eq!(
+            format_inline_timestamp("2026-07-15T20:15:00Z", "Europe/Madrid"),
+            Some("2026-07-15 22:15".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_inline_timestamp_invalid_tz_falls_back_to_utc() {
+        assert_eq!(
+            format_inline_timestamp("2026-07-15T20:15:00Z", "Bad/Zone"),
+            Some("2026-07-15 20:15".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_inline_timestamp_unparseable_is_none() {
+        assert_eq!(format_inline_timestamp("no-fecha", "Europe/Madrid"), None);
+    }
+
+    #[test]
+    fn test_format_prompt_now_madrid() {
+        // 17:00 UTC on 2026-10-09 = 19:00 CEST → Friday (viernes).
+        assert_eq!(
+            format_prompt_now("2026-10-09T17:00:00Z", "Europe/Madrid"),
+            Some("2026-10-09 19:00:00 (viernes)".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_prompt_now_invalid_tz_falls_back_to_utc() {
+        assert_eq!(
+            format_prompt_now("2026-10-09T17:00:00Z", "Bad/Zone"),
+            Some("2026-10-09 17:00:00 (viernes)".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_prompt_now_unparseable_is_none() {
+        assert_eq!(format_prompt_now("nope", "Europe/Madrid"), None);
     }
 }

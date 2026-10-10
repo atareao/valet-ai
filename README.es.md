@@ -167,7 +167,7 @@ Este repo no crea ningún contenedor, volumen ni nombre DNS para PocketID.
 
 La base de datos vive en el volumen nombrado `valet_data`, montado en `/app/data` (ver `DATABASE_URL`). En un volumen nuevo, Podman hereda la propiedad de la imagen. La app corre con el usuario que defina la imagen — el `Dockerfile` monolítico corre como `root`, igual que la imagen de desarrollo.
 
-**Carencia conocida: el contenedor no sobrevive a un reinicio del host.** `docker-compose.yml` no declara `restart:`, así que si la máquina se apaga el servicio se queda caído hasta levantarlo a mano — el 2026-10-01 supuso unas 9 h y media de caída. Habilitar el autoarranque está deliberadamente aplazado; el arreglo verificado está en `AGENTS.md` § V.
+**Carencia conocida: el contenedor no sobrevive a un reinicio del host.** `docker-compose.yml` no declara `restart:`, así que si la máquina se apaga el servicio se queda caído hasta levantarlo a mano.
 
 ## 🏛️ Arquitectura
 

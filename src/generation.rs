@@ -1,6 +1,6 @@
 //! Per-role generation parameters (temperature, reasoning, max tokens).
 //!
-//! The twelve `GENERATION_*` settings are seeded by migration and **read on
+//! The `GENERATION_*` settings are seeded by migration and **read on
 //! every LLM call** so that editing them in the UI takes effect without a
 //! restart. This module centralises the reading/parsing so the three workers
 //! and the orchestrator all behave identically.
@@ -10,7 +10,7 @@ use sqlx::SqlitePool;
 use crate::db::repos::settings::SettingsRepo;
 use crate::llm::provider::{ReasoningEffort, ReasoningSpec};
 
-/// The four generation roles, each backed by its own three settings keys.
+/// The generation roles, each backed by its own three settings keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GenerationRole {
     /// The conversational chat (orchestrator).
@@ -21,6 +21,8 @@ pub enum GenerationRole {
     Memory,
     /// Consolidator and its compression pass.
     Semantic,
+    /// Chronological fact extraction (`timeline_events`).
+    Timeline,
 }
 
 impl GenerationRole {
@@ -31,6 +33,7 @@ impl GenerationRole {
             GenerationRole::Collapse => "GENERATION_COLLAPSE",
             GenerationRole::Memory => "GENERATION_MEMORY",
             GenerationRole::Semantic => "GENERATION_SEMANTIC",
+            GenerationRole::Timeline => "GENERATION_TIMELINE",
         }
     }
 
@@ -42,6 +45,7 @@ impl GenerationRole {
             GenerationRole::Collapse => (0.2, "off", 1024),
             GenerationRole::Memory => (0.3, "off", 1024),
             GenerationRole::Semantic => (0.1, "off", 2048),
+            GenerationRole::Timeline => (0.2, "off", 2048),
         }
     }
 }

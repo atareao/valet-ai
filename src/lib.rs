@@ -18,7 +18,7 @@ pub mod tools;
 pub mod workers;
 
 use axum::http::{header, HeaderValue, Method};
-use axum::routing::{delete, get, put};
+use axum::routing::{delete, get};
 use axum::{extract::State, Json, Router};
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -49,10 +49,10 @@ pub struct AppState {
     pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
 }
 
-/// Build the production tool registry with all 13 built-in tools.
+/// Build the production tool registry with all 20 built-in tools.
 ///
 /// Exposed so the evaluation harness (`valet-route-eval`) can resolve the same
-/// enabled-tool set the running application advertises.
+/// advertised tool set the running application uses.
 pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     registry.register(Box::new(crate::tools::weather::WeatherTool::new(
@@ -85,6 +85,27 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
         crate::tools::unified_search::UnifiedSearchTool::new(pool.clone()),
     ));
     registry.register(Box::new(crate::tools::widget::RenderWidgetTool::new()));
+    registry.register(Box::new(
+        crate::tools::strava::StravaRecentActivitiesTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(
+        crate::tools::strava::StravaActivityDetailTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(
+        crate::tools::strava::StravaActivityStreamsTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(crate::tools::strava::StravaAthleteStatsTool::new(
+        pool.clone(),
+    )));
+    registry.register(Box::new(
+        crate::tools::timeline::TimelineGetEventsTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(crate::tools::timeline::TimelineAddEventTool::new(
+        pool.clone(),
+    )));
+    registry.register(Box::new(
+        crate::tools::timeline::TimelineDeleteEventTool::new(pool.clone()),
+    ));
     registry
 }
 
@@ -109,9 +130,6 @@ impl AppState {
         let registry = build_tool_registry(&pool);
         let _ =
             db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions()).await;
-        if let Ok(disabled) = db::repos::tools::ToolsRepo::disabled_names(&pool).await {
-            registry.set_disabled(disabled);
-        }
         Self {
             db: pool,
             orchestrator: None,
@@ -146,9 +164,6 @@ impl AppState {
         let registry = build_tool_registry(&pool);
         let _ =
             db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions()).await;
-        if let Ok(disabled) = db::repos::tools::ToolsRepo::disabled_names(&pool).await {
-            registry.set_disabled(disabled);
-        }
         // Seed test data with known IDs expected by integration tests
         let _ = Self::seed_test_data(&pool).await;
         Self {
@@ -184,9 +199,6 @@ impl AppState {
         let registry = build_tool_registry(&pool);
         crate::db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions())
             .await?;
-        if let Ok(disabled) = crate::db::repos::tools::ToolsRepo::disabled_names(&pool).await {
-            registry.set_disabled(disabled);
-        }
         let tool_registry = Arc::new(registry);
 
         // 3. Create guardrails
@@ -455,7 +467,6 @@ pub fn app_with_state(state: AppState) -> Router {
         )
         // Tools
         .route("/api/tools", get(routes::tools::list_tools))
-        .route("/api/tools/{id}/toggle", put(routes::tools::toggle_tool))
         // Skills catalog (read-only; same session middleware as `/api/tools`)
         .route("/api/skills", get(handlers::skills::list_skills))
         // Settings
@@ -482,6 +493,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::stream::routes())
         // Authentication (OIDC login / callback / me / logout)
         .merge(routes::auth::routes())
+        // Strava integration (OAuth authorize/callback, status, disconnect)
+        .merge(routes::strava::routes())
         // Session middleware: enforces a valid session on `/api/*` when auth
         // is enabled; a no-op when it is disabled (dev mode).
         .layer(axum::middleware::from_fn_with_state(
@@ -516,9 +529,6 @@ pub async fn app() -> Router {
     let _ = db::fts::create_fts_triggers(&pool).await;
     let registry = build_tool_registry(&pool);
     let _ = db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions()).await;
-    if let Ok(disabled) = db::repos::tools::ToolsRepo::disabled_names(&pool).await {
-        registry.set_disabled(disabled);
-    }
     let _ = AppState::seed_test_data(&pool).await;
     let state = AppState {
         db: pool,

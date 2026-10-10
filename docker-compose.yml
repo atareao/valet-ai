@@ -16,6 +16,7 @@ services:
       - COLLAPSE_MODEL=${COLLAPSE_MODEL:-mistralai/mistral-small-24b-instruct-2501}
       - MEMORY_MODEL=${MEMORY_MODEL:-mistralai/mistral-small-24b-instruct-2501}
       - SEMANTIC_MODEL=${SEMANTIC_MODEL:-mistralai/mistral-small-24b-instruct-2501}
+      - TIMELINE_MODEL=${TIMELINE_MODEL:-mistralai/mistral-small-24b-instruct-2501}
       - MEMORY_BATCH_TOKENS=${MEMORY_BATCH_TOKENS:-2000}
       - MEMORY_INACTIVITY_MINUTES=${MEMORY_INACTIVITY_MINUTES:-30}
       - MEMORY_OVERLAP=${MEMORY_OVERLAP:-2}
@@ -26,6 +27,10 @@ services:
       - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
       - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
       - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+      # Strava (opcional: credenciales por entorno)
+      - STRAVA_CLIENT_ID=${STRAVA_CLIENT_ID}
+      - STRAVA_CLIENT_SECRET=${STRAVA_CLIENT_SECRET}
+      - STRAVA_REDIRECT_URL=${STRAVA_REDIRECT_URL}
       - AUTH_ENABLED=false
 
 volumes:

@@ -51,6 +51,10 @@ pub struct Config {
     /// Model used by the persistent-memory consolidator. Reads `SEMANTIC_MODEL`
     /// and falls back to `MEMORY_MODEL` (and, in turn, to its default).
     pub semantic_model: String,
+    /// Model used by the chronological fact extractor (Capa D). Reads
+    /// `TIMELINE_MODEL` and falls back to `MEMORY_MODEL` (and, in turn, to its
+    /// default).
+    pub timeline_model: String,
     pub rag_budget_tokens: usize,
 
     // Embeddings (RAG)
@@ -68,6 +72,10 @@ impl Config {
         let memory_model = env::var("MEMORY_MODEL")
             .unwrap_or_else(|_| "mistralai/mistral-small-24b-instruct-2501".into());
         let semantic_model = env::var("SEMANTIC_MODEL").unwrap_or_else(|_| memory_model.clone());
+        // `TIMELINE_MODEL` is the chronological fact extractor's model; when it
+        // is not set it falls back to `MEMORY_MODEL` (and, in turn, to its
+        // default).
+        let timeline_model = env::var("TIMELINE_MODEL").unwrap_or_else(|_| memory_model.clone());
 
         Self {
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into()),
@@ -132,6 +140,7 @@ impl Config {
                 .unwrap_or(30),
             memory_model,
             semantic_model,
+            timeline_model,
             rag_budget_tokens: env::var("RAG_BUDGET_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -196,6 +205,7 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "SEMANTIC_MODEL",
+            "TIMELINE_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -375,6 +385,7 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "SEMANTIC_MODEL",
+            "TIMELINE_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -416,6 +427,7 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "SEMANTIC_MODEL",
+            "TIMELINE_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -460,6 +472,7 @@ mod tests {
             "MEMORY_POLL_INTERVAL_MINUTES",
             "MEMORY_MODEL",
             "SEMANTIC_MODEL",
+            "TIMELINE_MODEL",
             "RAG_BUDGET_TOKENS",
             "EMBEDDING_PROVIDER",
             "EMBEDDING_MODEL",
@@ -526,6 +539,48 @@ mod tests {
         let cfg = Config::from_env();
         assert_eq!(
             cfg.semantic_model,
+            "mistralai/mistral-small-24b-instruct-2501"
+        );
+    }
+
+    /// `TIMELINE_MODEL` overrides `MEMORY_MODEL` when both are set.
+    #[test]
+    #[serial]
+    fn test_config_timeline_model_overrides_memory_model() {
+        env::set_var("MEMORY_MODEL", "memory/model");
+        env::set_var("TIMELINE_MODEL", "timeline/model");
+
+        let cfg = Config::from_env();
+        assert_eq!(cfg.timeline_model, "timeline/model");
+        assert_eq!(cfg.memory_model, "memory/model");
+
+        env::remove_var("MEMORY_MODEL");
+        env::remove_var("TIMELINE_MODEL");
+    }
+
+    /// Without `TIMELINE_MODEL`, `timeline_model` falls back to `MEMORY_MODEL`.
+    #[test]
+    #[serial]
+    fn test_config_timeline_model_falls_back_to_memory_model() {
+        env::remove_var("TIMELINE_MODEL");
+        env::set_var("MEMORY_MODEL", "memory/only");
+
+        let cfg = Config::from_env();
+        assert_eq!(cfg.timeline_model, "memory/only");
+
+        env::remove_var("MEMORY_MODEL");
+    }
+
+    /// With neither set, `timeline_model` uses the shared default.
+    #[test]
+    #[serial]
+    fn test_config_timeline_model_default() {
+        env::remove_var("MEMORY_MODEL");
+        env::remove_var("TIMELINE_MODEL");
+
+        let cfg = Config::from_env();
+        assert_eq!(
+            cfg.timeline_model,
             "mistralai/mistral-small-24b-instruct-2501"
         );
     }

@@ -11,10 +11,12 @@ use uuid::Uuid;
 use crate::db::repos::memory::MemoryRepo;
 use crate::db::repos::persistent_memory::PersistentMemoryRepo;
 use crate::db::repos::stats::StatsRepo;
+use crate::db::repos::timeline::TimelineRepo;
 use crate::embeddings::EmbeddingProvider;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider, ResponseFormat};
 use crate::models::message::estimate_markdown_tokens_heuristic;
 use crate::models::stats::CallKind;
+use crate::models::timeline::{normalize_category, NewTimelineEvent};
 use crate::persistent_memory::{
     evaluate_compressed, payload_token_count, resolve_updated_at, validate_payload,
     CompressionOutcome,
@@ -51,6 +53,9 @@ pub struct EpisodicMemoryConfig {
     /// LLM model used by the persistent-memory consolidator (and its single
     /// compression pass). Comes from `SEMANTIC_MODEL` / `MEMORY_MODEL`.
     pub semantic_model: String,
+    /// LLM model used by the chronological fact extractor (Capa D). Comes from
+    /// `TIMELINE_MODEL` / `MEMORY_MODEL`.
+    pub timeline_model: String,
 }
 
 impl Default for EpisodicMemoryConfig {
@@ -62,6 +67,7 @@ impl Default for EpisodicMemoryConfig {
             poll_interval_minutes: 30,
             model: "mistralai/mistral-small-24b-instruct-2501".into(),
             semantic_model: "mistralai/mistral-small-24b-instruct-2501".into(),
+            timeline_model: "mistralai/mistral-small-24b-instruct-2501".into(),
         }
     }
 }
@@ -134,6 +140,157 @@ fn default_consolidator_prompt() -> String {
 /// Build the compression prompt.
 fn compression_prompt() -> String {
     COMPRESSION_PROMPT_TEMPLATE.replace("__COMPRESSION_MARKER__", COMPRESSION_CALL_MARKER)
+}
+
+// ─── Capa D: chronological fact extraction ─────────────────────────────────
+
+/// Minimal extractor prompt used only when `settings.timeline_prompt` is
+/// missing, empty or unreadable. The real prompt lives in the database (seeded
+/// by migration `20261010000004_timeline_prompts.sql`) and carries **no**
+/// placeholder: the numbered batch block travels as a separate user message.
+const DEFAULT_TIMELINE_PROMPT_FALLBACK: &str = "# EXTRACTOR DE HECHOS CRONOLÓGICOS\nRecibes un lote de mensajes numerados de una conversación. Cada línea empieza por su número, su fecha (`created_at`) y su rol. Extrae los hechos atómicos que el usuario ha vivido, hecho o decidido.\n\nFormato de salida (solo JSON):\n{\"events\": [{\"source\": 1, \"category\": \"lifestyle\", \"fact\": \"Fui a correr 8 km\"}]}";
+
+/// A fact exactly as it comes out of the model, before validating it against
+/// the batch. Every field is optional: a missing or ill-typed field becomes
+/// `None` and is discarded later in [`validate_timeline_events`].
+#[derive(Debug, Clone, PartialEq)]
+struct RawTimelineEvent {
+    source: Option<i64>,
+    category: Option<String>,
+    fact: Option<String>,
+}
+
+/// Why a body is not usable at all. This never represents a per-event problem:
+/// a single bad event is dropped, not the whole body. No variant ever panics.
+#[derive(Debug, PartialEq)]
+enum TimelineExtractionError {
+    /// The content is empty or whitespace only.
+    Empty,
+    /// There is no JSON object in the content.
+    NotJson,
+    /// There is no `events` key, or it is not an array.
+    MissingEvents,
+}
+
+/// Parse the `{"events": [...]}` envelope.
+///
+/// Only the envelope can fail:
+/// - empty or blank content → [`TimelineExtractionError::Empty`]
+/// - no JSON object → [`TimelineExtractionError::NotJson`]
+/// - no `events` key, or it is not an array → [`TimelineExtractionError::MissingEvents`]
+///
+/// Each element of the array yields one [`RawTimelineEvent`], with `None` for
+/// any missing or ill-typed field (they are discarded later during validation).
+/// `events` is pulled out with `serde_json`. `source` is accepted as an integer
+/// or as a string that parses to an integer; anything else → `None`.
+fn parse_timeline_events(content: &str) -> Result<Vec<RawTimelineEvent>, TimelineExtractionError> {
+    if content.trim().is_empty() {
+        return Err(TimelineExtractionError::Empty);
+    }
+
+    let value = EpisodicMemoryWorker::extract_json_object(content)
+        .ok_or(TimelineExtractionError::NotJson)?;
+    let events = value
+        .get("events")
+        .ok_or(TimelineExtractionError::MissingEvents)?;
+    let array = events
+        .as_array()
+        .ok_or(TimelineExtractionError::MissingEvents)?;
+
+    Ok(array.iter().map(raw_timeline_event).collect())
+}
+
+/// Turn one JSON element into a [`RawTimelineEvent`], tolerating every shape.
+fn raw_timeline_event(value: &serde_json::Value) -> RawTimelineEvent {
+    let source = match value.get("source") {
+        Some(serde_json::Value::Number(n)) => n.as_i64(),
+        Some(serde_json::Value::String(s)) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    };
+    RawTimelineEvent {
+        source,
+        category: value
+            .get("category")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        fact: value
+            .get("fact")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    }
+}
+
+/// Validate raw events against the batch and derive what the model must **not**
+/// decide:
+/// - `fact` trimmed and non-empty (otherwise the fact is discarded)
+/// - `source` an integer in `1..=primary.len()` (otherwise discarded)
+/// - `category` normalized with [`normalize_category`] (never loses the fact)
+/// - `timestamp` = `primary[source - 1].created_at`
+/// - `source_message_id` = `primary[source - 1].id`
+/// - `id` = a fresh `Uuid`
+/// - deduplicated by `(source_message_id, category, fact)`
+fn validate_timeline_events(
+    raw: Vec<RawTimelineEvent>,
+    primary: &[UnindexedMessage],
+) -> Vec<NewTimelineEvent> {
+    let mut seen: std::collections::HashSet<(String, String, String)> =
+        std::collections::HashSet::new();
+    let mut events: Vec<NewTimelineEvent> = Vec::new();
+
+    for item in raw {
+        let fact = item.fact.as_deref().map(str::trim).unwrap_or("");
+        if fact.is_empty() {
+            continue;
+        }
+
+        let origin = match item.source {
+            Some(source) if source >= 1 && (source as usize) <= primary.len() => {
+                &primary[source as usize - 1]
+            }
+            _ => continue,
+        };
+
+        let category = normalize_category(item.category.as_deref().unwrap_or(""));
+        let source_message_id = Some(origin.id.clone());
+        let dedup_key = (
+            source_message_id.clone().unwrap_or_default(),
+            category.clone(),
+            fact.to_string(),
+        );
+        if !seen.insert(dedup_key) {
+            continue;
+        }
+
+        events.push(NewTimelineEvent {
+            id: Uuid::new_v4().to_string(),
+            timestamp: origin.created_at.clone(),
+            category,
+            fact: fact.to_string(),
+            source_message_id,
+        });
+    }
+
+    events
+}
+
+/// Numbered, dated block of the **primary** batch (no overlap), one line per
+/// message. The leading number is what the model uses as `source`:
+/// `[1] 2026-10-10T08:15:00Z | user: Fui a correr 8 km`
+fn format_timeline_block(primary: &[UnindexedMessage]) -> String {
+    primary
+        .iter()
+        .enumerate()
+        .map(|(i, msg)| {
+            format!(
+                "[{}] {} | {}: {}",
+                i + 1,
+                msg.created_at,
+                msg.role,
+                msg.content
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Outcome of the consolidator for one pass.
@@ -339,6 +496,10 @@ impl EpisodicMemoryWorker {
         // Both extractions succeeded: clear the failure tracker.
         last_llm_attempt.store(0, Ordering::Relaxed);
 
+        // 5d. Extraction 3/3: the chronological facts (Layer D) from the SAME
+        // batch. Best-effort: a failure here never aborts the pass.
+        let timeline = Self::extract_timeline(db, &llm_provider, config, &primary).await;
+
         let persistent_write = match consolidation {
             Consolidation::Write {
                 payload,
@@ -359,6 +520,7 @@ impl EpisodicMemoryWorker {
             &embedding_provider,
             &card,
             &primary,
+            &timeline,
             persistent_write.as_ref(),
         )
         .await
@@ -893,6 +1055,200 @@ impl EpisodicMemoryWorker {
         Ok(response.message.content)
     }
 
+    // ─── Capa D: the extractor (best-effort) ───────────────────────────────
+
+    /// Record one `kind = 'timeline'` statistics row, exactly like
+    /// [`Self::call_semantic_chat`] does for its own call.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_timeline_stats(
+        db: &SqlitePool,
+        model: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        cached_tokens: i64,
+        reasoning_tokens: i64,
+        cost: f64,
+        duration_ms: i64,
+        status: &str,
+        error_message: Option<&str>,
+    ) {
+        let _ = StatsRepo::record_request(
+            db,
+            CallKind::Timeline,
+            &Uuid::new_v4().to_string(),
+            model,
+            None,
+            prompt_tokens,
+            completion_tokens,
+            prompt_tokens + completion_tokens,
+            cached_tokens,
+            reasoning_tokens,
+            cost,
+            Some(duration_ms),
+            status,
+            error_message,
+            None,
+            None,
+        )
+        .await;
+    }
+
+    /// Extract the chronological facts (Capa D) from the primary batch.
+    ///
+    /// This is **best-effort**: an LLM failure, an empty body, non-JSON or a
+    /// missing `events` array is logged with its content length and yields
+    /// `Vec::new()` — the pass is never aborted and nothing is propagated.
+    ///
+    /// The system prompt comes from `settings.timeline_prompt` (with a minimal
+    /// fallback when it is missing, empty or unreadable) and carries no
+    /// placeholder; the numbered batch block travels as a separate user
+    /// message. The call forces JSON mode and its statistic is recorded in both
+    /// the error and the success path with `kind = 'timeline'`.
+    async fn extract_timeline(
+        db: &SqlitePool,
+        llm_provider: &Arc<dyn LLMProvider>,
+        config: &EpisodicMemoryConfig,
+        primary: &[UnindexedMessage],
+    ) -> Vec<NewTimelineEvent> {
+        let generation = crate::generation::read_generation_params(
+            db,
+            crate::generation::GenerationRole::Timeline,
+        )
+        .await;
+
+        let prompt = match crate::db::repos::settings::SettingsRepo::get(db, "timeline_prompt")
+            .await
+        {
+            Ok(Some(p)) if !p.trim().is_empty() => p,
+            Ok(_) => {
+                tracing::warn!("settings.timeline_prompt missing or empty; using minimal fallback");
+                DEFAULT_TIMELINE_PROMPT_FALLBACK.to_string()
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "failed to read settings.timeline_prompt; using minimal fallback"
+                );
+                DEFAULT_TIMELINE_PROMPT_FALLBACK.to_string()
+            }
+        };
+
+        let block = format_timeline_block(primary);
+        let request = ChatRequest {
+            model: config.timeline_model.clone(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".into(),
+                    content: prompt,
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                ChatMessage {
+                    role: "user".into(),
+                    content: block,
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: None,
+            temperature: Some(generation.temperature),
+            max_tokens: Some(generation.max_tokens),
+            stream: false,
+            reasoning: generation.reasoning,
+            response_format: Some(ResponseFormat::JsonObject),
+        };
+
+        let start = std::time::Instant::now();
+        let response = match llm_provider.chat(request).await {
+            Ok(response) => response,
+            Err(e) => {
+                let duration_ms = start.elapsed().as_millis() as i64;
+                Self::record_timeline_stats(
+                    db,
+                    &config.timeline_model,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    duration_ms,
+                    "error",
+                    Some(&e.to_string()),
+                )
+                .await;
+                tracing::error!(error = %e, "EpisodicMemoryWorker: timeline LLM chat failed");
+                return Vec::new();
+            }
+        };
+
+        let duration_ms = start.elapsed().as_millis() as i64;
+        let prompt_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.prompt_tokens as i64)
+            .unwrap_or(0);
+        let completion_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.completion_tokens as i64)
+            .unwrap_or(0);
+        let cached_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.cached_tokens as i64)
+            .unwrap_or(0);
+        let reasoning_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.reasoning_tokens as i64)
+            .unwrap_or(0);
+        let cost = response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0);
+
+        let content = &response.message.content;
+        match parse_timeline_events(content) {
+            Ok(raw) => {
+                let events = validate_timeline_events(raw, primary);
+                Self::record_timeline_stats(
+                    db,
+                    &config.timeline_model,
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_tokens,
+                    reasoning_tokens,
+                    cost,
+                    duration_ms,
+                    "success",
+                    None,
+                )
+                .await;
+                events
+            }
+            Err(err) => {
+                Self::record_timeline_stats(
+                    db,
+                    &config.timeline_model,
+                    prompt_tokens,
+                    completion_tokens,
+                    cached_tokens,
+                    reasoning_tokens,
+                    cost,
+                    duration_ms,
+                    "error",
+                    Some(&format!("{err:?}")),
+                )
+                .await;
+                tracing::warn!(
+                    content_len = %content.len(),
+                    error = ?err,
+                    "EpisodicMemoryWorker: timeline extractor returned no usable events; continuing without facts"
+                );
+                Vec::new()
+            }
+        }
+    }
+
     /// Consolidate the Layer C state from the same batch used for the episodic
     /// card.
     ///
@@ -1164,6 +1520,7 @@ impl EpisodicMemoryWorker {
         embedding_provider: &Arc<dyn EmbeddingProvider>,
         card: &MemoryCard,
         primary: &[UnindexedMessage],
+        timeline: &[NewTimelineEvent],
         persistent: Option<&PersistentWrite>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Build the canonical ficha text
@@ -1224,6 +1581,9 @@ impl EpisodicMemoryWorker {
             PersistentMemoryRepo::upsert_in_tx(&mut tx, &write.payload, &write.updated_at).await?;
         }
 
+        // Layer D: the chronological facts, in the SAME transaction.
+        TimelineRepo::insert_many(&mut *tx, timeline).await?;
+
         for msg in primary {
             sqlx::query("UPDATE messages SET is_indexed = 1, summary_ref = ?1 WHERE id = ?2")
                 .bind(&memory.id)
@@ -1274,6 +1634,7 @@ mod tests {
         pub chat_response: String,
         pub state_response: String,
         pub compression_response: String,
+        pub timeline_response: String,
         pub fail_semantic: bool,
         pub state_sequence: Arc<Mutex<std::collections::VecDeque<String>>>,
     }
@@ -1286,10 +1647,14 @@ mod tests {
                 .first()
                 .map(|m| m.content.clone())
                 .unwrap_or_default();
-            self.chat_calls.lock().unwrap().push(request);
 
             let is_semantic = system_content.contains(SEMANTIC_CALL_MARKER)
                 || system_content.contains(COMPRESSION_CALL_MARKER);
+            // The timeline extractor is the third call: it forces JSON mode and
+            // is neither the consolidator nor the compression pass.
+            let is_timeline =
+                !is_semantic && matches!(request.response_format, Some(ResponseFormat::JsonObject));
+            self.chat_calls.lock().unwrap().push(request);
 
             let content = if is_semantic {
                 if self.fail_semantic {
@@ -1301,6 +1666,8 @@ mod tests {
                     let popped = self.state_sequence.lock().unwrap().pop_front();
                     popped.unwrap_or_else(|| self.state_response.clone())
                 }
+            } else if is_timeline {
+                self.timeline_response.clone()
             } else {
                 self.chat_response.clone()
             };
@@ -1347,6 +1714,7 @@ mod tests {
                 chat_response: chat_response.to_string(),
                 state_response: DEFAULT_STATE_RESPONSE.to_string(),
                 compression_response: DEFAULT_STATE_RESPONSE.to_string(),
+                timeline_response: r#"{"events": []}"#.to_string(),
                 fail_semantic: false,
                 state_sequence: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             }
@@ -1361,6 +1729,12 @@ mod tests {
         /// Override the compression response.
         fn compression(mut self, compressed: &str) -> Self {
             self.compression_response = compressed.to_string();
+            self
+        }
+
+        /// Override the timeline extractor response.
+        fn timeline(mut self, events: &str) -> Self {
+            self.timeline_response = events.to_string();
             self
         }
 
@@ -1501,6 +1875,13 @@ mod tests {
 
     async fn count_persistent_memory(pool: &SqlitePool) -> i64 {
         sqlx::query_scalar("SELECT COUNT(*) FROM persistent_memory")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn count_timeline(pool: &SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events")
             .fetch_one(pool)
             .await
             .unwrap()
@@ -2379,15 +2760,15 @@ mod tests {
         .await;
         assert_eq!(
             chat_calls.lock().unwrap().len(),
-            2,
-            "the first evaluate must make the two extractions (episodic + consolidator)"
+            3,
+            "the first evaluate must make the three extractions (episodic + consolidator + timeline)"
         );
 
         // Second evaluate within the cooldown must NOT re-call the LLM.
         EpisodicMemoryWorker::evaluate(&db, provider, embedding_provider, &config, &last).await;
         assert_eq!(
             chat_calls.lock().unwrap().len(),
-            2,
+            3,
             "a persist failure must start the cooldown: no second pass"
         );
     }
@@ -2907,8 +3288,8 @@ mod tests {
         assert_eq!(count_unindexed(&db).await, 0, "all messages marked");
         assert_eq!(
             calls.lock().unwrap().len(),
-            2,
-            "the pass makes two extractions (B and C)"
+            3,
+            "the pass makes three extractions (B, C and D)"
         );
     }
 
@@ -3016,7 +3397,7 @@ mod tests {
             .fetch_one(&db)
             .await
             .unwrap();
-        assert_eq!(total, 2, "one stats row per extraction");
+        assert_eq!(total, 3, "one stats row per extraction");
 
         let null_profiles: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests WHERE profile_id IS NULL")
@@ -3024,8 +3405,8 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(
-            null_profiles, 2,
-            "both stats rows must carry a NULL profile"
+            null_profiles, 3,
+            "all three stats rows must carry a NULL profile"
         );
     }
 
@@ -3336,6 +3717,436 @@ mod tests {
             matches!(request.reasoning, Some(ReasoningSpec::Off)),
             "an unknown reasoning level must fall back to Off, got {:?}",
             request.reasoning
+        );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Capa D: extracción de hechos cronológicos
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// A primary-batch message as the parser/validator helpers see it.
+    fn umsg(id: &str, role: &str, content: &str, created_at: &str) -> UnindexedMessage {
+        UnindexedMessage {
+            id: id.to_string(),
+            role: role.to_string(),
+            content: content.to_string(),
+            tokens_count: 1,
+            created_at: created_at.to_string(),
+        }
+    }
+
+    // ─── 1.3 parser ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_timeline_events_valid_envelope() {
+        let body = r#"{"events":[{"source":1,"category":"sport","fact":"Fui a correr"},{"source":2,"category":"shopping","fact":"Compré café"}]}"#;
+        let raw = parse_timeline_events(body).expect("a valid envelope must parse");
+        assert_eq!(raw.len(), 2, "two elements → two raw events");
+        assert_eq!(raw[0].source, Some(1));
+        assert_eq!(raw[0].category.as_deref(), Some("sport"));
+        assert_eq!(raw[0].fact.as_deref(), Some("Fui a correr"));
+    }
+
+    #[test]
+    fn test_parse_timeline_events_empty_array() {
+        let raw = parse_timeline_events(r#"{"events": []}"#).expect("an empty array is valid");
+        assert!(raw.is_empty(), "an empty events array yields no events");
+    }
+
+    #[test]
+    fn test_parse_timeline_events_blank_is_empty_error() {
+        assert_eq!(
+            parse_timeline_events(""),
+            Err(TimelineExtractionError::Empty)
+        );
+        assert_eq!(
+            parse_timeline_events("   "),
+            Err(TimelineExtractionError::Empty)
+        );
+    }
+
+    #[test]
+    fn test_parse_timeline_events_non_json_is_not_json_error() {
+        assert_eq!(
+            parse_timeline_events("no json"),
+            Err(TimelineExtractionError::NotJson)
+        );
+        assert_eq!(
+            parse_timeline_events("{truncado"),
+            Err(TimelineExtractionError::NotJson)
+        );
+    }
+
+    #[test]
+    fn test_parse_timeline_events_missing_events_key() {
+        assert_eq!(
+            parse_timeline_events(r#"{"otra": 1}"#),
+            Err(TimelineExtractionError::MissingEvents)
+        );
+        assert_eq!(
+            parse_timeline_events(r#"{"events": 3}"#),
+            Err(TimelineExtractionError::MissingEvents)
+        );
+    }
+
+    #[test]
+    fn test_parse_timeline_events_tolerates_bad_source() {
+        let body = r#"{"events":[{"category":"sport","fact":"sin source"},{"source":"abc","category":"sport","fact":"source no numérico"},{"source":"7","category":"sport","fact":"source string"},{"source":2,"category":"sport","fact":"ok"}]}"#;
+        let raw = parse_timeline_events(body).expect("a valid envelope must parse");
+        assert_eq!(raw.len(), 4, "every element yields one raw event");
+        assert_eq!(raw[0].source, None, "a missing source is None");
+        assert_eq!(raw[1].source, None, "a non-numeric source is None");
+        assert_eq!(
+            raw[2].source,
+            Some(7),
+            "a numeric string parses to an integer"
+        );
+        assert_eq!(raw[3].source, Some(2));
+    }
+
+    // ─── 1.4 validación ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_timeline_events_unknown_category_folds_to_lifestyle() {
+        let primary = vec![umsg("m1", "user", "contenido", "2026-10-10T08:15:00Z")];
+        let raw = parse_timeline_events(
+            r#"{"events":[{"source":1,"category":"random","fact":"Hice algo"}]}"#,
+        )
+        .unwrap();
+        let events = validate_timeline_events(raw, &primary);
+        assert_eq!(
+            events.len(),
+            1,
+            "an unknown category must not drop the fact"
+        );
+        assert_eq!(events[0].category, "lifestyle");
+    }
+
+    #[test]
+    fn test_validate_timeline_events_blank_fact_is_dropped() {
+        let primary = vec![umsg("m1", "user", "contenido", "2026-10-10T08:15:00Z")];
+        let raw = parse_timeline_events(
+            r#"{"events":[{"source":1,"category":"sport","fact":"   "},{"source":1,"category":"sport","fact":"Válido"}]}"#,
+        )
+        .unwrap();
+        let events = validate_timeline_events(raw, &primary);
+        assert_eq!(events.len(), 1, "only the fact with text survives");
+        assert_eq!(events[0].fact, "Válido");
+    }
+
+    #[test]
+    fn test_validate_timeline_events_out_of_range_source_is_dropped() {
+        let primary = vec![
+            umsg("m1", "user", "a", "2026-10-10T08:15:00Z"),
+            umsg("m2", "user", "b", "2026-10-10T08:16:00Z"),
+        ];
+        let raw = parse_timeline_events(
+            r#"{"events":[{"source":0,"category":"sport","fact":"cero"},{"source":-1,"category":"sport","fact":"negativo"},{"source":3,"category":"sport","fact":"fuera"},{"source":1,"category":"sport","fact":"dentro"}]}"#,
+        )
+        .unwrap();
+        let events = validate_timeline_events(raw, &primary);
+        assert_eq!(events.len(), 1, "0, -1 and len()+1 must be discarded");
+        assert_eq!(events[0].fact, "dentro");
+    }
+
+    #[test]
+    fn test_validate_timeline_events_derives_timestamp_and_source_id() {
+        let primary = vec![
+            umsg("msg-a", "user", "a", "2026-10-10T08:15:00Z"),
+            umsg("msg-b", "assistant", "b", "2026-10-10T08:16:00Z"),
+            umsg("msg-c", "user", "c", "2026-10-10T09:30:00Z"),
+        ];
+        let raw = parse_timeline_events(
+            r#"{"events":[{"source":3,"category":"shopping","fact":"Compré filtros"}]}"#,
+        )
+        .unwrap();
+        let events = validate_timeline_events(raw, &primary);
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].timestamp, "2026-10-10T09:30:00Z",
+            "timestamp must be the created_at of the source message"
+        );
+        assert_eq!(
+            events[0].source_message_id.as_deref(),
+            Some("msg-c"),
+            "source_message_id must be the id of the source message"
+        );
+    }
+
+    #[test]
+    fn test_validate_timeline_events_deduplicates() {
+        let primary = vec![umsg("m1", "user", "a", "2026-10-10T08:15:00Z")];
+        let raw = parse_timeline_events(
+            r#"{"events":[{"source":1,"category":"sport","fact":"Fui a correr"},{"source":1,"category":"sport","fact":"Fui a correr"}]}"#,
+        )
+        .unwrap();
+        let events = validate_timeline_events(raw, &primary);
+        assert_eq!(events.len(), 1, "the exact duplicate must be deduplicated");
+    }
+
+    #[test]
+    fn test_format_timeline_block_is_numbered_and_dated() {
+        let primary = vec![
+            umsg("m1", "user", "Fui a correr 8 km", "2026-10-10T08:15:00Z"),
+            umsg("m2", "assistant", "¡Bien!", "2026-10-10T08:16:00Z"),
+        ];
+        let block = format_timeline_block(&primary);
+        assert_eq!(
+            block,
+            "[1] 2026-10-10T08:15:00Z | user: Fui a correr 8 km\n[2] 2026-10-10T08:16:00Z | assistant: ¡Bien!"
+        );
+    }
+
+    // ─── 1.5 pasada ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_evaluate_persists_timeline_events_with_source_date() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+
+        let times = [
+            "2026-10-10T08:15:00Z",
+            "2026-10-10T08:16:00Z",
+            "2026-10-10T09:30:00Z",
+        ];
+        let mut ids = Vec::new();
+        for (i, t) in times.iter().enumerate() {
+            ids.push(insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, t).await);
+        }
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).timeline(
+            r#"{"events":[{"source":1,"category":"sport","fact":"Fui a correr 8 km"},{"source":3,"category":"shopping","fact":"Compré filtros de café"}]}"#,
+        );
+
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            mock.wrap(),
+            embedding_provider(),
+            &EpisodicMemoryConfig {
+                inactivity_minutes: 0,
+                ..Default::default()
+            },
+            &no_attempt(),
+        )
+        .await;
+
+        // Layers B, C and D are all written in the same pass, batch marked.
+        assert_eq!(count_memory(&db).await, 1, "the card is written");
+        assert_eq!(
+            count_persistent_memory(&db).await,
+            1,
+            "the state is written"
+        );
+        assert_eq!(count_unindexed(&db).await, 0, "the batch is marked");
+        assert_eq!(count_timeline(&db).await, 2, "two facts are persisted");
+
+        let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT timestamp, category, fact, source_message_id FROM timeline_events ORDER BY timestamp ASC",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            rows[0].0, "2026-10-10T08:15:00Z",
+            "timestamp == created_at of source message 1"
+        );
+        assert_eq!(rows[0].1, "sport");
+        assert_eq!(rows[0].2, "Fui a correr 8 km");
+        assert_eq!(
+            rows[0].3.as_deref(),
+            Some(ids[0].as_str()),
+            "source_message_id == id of source message 1"
+        );
+
+        assert_eq!(
+            rows[1].0, "2026-10-10T09:30:00Z",
+            "timestamp == created_at of source message 3"
+        );
+        assert_eq!(rows[1].1, "shopping");
+        assert_eq!(
+            rows[1].3.as_deref(),
+            Some(ids[2].as_str()),
+            "source_message_id == id of source message 3"
+        );
+    }
+
+    // ─── 1.6 best-effort ───────────────────────────────────────────────────
+
+    /// Scenario: an empty extractor does not lose the batch.
+    #[tokio::test]
+    async fn test_evaluate_timeline_best_effort_empty_response_still_persists() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).timeline("");
+
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            mock.wrap(),
+            embedding_provider(),
+            &EpisodicMemoryConfig {
+                inactivity_minutes: 0,
+                ..Default::default()
+            },
+            &no_attempt(),
+        )
+        .await;
+
+        assert_eq!(count_memory(&db).await, 1, "the card is written");
+        assert_eq!(
+            count_persistent_memory(&db).await,
+            1,
+            "the state is written"
+        );
+        assert_eq!(count_unindexed(&db).await, 0, "the batch is marked");
+        assert_eq!(count_timeline(&db).await, 0, "no facts from an empty body");
+
+        let error_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests WHERE kind = 'timeline' AND status = 'error'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            error_rows, 1,
+            "the timeline stat is recorded with status='error'"
+        );
+    }
+
+    /// Scenario: a non-JSON extractor does not lose the batch either.
+    #[tokio::test]
+    async fn test_evaluate_timeline_best_effort_non_json_still_persists() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).timeline("lo siento, no puedo");
+
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            mock.wrap(),
+            embedding_provider(),
+            &EpisodicMemoryConfig {
+                inactivity_minutes: 0,
+                ..Default::default()
+            },
+            &no_attempt(),
+        )
+        .await;
+
+        assert_eq!(count_memory(&db).await, 1, "the card is written");
+        assert_eq!(
+            count_persistent_memory(&db).await,
+            1,
+            "the state is written"
+        );
+        assert_eq!(count_unindexed(&db).await, 0, "the batch is marked");
+        assert_eq!(
+            count_timeline(&db).await,
+            0,
+            "no facts from a non-JSON body"
+        );
+
+        let error_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests WHERE kind = 'timeline' AND status = 'error'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            error_rows, 1,
+            "the timeline stat is recorded with status='error'"
+        );
+    }
+
+    // ─── 1.7 prompt ────────────────────────────────────────────────────────
+
+    /// Run the extractor once and return the captured request.
+    async fn timeline_request(db: &SqlitePool, primary: &[UnindexedMessage]) -> ChatRequest {
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        let _ = EpisodicMemoryWorker::extract_timeline(
+            db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            primary,
+        )
+        .await;
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "the extractor must call the LLM once");
+        calls[0].clone()
+    }
+
+    #[tokio::test]
+    async fn test_extract_timeline_uses_custom_prompt_from_settings() {
+        let db = test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &db,
+            "timeline_prompt",
+            "CUSTOM TIMELINE PROMPT",
+        )
+        .await
+        .unwrap();
+
+        let primary = vec![umsg("m1", "user", "Fui a correr", "2026-10-10T08:15:00Z")];
+        let request = timeline_request(&db, &primary).await;
+
+        assert_eq!(
+            request.messages[0].content, "CUSTOM TIMELINE PROMPT",
+            "the system prompt must be the settings value, literally (no substitution)"
+        );
+        assert!(
+            matches!(request.response_format, Some(ResponseFormat::JsonObject)),
+            "the extractor must force JSON mode"
+        );
+        assert_eq!(
+            request.model, "mistralai/mistral-small-24b-instruct-2501",
+            "the extractor uses timeline_model"
+        );
+        assert!(
+            request.messages[1].content.contains("[1]"),
+            "the batch block carries the line number"
+        );
+        assert!(
+            request.messages[1].content.contains("2026-10-10T08:15:00Z"),
+            "the batch block carries the message date"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_extract_timeline_falls_back_when_prompt_missing_or_empty() {
+        let db = test_db().await;
+        crate::db::repos::settings::SettingsRepo::delete(&db, "timeline_prompt")
+            .await
+            .unwrap();
+
+        // Missing.
+        let primary = vec![umsg("m1", "user", "Fui a correr", "2026-10-10T08:15:00Z")];
+        let request = timeline_request(&db, &primary).await;
+        assert_eq!(
+            request.messages[0].content, DEFAULT_TIMELINE_PROMPT_FALLBACK,
+            "a missing key must use the minimal fallback"
+        );
+
+        // Empty (whitespace only).
+        crate::db::repos::settings::SettingsRepo::set(&db, "timeline_prompt", "   ")
+            .await
+            .unwrap();
+        let request = timeline_request(&db, &primary).await;
+        assert_eq!(
+            request.messages[0].content, DEFAULT_TIMELINE_PROMPT_FALLBACK,
+            "an empty key must use the minimal fallback"
         );
     }
 }

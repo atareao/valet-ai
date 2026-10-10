@@ -1,13 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   changedSkillFields,
-  DEFAULT_THRESHOLD,
-  formatThreshold,
   isSkillFieldOverridden,
-  parseThreshold,
   skillEffectiveValues,
+  skillEnabledKey,
   skillFieldKeys,
   skillFields,
+  skillThresholdKey,
 } from "../components/skillRouter";
 import type { SkillInfo, SkillOverrideField } from "../types";
 
@@ -19,6 +18,7 @@ function makeSkill(overrides: Partial<SkillInfo> = {}): SkillInfo {
     prompt_key: "SKILL_PENDIENTES_PROMPT",
     prompt_heading: "# SKILL ACTIVA: PENDIENTES",
     tools: ["tasks"],
+    enabled: true,
     question: "¿Pregunta efectiva?",
     criteria_true: "Criterio del sí efectivo",
     criteria_false: "Criterio del no efectivo",
@@ -28,55 +28,21 @@ function makeSkill(overrides: Partial<SkillInfo> = {}): SkillInfo {
   };
 }
 
-describe("parseThreshold", () => {
-  it("conserva un valor válido dentro de [0, 1]", () => {
-    expect(parseThreshold("0.45")).toBe(0.45);
+describe("skillEnabledKey", () => {
+  it("compone la clave de habilitación con el id en mayúsculas", () => {
+    expect(skillEnabledKey("widgets")).toBe("ROUTER_SKILL_WIDGETS_ENABLED");
   });
 
-  it("cae al default cuando el valor está ausente", () => {
-    expect(parseThreshold(undefined)).toBe(DEFAULT_THRESHOLD);
-  });
-
-  it("cae al default para una cadena vacía", () => {
-    expect(parseThreshold("")).toBe(DEFAULT_THRESHOLD);
-  });
-
-  it("cae al default para un valor no numérico", () => {
-    expect(parseThreshold("no-numero")).toBe(DEFAULT_THRESHOLD);
-  });
-
-  it("cae al default para NaN literal", () => {
-    expect(parseThreshold("NaN")).toBe(DEFAULT_THRESHOLD);
-  });
-
-  it("cae al default para infinito", () => {
-    expect(parseThreshold("inf")).toBe(DEFAULT_THRESHOLD);
-  });
-
-  it("cae al default para un valor fuera de rango por arriba", () => {
-    expect(parseThreshold("2.5")).toBe(DEFAULT_THRESHOLD);
-  });
-
-  it("cae al default para un valor fuera de rango por abajo", () => {
-    expect(parseThreshold("-1")).toBe(DEFAULT_THRESHOLD);
-  });
-
-  it("conserva el extremo inferior válido 0", () => {
-    expect(parseThreshold("0")).toBe(0);
-  });
-
-  it("conserva el extremo superior válido 1", () => {
-    expect(parseThreshold("1")).toBe(1);
+  it("pasa el id a mayúsculas sin alterar el resto de la clave", () => {
+    expect(skillEnabledKey("Pendientes")).toBe(
+      "ROUTER_SKILL_PENDIENTES_ENABLED",
+    );
   });
 });
 
-describe("formatThreshold", () => {
-  it("formatea con dos decimales", () => {
-    expect(formatThreshold(0)).toBe("0.00");
-    expect(formatThreshold(0.1)).toBe("0.10");
-    expect(formatThreshold(0.2)).toBe("0.20");
-    expect(formatThreshold(0.333)).toBe("0.33");
-    expect(formatThreshold(1)).toBe("1.00");
+describe("skillThresholdKey", () => {
+  it("compone la clave del umbral por skill con el id en mayúsculas", () => {
+    expect(skillThresholdKey("widgets")).toBe("ROUTER_THRESHOLD_WIDGETS");
   });
 });
 
@@ -170,31 +136,49 @@ describe("skillEffectiveValues", () => {
 describe("isSkillFieldOverridden", () => {
   it("marca el campo cuyo kind figura en overridden", () => {
     const skill = makeSkill({ overridden: ["question", "criteria_true"] });
-    expect(isSkillFieldOverridden(skill, "question")).toBe(true);
-    expect(isSkillFieldOverridden(skill, "criteria_true")).toBe(true);
-    expect(isSkillFieldOverridden(skill, "criteria_false")).toBe(false);
+    expect(isSkillFieldOverridden(skill, "question", null)).toBe(true);
+    expect(isSkillFieldOverridden(skill, "criteria_true", null)).toBe(true);
+    expect(isSkillFieldOverridden(skill, "criteria_false", null)).toBe(false);
   });
 
-  it("nunca marca el fragmento aunque haya otros campos sobrescritos", () => {
-    // `overridden` solo cubre pregunta, criterios y umbral: el fragmento no se
-    // marca (su restauración es vaciar su clave). El tipo `SkillOverrideField`
-    // ni siquiera admite `"prompt"`, así que basta con partir de campos válidos
-    // y comprobar que el kind del fragmento nunca resulta marcado.
+  it("marca el fragmento cuando su clave en settings no está vacía", () => {
+    const skill = makeSkill({ prompt_key: "SKILL_AGENDA_PROMPT" });
+    const settings: Record<string, string> = {
+      SKILL_AGENDA_PROMPT: "fragmento sobrescrito",
+    };
+    expect(isSkillFieldOverridden(skill, "prompt", settings)).toBe(true);
+  });
+
+  it("no marca el fragmento cuando su clave está vacía o ausente", () => {
+    const skill = makeSkill({ prompt_key: "SKILL_AGENDA_PROMPT" });
+    expect(isSkillFieldOverridden(skill, "prompt", null)).toBe(false);
+    expect(
+      isSkillFieldOverridden(skill, "prompt", { SKILL_AGENDA_PROMPT: "" }),
+    ).toBe(false);
+    expect(
+      isSkillFieldOverridden(skill, "prompt", { SKILL_PENDIENTES_PROMPT: "x" }),
+    ).toBe(false);
+  });
+
+  it("deja el fragmento fuera de `overridden` (solo settings lo marca)", () => {
+    // `overridden` no cubre el fragmento: aunque no figure, settings manda.
     const overridden: SkillOverrideField[] = [
       "question",
       "criteria_true",
       "threshold",
     ];
     const skill = makeSkill({ overridden });
-    expect(isSkillFieldOverridden(skill, "question")).toBe(true);
-    expect(isSkillFieldOverridden(skill, "prompt")).toBe(false);
+    expect(isSkillFieldOverridden(skill, "question", null)).toBe(true);
+    // Con settings vacío, el fragmento no se marca pese a no estar en
+    // `overridden`.
+    expect(isSkillFieldOverridden(skill, "prompt", null)).toBe(false);
   });
 
   it("no marca nada con overridden vacío", () => {
     const skill = makeSkill({ overridden: [] });
-    expect(isSkillFieldOverridden(skill, "question")).toBe(false);
-    expect(isSkillFieldOverridden(skill, "criteria_true")).toBe(false);
-    expect(isSkillFieldOverridden(skill, "criteria_false")).toBe(false);
+    expect(isSkillFieldOverridden(skill, "question", null)).toBe(false);
+    expect(isSkillFieldOverridden(skill, "criteria_true", null)).toBe(false);
+    expect(isSkillFieldOverridden(skill, "criteria_false", null)).toBe(false);
   });
 });
 
@@ -251,6 +235,77 @@ describe("changedSkillFields", () => {
     };
     expect(changedSkillFields(values, [skill], settings)).toEqual({
       SKILL_AGENDA_QUESTION: "pregunta editada",
+    });
+  });
+
+  it("detecta el apagado de la habilitación y lo serializa", () => {
+    const skill = makeSkill({ id: "widgets", enabled: true });
+    const values: Record<string, unknown> = {
+      ROUTER_SKILL_WIDGETS_ENABLED: false,
+    };
+    expect(changedSkillFields(values, [skill], null)).toEqual({
+      ROUTER_SKILL_WIDGETS_ENABLED: "false",
+    });
+  });
+
+  it("no envía la habilitación si no cambia", () => {
+    const skill = makeSkill({ id: "widgets", enabled: true });
+    const values: Record<string, unknown> = {
+      ROUTER_SKILL_WIDGETS_ENABLED: true,
+    };
+    expect(changedSkillFields(values, [skill], null)).toEqual({});
+  });
+
+  it("trata la habilitación ausente en el catálogo como encendida", () => {
+    const skill = makeSkill({ id: "widgets", enabled: undefined });
+    // `true` coincide con el efectivo (por defecto habilitada) → sin cambio.
+    expect(
+      changedSkillFields({ ROUTER_SKILL_WIDGETS_ENABLED: true }, [skill], null),
+    ).toEqual({});
+    // `false` sí difiere → se envía serializado.
+    expect(
+      changedSkillFields(
+        { ROUTER_SKILL_WIDGETS_ENABLED: false },
+        [skill],
+        null,
+      ),
+    ).toEqual({ ROUTER_SKILL_WIDGETS_ENABLED: "false" });
+  });
+
+  it("detecta el cambio de umbral por skill y lo serializa", () => {
+    const skill = makeSkill({ id: "widgets", threshold: 0.2 });
+    const values: Record<string, unknown> = {
+      ROUTER_THRESHOLD_WIDGETS: 0.35,
+    };
+    expect(changedSkillFields(values, [skill], null)).toEqual({
+      ROUTER_THRESHOLD_WIDGETS: "0.35",
+    });
+  });
+
+  it("no envía el umbral si no cambia", () => {
+    const skill = makeSkill({ id: "widgets", threshold: 0.2 });
+    expect(
+      changedSkillFields({ ROUTER_THRESHOLD_WIDGETS: 0.2 }, [skill], null),
+    ).toEqual({});
+  });
+
+  it("combina los cuatro textos, la habilitación y el umbral en un solo diff", () => {
+    const skill = makeSkill({
+      id: "widgets",
+      prompt_key: "SKILL_WIDGETS_PROMPT",
+      question: "pregunta del catálogo",
+      enabled: true,
+      threshold: 0.2,
+    });
+    const values: Record<string, unknown> = {
+      SKILL_WIDGETS_QUESTION: "pregunta editada",
+      ROUTER_SKILL_WIDGETS_ENABLED: false,
+      ROUTER_THRESHOLD_WIDGETS: 0.35,
+    };
+    expect(changedSkillFields(values, [skill], null)).toEqual({
+      SKILL_WIDGETS_QUESTION: "pregunta editada",
+      ROUTER_SKILL_WIDGETS_ENABLED: "false",
+      ROUTER_THRESHOLD_WIDGETS: "0.35",
     });
   });
 

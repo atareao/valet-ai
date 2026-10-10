@@ -4,11 +4,17 @@ use uuid::Uuid;
 use crate::llm::provider::ToolDef;
 use crate::models::Tool;
 
+/// Read and reconcile the `tools` table.
+///
+/// The table is a plain catalogue of the registered tools: the per-tool
+/// `enabled` flag was retired together with the toggle endpoint. Selection is
+/// now a skill-level concern (`orchestrator::skills`), so this repository has no
+/// enablement logic.
 pub struct ToolsRepo;
 
 impl ToolsRepo {
     pub async fn list(pool: &SqlitePool) -> Result<Vec<Tool>, sqlx::Error> {
-        let rows = sqlx::query("SELECT id, name, description, enabled FROM tools ORDER BY name")
+        let rows = sqlx::query("SELECT id, name, description FROM tools ORDER BY name")
             .fetch_all(pool)
             .await?;
 
@@ -18,7 +24,6 @@ impl ToolsRepo {
                 id: row.get(0),
                 name: row.get(1),
                 description: row.get(2),
-                enabled: row.get::<bool, _>(3),
             })
             .collect();
 
@@ -26,7 +31,7 @@ impl ToolsRepo {
     }
 
     pub async fn find_by_name(pool: &SqlitePool, name: &str) -> Result<Option<Tool>, sqlx::Error> {
-        let row = sqlx::query("SELECT id, name, description, enabled FROM tools WHERE name = ?1")
+        let row = sqlx::query("SELECT id, name, description FROM tools WHERE name = ?1")
             .bind(name)
             .fetch_optional(pool)
             .await?;
@@ -35,28 +40,6 @@ impl ToolsRepo {
             id: r.get(0),
             name: r.get(1),
             description: r.get(2),
-            enabled: r.get::<bool, _>(3),
-        }))
-    }
-
-    pub async fn toggle_enabled(pool: &SqlitePool, id: &str) -> Result<Option<Tool>, sqlx::Error> {
-        sqlx::query(
-            "UPDATE tools SET enabled = CASE WHEN enabled = 1 THEN 0 ELSE 1 END WHERE id = ?1",
-        )
-        .bind(id)
-        .execute(pool)
-        .await?;
-
-        let row = sqlx::query("SELECT id, name, description, enabled FROM tools WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
-
-        Ok(row.map(|r| Tool {
-            id: r.get(0),
-            name: r.get(1),
-            description: r.get(2),
-            enabled: r.get::<bool, _>(3),
         }))
     }
 
@@ -64,8 +47,8 @@ impl ToolsRepo {
     ///
     /// Rows whose `name` is not in `defs` are removed (when `defs` is empty the
     /// whole table is cleared). Each definition is upserted preserving the
-    /// existing `id` and `enabled` flag — UI toggles reference the `id`, so it
-    /// must survive reconciliations.
+    /// existing `id` — nothing else references it, but keeping it stable keeps
+    /// the catalogue's identity across reconciliations.
     pub async fn sync_from_registry(
         pool: &SqlitePool,
         defs: &[ToolDef],
@@ -89,10 +72,10 @@ impl ToolsRepo {
 
         for def in defs {
             // A fresh id is only used when the row does not exist yet; on
-            // conflict the existing id (and enabled flag) is preserved.
+            // conflict the existing id is preserved.
             let new_id = Uuid::new_v4().to_string();
             sqlx::query(
-                "INSERT INTO tools (id, name, description, enabled) VALUES (?1, ?2, ?3, 1) \
+                "INSERT INTO tools (id, name, description) VALUES (?1, ?2, ?3) \
                  ON CONFLICT(name) DO UPDATE SET description = excluded.description",
             )
             .bind(new_id)
@@ -104,13 +87,6 @@ impl ToolsRepo {
 
         Ok(())
     }
-
-    /// Names of tools currently disabled in the database.
-    pub async fn disabled_names(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
-        sqlx::query_scalar("SELECT name FROM tools WHERE enabled = 0")
-            .fetch_all(pool)
-            .await
-    }
 }
 
 #[cfg(test)]
@@ -118,7 +94,7 @@ mod tests {
     use super::*;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    /// Test-side copy of the production tool catalog. Must mirror the 13 tools
+    /// Test-side copy of the production tool catalog. Must mirror the 17 tools
     /// returned by `build_tool_registry` in `src/lib.rs`; keep both in sync.
     const REGISTRY_NAMES: &[&str] = &[
         "weather",
@@ -134,6 +110,10 @@ mod tests {
         "notes",
         "unified_search",
         "render_widget",
+        "strava_recent_activities",
+        "strava_activity_detail",
+        "strava_activity_streams",
+        "strava_athlete_stats",
     ];
 
     async fn setup() -> Result<SqlitePool, sqlx::Error> {
@@ -170,7 +150,7 @@ mod tests {
         let pool = setup().await?;
         ToolsRepo::sync_from_registry(&pool, &defs(REGISTRY_NAMES)).await?;
         let tools = ToolsRepo::list(&pool).await?;
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 17);
         assert!(tools.iter().any(|t| t.name == "weather"));
         assert!(tools.iter().any(|t| t.name == "unified_search"));
         Ok(())
@@ -195,8 +175,8 @@ mod tests {
         let pool = setup().await?;
         // Seed a legacy row that is not part of the registry.
         sqlx::query(
-            "INSERT INTO tools (id, name, description, enabled) \
-             VALUES ('legacy-id', 'geo', 'Geolocalización', 1)",
+            "INSERT INTO tools (id, name, description) \
+             VALUES ('legacy-id', 'geo', 'Geolocalización')",
         )
         .execute(&pool)
         .await?;
@@ -208,12 +188,13 @@ mod tests {
             !tools.iter().any(|t| t.name == "geo"),
             "geo must be removed"
         );
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 17);
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_sync_preserves_enabled_and_id() -> Result<(), Box<dyn std::error::Error>> {
+    async fn test_sync_preserves_id_and_updates_description(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup().await?;
         ToolsRepo::sync_from_registry(&pool, &defs(REGISTRY_NAMES)).await?;
 
@@ -223,12 +204,8 @@ mod tests {
             .find(|t| t.name == "weather")
             .unwrap();
         let original_id = weather.id.clone();
-        let toggled = ToolsRepo::toggle_enabled(&pool, &weather.id)
-            .await?
-            .unwrap();
-        assert!(!toggled.enabled);
 
-        // Re-sync with a new description: enabled=0 and the id must survive.
+        // Re-sync with a new description: the id must survive.
         let mut updated = defs(REGISTRY_NAMES);
         for def in &mut updated {
             if def.name == "weather" {
@@ -242,7 +219,6 @@ mod tests {
             .into_iter()
             .find(|t| t.name == "weather")
             .unwrap();
-        assert!(!weather.enabled, "enabled flag must be preserved");
         assert_eq!(weather.id, original_id, "id must be preserved");
         assert_eq!(weather.description, "updated weather description");
         Ok(())
@@ -255,7 +231,7 @@ mod tests {
         ToolsRepo::sync_from_registry(&pool, &defs).await?;
         ToolsRepo::sync_from_registry(&pool, &defs).await?;
         let tools = ToolsRepo::list(&pool).await?;
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 17);
         Ok(())
     }
 
@@ -265,43 +241,6 @@ mod tests {
         ToolsRepo::sync_from_registry(&pool, &defs(REGISTRY_NAMES)).await?;
         ToolsRepo::sync_from_registry(&pool, &[]).await?;
         assert!(ToolsRepo::list(&pool).await?.is_empty());
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_disabled_names() -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup().await?;
-        ToolsRepo::sync_from_registry(&pool, &defs(REGISTRY_NAMES)).await?;
-        let weather = ToolsRepo::list(&pool)
-            .await?
-            .into_iter()
-            .find(|t| t.name == "weather")
-            .unwrap();
-        ToolsRepo::toggle_enabled(&pool, &weather.id).await?;
-
-        let disabled = ToolsRepo::disabled_names(&pool).await?;
-        assert_eq!(disabled, vec!["weather".to_string()]);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_toggle_enabled() -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup().await?;
-        ToolsRepo::sync_from_registry(&pool, &defs(REGISTRY_NAMES)).await?;
-        let tools = ToolsRepo::list(&pool).await?;
-        let tool = tools.into_iter().find(|t| t.name == "weather").unwrap();
-        assert!(tool.enabled);
-
-        let toggled = ToolsRepo::toggle_enabled(&pool, &tool.id).await?.unwrap();
-        assert!(!toggled.enabled);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_toggle_not_found() -> Result<(), Box<dyn std::error::Error>> {
-        let pool = setup().await?;
-        let result = ToolsRepo::toggle_enabled(&pool, "nonexistent").await?;
-        assert!(result.is_none());
         Ok(())
     }
 
@@ -315,33 +254,9 @@ mod tests {
         let state = crate::AppState::new_in_memory_empty().await;
         let tools = ToolsRepo::list(&state.db).await?;
 
-        let render = tools
-            .iter()
-            .find(|t| t.name == "render_widget")
-            .expect("the production registry must sync `render_widget` into the tools table");
-        assert!(render.enabled, "render_widget must be enabled by default");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_toggle_render_widget_marks_it_disabled() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let state = crate::AppState::new_in_memory_empty().await;
-        let render = ToolsRepo::list(&state.db)
-            .await?
-            .into_iter()
-            .find(|t| t.name == "render_widget")
-            .expect("render_widget must have been synced from the production registry");
-
-        let toggled = ToolsRepo::toggle_enabled(&state.db, &render.id)
-            .await?
-            .expect("toggle must return the updated tool");
-        assert!(!toggled.enabled);
-
-        let disabled = ToolsRepo::disabled_names(&state.db).await?;
         assert!(
-            disabled.contains(&"render_widget".to_string()),
-            "disabled_names must include render_widget, got {disabled:?}"
+            tools.iter().any(|t| t.name == "render_widget"),
+            "the production registry must sync `render_widget` into the tools table"
         );
         Ok(())
     }

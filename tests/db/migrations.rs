@@ -791,8 +791,6 @@ async fn test_skill_router_settings_seeded_with_defaults() {
         // Flipped to true by 20261008000002_router_enabled_by_default.sql.
         ("ROUTER_ENABLED", "true"),
         ("ROUTER_MODEL", "typesafe/jev-1.13"),
-        // Bumped from 0.3 by 20261008000001_skill_router_tuning.sql (measured).
-        ("ROUTER_THRESHOLD", "0.10"),
         ("ROUTER_TIMEOUT_MS", "800"),
         // Bumped from 2 by 20261008000001_skill_router_tuning.sql (measured).
         ("ROUTER_HISTORY_TURNS", "6"),
@@ -844,7 +842,7 @@ async fn test_router_enabled_is_true_after_migrations() {
 async fn test_skill_router_migration_respects_edited_value() {
     let pool = setup().await;
 
-    sqlx::query("UPDATE settings SET value = '0.9' WHERE key = 'ROUTER_THRESHOLD'")
+    sqlx::query("UPDATE settings SET value = 'custom/model' WHERE key = 'ROUTER_MODEL'")
         .execute(&pool)
         .await
         .unwrap();
@@ -856,8 +854,8 @@ async fn test_skill_router_migration_respects_edited_value() {
         .unwrap();
 
     assert_eq!(
-        setting_value(&pool, "ROUTER_THRESHOLD").await,
-        "0.9",
+        setting_value(&pool, "ROUTER_MODEL").await,
+        "custom/model",
         "a hand-edited, non-empty value must not be overwritten by the upsert"
     );
 }
@@ -921,17 +919,12 @@ fn skill_router_tuning_migration_sql() -> String {
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
-/// After migrating, the measured global threshold, the measured history window
-/// and the widget's own threshold hold their new defaults.
+/// After migrating, the measured history window and the widget's own threshold
+/// hold their new defaults.
 #[tokio::test]
 async fn test_skill_router_tuning_seeds_defaults() {
     let pool = setup().await;
 
-    assert_eq!(
-        setting_value(&pool, "ROUTER_THRESHOLD").await,
-        "0.10",
-        "the measured global threshold must be 0.10"
-    );
     assert_eq!(
         setting_value(&pool, "ROUTER_HISTORY_TURNS").await,
         "6",
@@ -950,7 +943,6 @@ async fn test_skill_router_tuning_respects_user_values() {
     let pool = setup().await;
 
     for (key, value) in [
-        ("ROUTER_THRESHOLD", "0.42"),
         ("ROUTER_HISTORY_TURNS", "9"),
         ("ROUTER_THRESHOLD_WIDGETS", "0.77"),
     ] {
@@ -968,11 +960,6 @@ async fn test_skill_router_tuning_respects_user_values() {
         .await
         .unwrap();
 
-    assert_eq!(
-        setting_value(&pool, "ROUTER_THRESHOLD").await,
-        "0.42",
-        "a user-tuned global threshold must not be overwritten"
-    );
     assert_eq!(
         setting_value(&pool, "ROUTER_HISTORY_TURNS").await,
         "9",
@@ -1060,7 +1047,6 @@ async fn test_skill_router_tuning_is_idempotent() {
 
     let snapshot = |pool: SqlitePool| async move {
         (
-            setting_value(&pool, "ROUTER_THRESHOLD").await,
             setting_value(&pool, "ROUTER_HISTORY_TURNS").await,
             setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
             setting_value(&pool, "system_prompt").await,
@@ -1077,6 +1063,269 @@ async fn test_skill_router_tuning_is_idempotent() {
             .await
             .unwrap();
     }
+
+    let after = snapshot(pool.clone()).await;
+    assert_eq!(
+        before, after,
+        "re-applying the migration must leave the same state"
+    );
+}
+
+// ── Skill selection (20261009000002_skill_selection.sql) ────────────────────
+
+/// Reads the skill-selection migration SQL from disk.
+fn skill_selection_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261009000002_skill_selection.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// Like `setting_value`, but returns `None` for an absent key instead of
+/// panicking. Needed to assert that a retired key is really gone.
+async fn setting_value_opt(pool: &SqlitePool, key: &str) -> Option<String> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+/// Rebuilds the pre-migration state that the forward DDL needs: the retired
+/// `tools.enabled` column and a global `ROUTER_THRESHOLD`. Re-running the new
+/// migration requires this because `ALTER TABLE ... DROP COLUMN` is a one-shot
+/// DDL (a second run would otherwise fail with "no such column").
+async fn reconstruct_pre_skill_selection(pool: &SqlitePool, global_threshold: &str) {
+    sqlx::query("ALTER TABLE tools ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) \
+         VALUES ('ROUTER_THRESHOLD', ?1, datetime('now'))",
+    )
+    .bind(global_threshold)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// After migrating, every skill carries an explicit `ROUTER_SKILL_<ID>_ENABLED`
+/// seeded to `true`.
+#[tokio::test]
+async fn test_skill_selection_seeds_skill_enabled_flags() {
+    let pool = setup().await;
+
+    for id in [
+        "agenda",
+        "pendientes",
+        "recuerdos",
+        "entorno",
+        "web",
+        "widgets",
+    ] {
+        let key = format!("ROUTER_SKILL_{}_ENABLED", id.to_ascii_uppercase());
+        assert_eq!(
+            setting_value(&pool, &key).await,
+            "true",
+            "skill {id} must be seeded enabled"
+        );
+    }
+}
+
+/// The retired global threshold is gone; `widgets` keeps its own override.
+#[tokio::test]
+async fn test_skill_selection_removes_the_global_threshold() {
+    let pool = setup().await;
+
+    assert_eq!(
+        setting_value_opt(&pool, "ROUTER_THRESHOLD").await,
+        None,
+        "ROUTER_THRESHOLD must be retired"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+        "0.20",
+        "the widget override is untouched"
+    );
+    // With the default global there is nothing to materialise: the compiled
+    // fallback already yields 0.10 for the five domains.
+    for id in ["AGENDA", "PENDIENTES", "RECUERDOS", "ENTORNO", "WEB"] {
+        let key = format!("ROUTER_THRESHOLD_{id}");
+        assert_eq!(
+            setting_value_opt(&pool, &key).await,
+            None,
+            "{key} must not be created when the global was still the default"
+        );
+    }
+}
+
+/// The `enabled` column is dropped from `tools`.
+#[tokio::test]
+async fn test_skill_selection_drops_the_tools_enabled_column() {
+    let pool = setup().await;
+
+    let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('tools')")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+    assert!(
+        !columns.contains(&"enabled".to_string()),
+        "the tools table must no longer carry `enabled`, got {columns:?}"
+    );
+}
+
+/// A customised global threshold is materialised into the five routed domains
+/// that have no override of their own.
+#[tokio::test]
+async fn test_skill_selection_materializes_a_custom_global_threshold() {
+    let pool = setup().await;
+
+    reconstruct_pre_skill_selection(&pool, "0.42").await;
+
+    let sql = skill_selection_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for id in ["AGENDA", "PENDIENTES", "RECUERDOS", "ENTORNO", "WEB"] {
+        let key = format!("ROUTER_THRESHOLD_{id}");
+        assert_eq!(
+            setting_value(&pool, &key).await,
+            "0.42",
+            "{key} must inherit the customised global threshold"
+        );
+    }
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+        "0.20",
+        "widgets keeps its own threshold, not the global one"
+    );
+    assert_eq!(
+        setting_value_opt(&pool, "ROUTER_THRESHOLD").await,
+        None,
+        "the global key is retired after materialisation"
+    );
+}
+
+/// A non-numeric global threshold must not be materialised: a garbage value
+/// would only spawn rows the reader rejects anyway.
+#[tokio::test]
+async fn test_skill_selection_ignores_a_non_numeric_global_threshold() {
+    let pool = setup().await;
+
+    reconstruct_pre_skill_selection(&pool, "not-a-number").await;
+
+    let sql = skill_selection_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for id in ["AGENDA", "PENDIENTES", "RECUERDOS", "ENTORNO", "WEB"] {
+        let key = format!("ROUTER_THRESHOLD_{id}");
+        assert_eq!(
+            setting_value_opt(&pool, &key).await,
+            None,
+            "{key} must not be created from a non-numeric global"
+        );
+    }
+    assert_eq!(
+        setting_value_opt(&pool, "ROUTER_THRESHOLD").await,
+        None,
+        "the global key is retired even when its value was unusable"
+    );
+}
+
+/// An existing per-skill override wins over the materialised global.
+#[tokio::test]
+async fn test_skill_selection_does_not_overwrite_a_skill_override() {
+    let pool = setup().await;
+
+    reconstruct_pre_skill_selection(&pool, "0.42").await;
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) \
+         VALUES ('ROUTER_THRESHOLD_AGENDA', '0.90', datetime('now'))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let sql = skill_selection_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD_AGENDA").await,
+        "0.90",
+        "an explicit per-skill override must survive the migration"
+    );
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD_WEB").await,
+        "0.42",
+        "the domains without an override still inherit the global"
+    );
+}
+
+/// A skill a user explicitly disabled keeps its `false` after the migration.
+#[tokio::test]
+async fn test_skill_selection_respects_a_disabled_skill() {
+    let pool = setup().await;
+
+    reconstruct_pre_skill_selection(&pool, "0.10").await;
+
+    sqlx::query("UPDATE settings SET value = 'false' WHERE key = 'ROUTER_SKILL_WEB_ENABLED'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = skill_selection_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_SKILL_WEB_ENABLED").await,
+        "false",
+        "a user-disabled skill must stay disabled"
+    );
+}
+
+/// Re-applying the whole migration leaves the same state. The one-shot
+/// `DROP COLUMN` is re-armed by rebuilding the pre-migration column first.
+#[tokio::test]
+async fn test_skill_selection_is_idempotent() {
+    let pool = setup().await;
+
+    let sql = skill_selection_migration_sql();
+
+    reconstruct_pre_skill_selection(&pool, "0.42").await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let snapshot = |pool: SqlitePool| async move {
+        (
+            setting_value(&pool, "ROUTER_SKILL_AGENDA_ENABLED").await,
+            setting_value(&pool, "ROUTER_THRESHOLD_AGENDA").await,
+            setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+            setting_value_opt(&pool, "ROUTER_THRESHOLD").await,
+        )
+    };
+    let before = snapshot(pool.clone()).await;
+
+    // Second application, from the same (reconstructed) pre-state.
+    reconstruct_pre_skill_selection(&pool, "0.42").await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let after = snapshot(pool.clone()).await;
     assert_eq!(
