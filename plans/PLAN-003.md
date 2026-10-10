@@ -5,6 +5,7 @@
 **Tema 1:** ✅ Cerrado (PR #155, merge `d109f8d`)
 **Tema 2:** ✅ Cerrado (PR #159, merge `bd2892e`)
 **Tema 3:** ✅ Cerrado (PR #163, merge `46b3e0d`)
+**Tema 4:** 📝 Spec en revisión (change OpenSpec `strava-diagnostics`)
 **Fecha:** 2026-10-09
 **Metodología:** OpenSpec (SDD) + TDD (Red-Green-Refactor)
 
@@ -267,6 +268,64 @@ Frontend:
 - **Refuerzos tras la revisión**: el `refresh_token` rotado se confirma en su propia transacción (un fallo posterior no lo pierde); la caché purga lo caducado; `before`/`after` aceptan ISO 8601 o epoch.
 - **Segunda iteración**: el widget de gráficas (ritmo/volumen semanal).
 
+## Tema 4 — Diagnóstico de la conexión con Strava
+
+**Estado:** 📝 Change OpenSpec `strava-diagnostics` creado; pendiente de aprobación.
+
+### Objetivo
+
+Que Valet **diga por qué** falla la integración de Strava. El 2026-10-10 una instancia en producción
+devolvía `403` en todas las llamadas con la app de Strava **inactiva** (su propietario sin suscripción,
+requisito de Strava desde el 1 de julio de 2026) y hubo que diagnosticarlo fuera de Valet —sacando el
+token de la base de datos con `sqlite3` y preguntando con `curl`— porque la aplicación descartaba el
+cuerpo de la respuesta y mostraba «Conectada como \<atleta\>» mientras todo fallaba.
+
+### Decisiones de diseño (BLOQUEADAS)
+
+1. **El cuerpo del error de Strava viaja al usuario**: `message` + `errors[]` (`field`/`code`).
+2. **`Application/Status/Inactive` tiene error propio y mensaje accionable** (suscripción de la cuenta
+   propietaria + `https://www.strava.com/settings/api`).
+3. **`GET /api/strava/check` responde siempre `200`** con `{ok, athlete_id, athlete_name, error}`;
+   consulta `/athlete` **sin caché**.
+4. **Desconectar limpia siempre** y **avisa** cuando la revocación no se confirma.
+5. **El `scope` concedido se muestra** en «Integraciones», con aviso si falta `activity:read_all`.
+6. Fuera de alcance: `approval_prompt=force`, persistir el último error, widget de gráficas, MCP.
+
+### Mapa arquitectónico
+
+- `src/services/strava.rs` — `StravaError::ApplicationInactive`, parseo del cuerpo, `Strava::check`, `disconnect` con aviso.
+- `src/handlers/strava.rs` + `src/routes/strava.rs` — `GET /api/strava/check` y desconexión con aviso.
+- `frontend/src/components/StravaIntegration.tsx`, `hooks/useStrava.ts`, `api/client.ts`, `types/index.ts`.
+
+### Specs afectadas
+
+- `tools/strava` (MODIFIED: estado/desconexión + fallos accionables).
+- `strava-ui` (MODIFIED: sección «Integraciones»).
+
+### Tareas técnicas (TDD — checklist)
+
+- [ ] F0 — Change OpenSpec `strava-diagnostics` (proposal + design + specs + tasks) → **STOP** y aprobación.
+- [ ] F1 — RED: mapeo del cuerpo de error, `check` sin caché, desconexión con aviso, handler, UI.
+- [ ] F2 — GREEN: servicio + rutas + frontend.
+- [ ] F3 — REFACTOR: `cargo fmt`, `clippy -D warnings`, `tsc`, lint.
+- [ ] F4 — VERIFY: `cargo test`, `vitest`, `openspec validate --strict`, reviews.
+- [ ] F5 — Cierre: archivar el change, actualizar este plan y `AGENTS.md § V` si procede.
+
+### DoD
+
+- [ ] Un `403` de aplicación inactiva produce un mensaje que nombra la suscripción y la URL de reactivación (test).
+- [ ] Un `403` genérico incorpora el `message` y el `field`/`code` de Strava (test).
+- [ ] `GET /api/strava/check` responde `200` con `ok:false` + mensaje cuando la app está inactiva (test).
+- [ ] La desconexión borra los tokens siempre y avisa cuando la revocación no se confirma (test).
+- [ ] `cargo test`, `npx vitest run`, `tsc --noEmit`, lint y `openspec validate --all --strict` en verde.
+- [ ] `openspec archive strava-diagnostics`.
+
+### Riesgos / notas
+
+- El estado `Application/Status/Inactive` **no** es un fallo de Valet: solo se puede resolver en Strava.
+- `GET /api/strava/check` sale a la red por diseño: no debe usarse en bucle.
+- No se persiste estado nuevo: el diagnóstico no añade claves a `settings`.
+
 ## Temas pendientes
 
-Temas 1, 2 y 3 cerrados (PR #155, #159 y #163). Pendiente de definir el **Tema 4** y siguientes.
+Temas 1, 2 y 3 cerrados (PR #155, #159 y #163). Tema 4 en spec (`strava-diagnostics`).
