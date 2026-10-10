@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { api } from "../api/client";
-import type { StravaStatus } from "../types";
+import type { StravaCheckResult, StravaStatus } from "../types";
 
 export interface UseStravaReturn {
   /** Estado vigente de la conexión; `null` mientras no se ha leído todavía. */
@@ -15,14 +15,25 @@ export interface UseStravaReturn {
   /** Relee `GET /api/strava/status` y devuelve la respuesta nueva. */
   refetch: () => Promise<StravaStatus>;
   /**
+   * Sondea `GET /api/strava/check` y devuelve el diagnóstico. La ruta responde
+   * siempre `200`, así que un fallo de Strava **no** rechaza: viaja en
+   * `StravaCheckResult.ok`/`error`. No toca `status` ni `error`: es una
+   * comprobación puntual, no una relectura del estado.
+   */
+  check: () => Promise<StravaCheckResult>;
+  /** `true` solo mientras dura una comprobación (`check`); para el botón. */
+  checking: boolean;
+  /**
    * Llama a `POST /api/strava/disconnect` y deja el estado en «no conectada».
    *
    * Rechaza **solo** si la propia desconexión falla: el consumidor usa ese
-   * rechazo para mostrar «Error al desconectar». El refresco posterior del
-   * estado es best-effort; si falla, el error se expone por `error` (aviso de
-   * estado), nunca como fallo de la desconexión.
+   * rechazo para mostrar «Error al desconectar». Cuando resuelve, lleva el
+   * aviso del servidor (`warning`) o `null`: si la revocación remota no se pudo
+   * confirmar, el usuario debe retirar el acceso a mano. El refresco posterior
+   * del estado es best-effort; si falla, el error se expone por `error` (aviso
+   * de estado), nunca como fallo de la desconexión.
    */
-  disconnect: () => Promise<void>;
+  disconnect: () => Promise<{ warning: string | null }>;
 }
 
 /**
@@ -35,6 +46,7 @@ export interface UseStravaReturn {
 export function useStrava(): UseStravaReturn {
   const [status, setStatus] = useState<StravaStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
 
@@ -70,9 +82,18 @@ export function useStrava(): UseStravaReturn {
     };
   }, [load]);
 
-  const disconnect = useCallback(async () => {
+  const check = useCallback(async (): Promise<StravaCheckResult> => {
+    if (mountedRef.current) setChecking(true);
+    try {
+      return await api.checkStrava();
+    } finally {
+      if (mountedRef.current) setChecking(false);
+    }
+  }, []);
+
+  const disconnect = useCallback(async (): Promise<{ warning: string | null }> => {
     // Solo el fallo de la propia desconexión debe rechazar.
-    await api.disconnectStrava();
+    const result = await api.disconnectStrava();
     // El servidor ya confirmó la desconexión: reflejarla de inmediato para no
     // seguir mostrando «Conectada» si la relectura posterior fallara.
     if (mountedRef.current) {
@@ -86,7 +107,8 @@ export function useStrava(): UseStravaReturn {
     // Relectura best-effort para reconciliar con el servidor. Su fallo se
     // expone por `error` (aviso aparte), no como rechazo de `disconnect`.
     await load().catch(() => undefined);
+    return { warning: result.warning ?? null };
   }, [load]);
 
-  return { status, loading, error, refetch: load, disconnect };
+  return { status, loading, checking, error, refetch: load, check, disconnect };
 }

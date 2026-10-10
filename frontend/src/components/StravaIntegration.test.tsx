@@ -17,6 +17,7 @@ vi.mock("../api/client", async () => {
       ...actual.api,
       getStravaStatus: vi.fn(),
       disconnectStrava: vi.fn(),
+      checkStrava: vi.fn(),
     },
   };
 });
@@ -27,6 +28,7 @@ import type { StravaStatus } from "../types";
 
 const mockGetStravaStatus = vi.mocked(api.getStravaStatus);
 const mockDisconnectStrava = vi.mocked(api.disconnectStrava);
+const mockCheckStrava = vi.mocked(api.checkStrava);
 
 const disconnected: StravaStatus = {
   connected: false,
@@ -206,6 +208,140 @@ describe("StravaIntegration", () => {
     });
     // …ni deja la UI mostrando «Conectada».
     expect(screen.queryByText(/Conectada/)).not.toBeInTheDocument();
+  });
+
+  it("«Probar conexión» consulta /strava/check y confirma con el atleta", async () => {
+    const user = userEvent.setup();
+    mockGetStravaStatus.mockResolvedValue(connected);
+    mockCheckStrava.mockResolvedValue({
+      ok: true,
+      athlete_id: "12345",
+      athlete_name: "Ana Corredora",
+      error: null,
+    });
+
+    renderSection();
+
+    await screen.findByText("Conectada como Ana Corredora");
+
+    await user.click(screen.getByRole("button", { name: "Probar conexión" }));
+
+    await waitFor(() => {
+      expect(mockCheckStrava).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      await screen.findByText("Conexión con Strava correcta"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Atleta: Ana Corredora")).toBeInTheDocument();
+  });
+
+  it("con ok:false muestra el error del servidor y no cambia el estado", async () => {
+    const user = userEvent.setup();
+    mockGetStravaStatus.mockResolvedValue(connected);
+    mockCheckStrava.mockResolvedValue({
+      ok: false,
+      athlete_id: null,
+      athlete_name: null,
+      error: "El token de Strava caducó, vuelve a conectar",
+    });
+
+    renderSection();
+
+    await screen.findByText("Conectada como Ana Corredora");
+
+    await user.click(screen.getByRole("button", { name: "Probar conexión" }));
+
+    expect(
+      await screen.findByText("El token de Strava caducó, vuelve a conectar"),
+    ).toBeInTheDocument();
+    // El estado de la conexión no cambia a desconectado por un fallo del sondeo.
+    expect(screen.getByText("Conectada como Ana Corredora")).toBeInTheDocument();
+    expect(screen.queryByText("No conectada")).not.toBeInTheDocument();
+  });
+
+  it("muestra el scope concedido cuando la cuenta está conectada", async () => {
+    mockGetStravaStatus.mockResolvedValue(connected);
+
+    renderSection();
+
+    expect(
+      await screen.findByText(/Permisos concedidos: read,activity:read_all/),
+    ).toBeInTheDocument();
+  });
+
+  it("avisa de volver a conectar cuando falta activity:read_all", async () => {
+    mockGetStravaStatus.mockResolvedValue({ ...connected, scope: "read" });
+
+    renderSection();
+
+    expect(await screen.findByText(/vuelve a conectar/i)).toBeInTheDocument();
+  });
+
+  it("no avisa de reconectar cuando el scope incluye activity:read_all", async () => {
+    mockGetStravaStatus.mockResolvedValue(connected);
+
+    renderSection();
+
+    await screen.findByText(/Permisos concedidos: read,activity:read_all/);
+
+    expect(screen.queryByText(/vuelve a conectar/i)).not.toBeInTheDocument();
+  });
+
+  it("muestra el aviso cuando la desconexión no confirma la revocación", async () => {
+    const user = userEvent.setup();
+    mockGetStravaStatus
+      .mockResolvedValueOnce(connected)
+      .mockResolvedValueOnce(disconnected);
+    mockDisconnectStrava.mockResolvedValue({
+      connected: false,
+      warning:
+        "no se pudo confirmar la revocación del acceso en Strava; retíralo también desde https://www.strava.com/settings/apps",
+    });
+
+    renderSection();
+
+    await screen.findByText("Conectada como Ana Corredora");
+
+    await user.click(screen.getByRole("button", { name: "Desconectar" }));
+
+    expect(
+      await screen.findByText(/https:\/\/www\.strava\.com\/settings\/apps/),
+    ).toBeInTheDocument();
+  });
+
+  it("no ofrece «Probar conexión» cuando no hay conexión", async () => {
+    mockGetStravaStatus.mockResolvedValue(disconnected);
+
+    renderSection();
+
+    await screen.findByText("No conectada");
+
+    expect(
+      screen.queryByRole("button", { name: "Probar conexión" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("un sondeo que rechaza deja de cargar y muestra feedback al usuario", async () => {
+    const user = userEvent.setup();
+    mockGetStravaStatus.mockResolvedValue(connected);
+    mockCheckStrava.mockRejectedValue(new Error("fallo de red"));
+
+    renderSection();
+
+    await screen.findByText("Conectada como Ana Corredora");
+
+    const button = screen.getByRole("button", { name: "Probar conexión" });
+    await user.click(button);
+
+    // El fallo de la petición se traduce en un aviso legible, no en un error crudo.
+    expect(
+      await screen.findByText("La comprobación con Strava ha fallado"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("No se pudo comprobar la conexión con Strava"),
+    ).toBeInTheDocument();
+    // `checking` vuelve a false: el botón no se queda colgado en estado de carga.
+    expect(button).not.toHaveClass("ant-btn-loading");
   });
 
   it("nunca renderiza los tokens, ni conectada ni desconectada", async () => {

@@ -18,6 +18,7 @@ import type {
   UpdateProfile,
   PersistentMemoryState,
   SkillsResponse,
+  StravaCheckResult,
   StravaStatus,
 } from "../types";
 import type { AuthUser } from "../contexts/AuthContext";
@@ -190,6 +191,16 @@ export const api = {
   // cruzan el cliente: `status` solo devuelve el atleta y el scope.
   getStravaStatus: () => request<StravaStatus>("/strava/status"),
 
+  // Sondeo activo del estado real de la conexión. **Siempre** `200`: el
+  // diagnóstico viaja en `ok`/`error`, por eso no rechaza ante un fallo de
+  // Strava (solo si la propia petición HTTP falla).
+  checkStrava: () => request<StravaCheckResult>("/strava/check"),
+
   disconnectStrava: () =>
-    request<{ connected: boolean }>("/strava/disconnect", { method: "POST" }),
+    // `warning` solo llega cuando la revocación remota no se pudo confirmar; se
+    // omite del JSON cuando no hay aviso.
+    request<{ connected: boolean; warning?: string | null }>(
+      "/strava/disconnect",
+      { method: "POST" },
+    ),
 };
