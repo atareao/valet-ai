@@ -55,6 +55,10 @@ services:
       - OPENWEATHER_API_KEY=${OPENWEATHER_API_KEY}
       - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
       - BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+      # Strava (opcional: credenciales por entorno)
+      - STRAVA_CLIENT_ID=${STRAVA_CLIENT_ID}
+      - STRAVA_CLIENT_SECRET=${STRAVA_CLIENT_SECRET}
+      - STRAVA_REDIRECT_URL=${STRAVA_REDIRECT_URL}
       # Auth activo por defecto. Para levantar el stack sin PocketID
       # (p. ej. un smoke test) exporta AUTH_ENABLED=false.
       - AUTH_ENABLED=${AUTH_ENABLED:-true}
