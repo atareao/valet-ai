@@ -26,7 +26,7 @@ base64 = "0.23"
 futures = "0.3"
 async-stream = "0.3"
 url = "2"
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 axum-extra = { version = "0.10", features = ["cookie"] }
 cookie = "0.18"
 rand = "0.10"
