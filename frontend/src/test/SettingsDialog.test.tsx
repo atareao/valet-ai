@@ -47,6 +47,7 @@ const defaultSettings: Record<string, string> = {
   collapse_prompt: "Resume el texto",
   consolidator_prompt:
     "Consolida {{ ESTADO_ACTUAL }} con {{ BLOQUE_DE_MENSAJES }}",
+  timeline_prompt: "Extrae hechos fechados",
   font_size: "16",
   message_page_size: "50",
   openweather_api_key: "",
@@ -68,6 +69,9 @@ const defaultSettings: Record<string, string> = {
   GENERATION_SEMANTIC_TEMPERATURE: "0.1",
   GENERATION_SEMANTIC_REASONING: "low",
   GENERATION_SEMANTIC_MAX_TOKENS: "2048",
+  GENERATION_TIMELINE_TEMPERATURE: "0.2",
+  GENERATION_TIMELINE_REASONING: "off",
+  GENERATION_TIMELINE_MAX_TOKENS: "2048",
   ROUTER_ENABLED: "false",
   ROUTER_MODEL: "typesafe/jev-1.13",
   ROUTER_TIMEOUT_MS: "800",
@@ -332,7 +336,7 @@ describe("SettingsDialog", () => {
     expect(screen.getByText("Tamaño de página")).toBeInTheDocument();
   });
 
-  it("renders Prompts tab with System, Archivist, Collapse and Consolidator sub-tabs", async () => {
+  it("renders Prompts tab with System, Archivist, Collapse, Consolidator and Timeline sub-tabs", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
@@ -342,6 +346,53 @@ describe("SettingsDialog", () => {
     expect(screen.getByText("Archivist")).toBeInTheDocument();
     expect(screen.getByText("Collapse")).toBeInTheDocument();
     expect(screen.getByText("Consolidator")).toBeInTheDocument();
+    expect(screen.getByText("Timeline")).toBeInTheDocument();
+  });
+
+  it("shows timeline_prompt when opening the Timeline sub-tab", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Timeline"));
+
+    expect(screen.getByLabelText("Timeline Prompt")).toHaveValue(
+      "Extrae hechos fechados",
+    );
+  });
+
+  it("saves timeline_prompt and the GENERATION_TIMELINE_* keys via updateSettings", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Timeline"));
+
+    const area = screen.getByLabelText("Timeline Prompt");
+    await user.clear(area);
+    await user.type(area, "Nuevo timeline");
+
+    const form = area.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          timeline_prompt: "Nuevo timeline",
+          GENERATION_TIMELINE_TEMPERATURE: "0.2",
+          GENERATION_TIMELINE_REASONING: "off",
+          GENERATION_TIMELINE_MAX_TOKENS: "2048",
+        }),
+      );
+    });
+
+    // El guardado envía las quince claves `GENERATION_*` (cinco roles × tres).
+    const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, string>;
+    const generationKeys = Object.keys(payload).filter((key) =>
+      key.startsWith("GENERATION_"),
+    );
+    expect(generationKeys).toHaveLength(15);
   });
 
   it("shows system_prompt when opening the System sub-tab", async () => {
@@ -1189,6 +1240,53 @@ describe("SettingsDialog", () => {
     for (const role of ["Chat", "Colapso", "Fichas", "Consolidación"]) {
       expect(screen.getByRole("tab", { name: role })).toBeInTheDocument();
     }
+  });
+
+  it("shows the Línea temporal role with its three generation fields", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    expect(
+      screen.getByRole("tab", { name: "Línea temporal" }),
+    ).toBeInTheDocument();
+
+    // Selecciona la sub-pestaña del timeline: el escenario de la spec exige
+    // que sus tres claves queden visibles en el panel activo.
+    await user.click(screen.getByRole("tab", { name: "Línea temporal" }));
+
+    // Mismo patrón que el test vecino: la actividad de una sub-pestaña se lee
+    // del `role="tabpanel"` (`aria-hidden="false"` activo, `"true"` oculto),
+    // porque jsdom no emite `transitionend` y `toBeVisible()` no sirve. Con
+    // `forceRender` los campos de todos los paneles existen en el DOM.
+    const panelOf = (labelText: string) =>
+      screen.getByLabelText(labelText).closest('[role="tabpanel"]');
+    const expectActive = (labelText: string) => {
+      const panel = panelOf(labelText);
+      expect(panel).not.toBeNull();
+      expect(panel).toHaveAttribute("aria-hidden", "false");
+    };
+    const expectInactive = (labelText: string) => {
+      const panel = panelOf(labelText);
+      expect(panel).not.toBeNull();
+      expect(panel).toHaveAttribute("aria-hidden", "true");
+    };
+
+    expect(screen.getByRole("tab", { name: "Línea temporal" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    // Las tres claves del timeline quedan visibles en el panel activo.
+    expectActive("GENERATION_TIMELINE_TEMPERATURE");
+    expectActive("GENERATION_TIMELINE_REASONING");
+    expectActive("GENERATION_TIMELINE_MAX_TOKENS");
+
+    // Los paneles de los otros roles quedan ocultos.
+    expectInactive("GENERATION_CHAT_TEMPERATURE");
+    expectInactive("GENERATION_COLLAPSE_TEMPERATURE");
+    expectInactive("GENERATION_SEMANTIC_TEMPERATURE");
   });
 
   it("switching the role sub-tab activates its fields and deactivates the previous ones", async () => {
