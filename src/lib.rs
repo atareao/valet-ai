@@ -49,7 +49,7 @@ pub struct AppState {
     pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
 }
 
-/// Build the production tool registry with all 17 built-in tools.
+/// Build the production tool registry with all 20 built-in tools.
 ///
 /// Exposed so the evaluation harness (`valet-route-eval`) can resolve the same
 /// advertised tool set the running application uses.
@@ -97,6 +97,15 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     registry.register(Box::new(crate::tools::strava::StravaAthleteStatsTool::new(
         pool.clone(),
     )));
+    registry.register(Box::new(
+        crate::tools::timeline::TimelineGetEventsTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(crate::tools::timeline::TimelineAddEventTool::new(
+        pool.clone(),
+    )));
+    registry.register(Box::new(
+        crate::tools::timeline::TimelineDeleteEventTool::new(pool.clone()),
+    ));
     registry
 }
 

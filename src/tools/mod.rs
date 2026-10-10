@@ -11,6 +11,7 @@ pub mod reminders;
 pub mod strava;
 pub mod tasks;
 pub mod time_format;
+pub mod timeline;
 pub mod r#trait;
 pub mod unified_search;
 pub mod weather;

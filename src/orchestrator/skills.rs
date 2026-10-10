@@ -21,6 +21,7 @@ pub enum Skill {
     Web,
     Widgets,
     Running,
+    Timeline,
 }
 
 /// Especificación cerrada de una skill.
@@ -55,7 +56,7 @@ pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 7] = [
+static CATALOG: [SkillSpec; 8] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
@@ -141,6 +142,21 @@ static CATALOG: [SkillSpec; 7] = [
         prompt_key: "SKILL_RUNNING_PROMPT",
         prompt_heading: "# SKILL ACTIVA: RUNNING",
     },
+    SkillSpec {
+        skill: Skill::Timeline,
+        id: "timeline",
+        instructions: "¿La respuesta requiere consultar o anotar hechos de la vida del usuario (qué hizo un día, un registro cronológico, un diario de actividad)?",
+        criteria_true: "El mensaje pide saber qué hizo el usuario un día, repasa su diario de actividad o pide anotar algo vivido, hecho o decidido en un registro cronológico.",
+        criteria_false: "El mensaje no pregunta por hechos vividos por el usuario ni pide anotar lo que uno ha hecho.",
+        threshold: 0.10,
+        tools: &[
+            "timeline_get_events",
+            "timeline_add_event",
+            "timeline_delete_event",
+        ],
+        prompt_key: "SKILL_TIMELINE_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: TIMELINE",
+    },
 ];
 
 /// Catálogo cerrado de skills, en el orden canónico del sistema.
@@ -182,9 +198,9 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las siete variantes del enum, para exigir que el catálogo las cubra
+    /// Las ocho variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 7] = [
+    const ALL_SKILLS: [Skill; 8] = [
         Skill::Agenda,
         Skill::Pendientes,
         Skill::Recuerdos,
@@ -192,6 +208,7 @@ mod tests {
         Skill::Web,
         Skill::Widgets,
         Skill::Running,
+        Skill::Timeline,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -406,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_declares_exactly_the_seven_wide_domain_ids() {
+    fn catalog_declares_exactly_the_eight_wide_domain_ids() {
         let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
 
         for id in [
@@ -417,6 +434,7 @@ mod tests {
             "web",
             "widgets",
             "running",
+            "timeline",
         ] {
             assert!(
                 ids.contains(&id),
@@ -425,8 +443,8 @@ mod tests {
         }
         assert_eq!(
             ids.len(),
-            7,
-            "el catálogo debe tener exactamente siete skills; tiene {ids:?}"
+            8,
+            "el catálogo debe tener exactamente ocho skills; tiene {ids:?}"
         );
     }
 
@@ -504,6 +522,18 @@ mod tests {
                 "running debe cubrir {tool}: {running:?}"
             );
         }
+
+        let timeline = tools_of("timeline");
+        for tool in [
+            "timeline_get_events",
+            "timeline_add_event",
+            "timeline_delete_event",
+        ] {
+            assert!(
+                timeline.contains(&tool),
+                "timeline debe cubrir {tool}: {timeline:?}"
+            );
+        }
     }
 
     #[test]
@@ -532,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_seventeen_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_twenty_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -544,8 +574,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            17,
-            "el core más las siete skills deben cubrir las diecisiete herramientas: {covered:?}"
+            20,
+            "el core más las ocho skills deben cubrir las veinte herramientas: {covered:?}"
         );
         for spec in catalog() {
             assert!(
@@ -557,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_keys_are_the_seven_canonical_keys() {
+    fn prompt_keys_are_the_eight_canonical_keys() {
         let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
 
         for key in [
@@ -568,6 +598,7 @@ mod tests {
             "SKILL_WEB_PROMPT",
             "SKILL_WIDGETS_PROMPT",
             "SKILL_RUNNING_PROMPT",
+            "SKILL_TIMELINE_PROMPT",
         ] {
             assert!(
                 keys.contains(&key),
@@ -576,8 +607,8 @@ mod tests {
         }
         assert_eq!(
             keys.len(),
-            7,
-            "el catálogo debe declarar exactamente siete claves de fragmento; tiene {keys:?}"
+            8,
+            "el catálogo debe declarar exactamente ocho claves de fragmento; tiene {keys:?}"
         );
         for legacy in [
             "SKILL_TAREAS_PROMPT",
@@ -618,6 +649,7 @@ mod tests {
             "entorno",
             "web",
             "running",
+            "timeline",
         ] {
             let t = threshold_of(id).unwrap_or(-1.0);
             assert_eq!(
@@ -643,6 +675,7 @@ mod tests {
             "entorno",
             "web",
             "running",
+            "timeline",
         ] {
             let domain = threshold_of(id).unwrap_or(0.0);
             assert!(

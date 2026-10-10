@@ -23,7 +23,7 @@ async fn test_list_tools() {
 async fn test_list_tools_includes_all_registered_tools() {
     // Given the tools table is reconciled from the production registry
     // When GET /api/tools is called
-    // Then the response lists the 17 real tool names and no legacy ones
+    // Then the response lists the 20 real tool names and no legacy ones
     let app = TestApp::new().await;
 
     let resp = app.get("/api/tools").await;
@@ -54,6 +54,9 @@ async fn test_list_tools_includes_all_registered_tools() {
         "strava_activity_detail",
         "strava_activity_streams",
         "strava_athlete_stats",
+        "timeline_get_events",
+        "timeline_add_event",
+        "timeline_delete_event",
     ] {
         assert!(names.contains(&expected), "Expected tool {expected}");
     }
@@ -140,10 +143,36 @@ async fn test_list_tools_includes_render_widget() {
 }
 
 #[tokio::test]
+async fn test_list_tools_includes_the_timeline_tools() {
+    // Given the tools table is reconciled from the production registry
+    // When GET /api/tools is called
+    // Then the response contains the three timeline tools
+    let app = TestApp::new().await;
+
+    let resp = app.get("/api/tools").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tools = resp.json::<serde_json::Value>().await;
+    let names: Vec<&str> = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+
+    for expected in [
+        "timeline_get_events",
+        "timeline_add_event",
+        "timeline_delete_event",
+    ] {
+        assert!(names.contains(&expected), "Expected tool {expected}");
+    }
+}
+
+#[tokio::test]
 async fn test_list_skills_returns_the_catalog_and_core_tools() {
-    // Given the closed seven-domain skills catalog lives in code
+    // Given the closed eight-domain skills catalog lives in code
     // When GET /api/skills is called
-    // Then it returns the seven skills (with their prompt fragment key and
+    // Then it returns the eight skills (with their prompt fragment key and
     //      tools) and the non-routable core set, sourced from the catalog.
     let app = TestApp::new().await;
 
@@ -154,7 +183,7 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
     let skills = body["skills"]
         .as_array()
         .expect("GET /api/skills must return a `skills` array");
-    assert_eq!(skills.len(), 7, "the closed catalog has seven skills");
+    assert_eq!(skills.len(), 8, "the closed catalog has eight skills");
 
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
     for expected in [
@@ -165,6 +194,7 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
         "web",
         "widgets",
         "running",
+        "timeline",
     ] {
         assert!(
             ids.contains(&expected),

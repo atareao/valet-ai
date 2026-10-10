@@ -157,3 +157,7 @@ path = "tests/api/settings.rs"
 [[test]]
 name = "strava-api"
 path = "tests/api/strava.rs"
+
+[[test]]
+name = "timeline-migration"
+path = "tests/db/timeline_migration.rs"

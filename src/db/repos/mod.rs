@@ -9,4 +9,5 @@ pub mod reminders;
 pub mod settings;
 pub mod stats;
 pub mod tasks;
+pub mod timeline;
 pub mod tools;
