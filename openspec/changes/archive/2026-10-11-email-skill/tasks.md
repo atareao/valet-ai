@@ -35,5 +35,5 @@
 - [x] 4.1 `cargo test --no-fail-fast` (1165 passed / 0 failed), `cargo clippy`, `cargo fmt --check`, `npx vitest run` (349 passed), `npx tsc --noEmit` y `openspec validate email-skill --strict` en verde.
 - [x] 4.2 Review de `@rust-reviewer` (cambios necesarios) y `@react-reviewer` (aprobado); hallazgos aplicados: `email_get_body` propaga `null` en vez de `""`, `Debug` de `ApimailConfig` enmascara la clave, `email_send` resuelve la configuración una sola vez, `to` rechaza direcciones en blanco, responder a un mensaje sin asunto no deja un `Re:` colgando, y los caminos de éxito y la traducción de errores de las cuatro herramientas ganan test a nivel de tool.
 - [x] 4.3 `openspec archive email-skill`.
-- [ ] 4.4 PR a `development` y merge.
+- [x] 4.4 PR a `development` y merge (PR #174).
 - [ ] 4.5 Comprobar en producción con la API key configurada: la skill aparece en «Skills» con su interruptor, umbral, pregunta, criterios y fragmento; el modelo lista no leídos, lee un cuerpo, lo marca como leído y **envía una respuesta que pide aprobación antes de salir**.

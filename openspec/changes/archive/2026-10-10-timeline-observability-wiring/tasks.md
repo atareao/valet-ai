@@ -31,5 +31,5 @@
 - [x] 4.1 `cargo test`, `cargo clippy`, `cargo fmt --check`, `npx vitest run` y `openspec validate timeline-observability-wiring --strict` en verde.
 - [x] 4.2 Review de `@rust-reviewer` y `@react-reviewer`; hallazgos aplicados.
 - [x] 4.3 `openspec archive timeline-observability-wiring`.
-- [ ] 4.4 PR a `development` y merge.
+- [x] 4.4 PR a `development` y merge (PR #173).
 - [ ] 4.5 Desplegar y comprobar en producción: el timeline aparece como proceso de fondo, su tabla sale en Database Sizes, y su prompt y sus parámetros son editables en Settings.
