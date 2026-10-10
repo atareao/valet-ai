@@ -4,6 +4,7 @@ pub mod pagination;
 pub mod persistent;
 pub mod profile;
 pub mod stats;
+pub mod timeline;
 pub mod tool;
 
 pub use memory::*;

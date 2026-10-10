@@ -146,12 +146,13 @@ async fn characterization_persistent_memory_table_present_after_migration() {
     );
 }
 
-/// BLOCK 1 CHARACTERIZATION → **CHANGED ON PURPOSE (Bloques 4–5)**: the worker
-/// no longer performs a single extraction. It now makes **two** extractions
-/// from the same batch — the episodic card (Layer B) and the consolidated
-/// persistent state (Layer C) — and writes both, plus the index mark.
+/// BLOCK 1 CHARACTERIZATION → **CHANGED ON PURPOSE (Bloques 4–5, Capa D)**: the
+/// worker no longer performs a single extraction. It now makes **three**
+/// extractions from the same batch — the episodic card (Layer B), the
+/// consolidated persistent state (Layer C) and the chronological facts
+/// (Layer D) — and writes all of them, plus the index mark.
 #[tokio::test]
-async fn characterization_worker_makes_two_extractions_and_writes_both_layers() {
+async fn characterization_worker_makes_three_extractions_and_writes_all_layers() {
     let pool = setup().await;
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -190,11 +191,11 @@ async fn characterization_worker_makes_two_extractions_and_writes_both_layers() 
     memory_tx.send(()).await.expect("signal");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // TWO extractions: Layer B (card) and Layer C (state).
+    // THREE extractions: Layer B (card), Layer C (state) and Layer D (facts).
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        2,
-        "the worker makes two extractions: the card (B) and the state (C)"
+        3,
+        "the worker makes three extractions: the card (B), the state (C) and the facts (D)"
     );
 
     let memory_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory")
