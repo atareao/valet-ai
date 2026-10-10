@@ -2,6 +2,22 @@ use sqlx::Row;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 
+/// Claves de `settings` cuyo valor es **material sensible** (tokens OAuth) y
+/// que por tanto **nunca** deben salir por la API de ajustes ni aceptarse por
+/// escritura desde un cliente.
+///
+/// Es la única fuente de verdad: añadir aquí una clave la excluye de
+/// `GET /api/settings` y hace que `PUT /api/settings` la ignore. El
+/// `strava_client_secret` **no** figura aquí a propósito: se edita desde la
+/// sección de Integraciones y por eso sigue viajando en los ajustes.
+pub const SENSITIVE_KEYS: &[&str] = &["strava_access_token", "strava_refresh_token"];
+
+/// `true` si `key` es sensible y por tanto debe omitirse en las respuestas y
+/// descartarse en las escrituras de ajustes.
+pub fn is_sensitive_key(key: &str) -> bool {
+    SENSITIVE_KEYS.contains(&key)
+}
+
 pub struct SettingsRepo;
 
 impl SettingsRepo {
@@ -107,6 +123,15 @@ mod tests {
             .unwrap();
         SettingsRepo::seed_defaults(&pool).await?;
         Ok(pool)
+    }
+
+    #[test]
+    fn test_sensitive_keys_are_the_oauth_tokens() {
+        assert!(is_sensitive_key("strava_access_token"));
+        assert!(is_sensitive_key("strava_refresh_token"));
+        // El client_secret se edita desde la UI y por eso no es sensible aquí.
+        assert!(!is_sensitive_key("strava_client_secret"));
+        assert!(!is_sensitive_key("max_window_tokens"));
     }
 
     #[tokio::test]

@@ -68,18 +68,19 @@ sus operaciones.
 ### Requirement: El registry SHALL registrar todas las herramientas integradas sin nombres duplicados
 
 La construcción del registry de producción SHALL registrar todas las herramientas integradas
-(incluidas `notes`, `unified_search` y `render_widget`), garantizando nombres únicos.
+(incluidas `notes`, `unified_search`, `render_widget` y las cuatro herramientas `strava_*`),
+garantizando nombres únicos.
 
 **Given** la aplicación Valet con su registro de herramientas de producción
 **When** se consulta el catálogo de herramientas registradas
-**Then** figuran entre ellas `notes`, `unified_search` y `render_widget`
+**Then** figuran entre ellas `notes`, `unified_search`, `render_widget` y las cuatro `strava_*`
 **And** no hay dos herramientas con el mismo nombre
 
 #### Scenario: El registry de producción incluye todas las herramientas integradas
 
 **Given** la aplicación Valet construida con su registro de herramientas de producción
 **When** se consulta el catálogo de herramientas registradas
-**Then** `notes`, `unified_search` y `render_widget` figuran entre ellas
+**Then** `notes`, `unified_search`, `render_widget` y las cuatro `strava_*` figuran entre ellas
 **And** no hay dos herramientas con el mismo nombre
 
 ### Requirement: El registry SHALL registrar la herramienta `render_widget`

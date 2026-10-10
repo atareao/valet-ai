@@ -735,7 +735,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// Las trece herramientas del registry de producción: lo que expone el
+    /// Las diecisiete herramientas del registry de producción: lo que expone el
     /// fallo abierto con todas las skills habilitadas.
     const ALL_TOOLS: &[&str] = &[
         "calendar",
@@ -747,6 +747,10 @@ mod tests {
         "render_widget",
         "reverse_geocode",
         "search_places",
+        "strava_activity_detail",
+        "strava_activity_streams",
+        "strava_athlete_stats",
+        "strava_recent_activities",
         "tasks",
         "unified_search",
         "weather",

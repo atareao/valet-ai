@@ -94,7 +94,7 @@ mod tests {
     use super::*;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-    /// Test-side copy of the production tool catalog. Must mirror the 13 tools
+    /// Test-side copy of the production tool catalog. Must mirror the 17 tools
     /// returned by `build_tool_registry` in `src/lib.rs`; keep both in sync.
     const REGISTRY_NAMES: &[&str] = &[
         "weather",
@@ -110,6 +110,10 @@ mod tests {
         "notes",
         "unified_search",
         "render_widget",
+        "strava_recent_activities",
+        "strava_activity_detail",
+        "strava_activity_streams",
+        "strava_athlete_stats",
     ];
 
     async fn setup() -> Result<SqlitePool, sqlx::Error> {
@@ -146,7 +150,7 @@ mod tests {
         let pool = setup().await?;
         ToolsRepo::sync_from_registry(&pool, &defs(REGISTRY_NAMES)).await?;
         let tools = ToolsRepo::list(&pool).await?;
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 17);
         assert!(tools.iter().any(|t| t.name == "weather"));
         assert!(tools.iter().any(|t| t.name == "unified_search"));
         Ok(())
@@ -184,7 +188,7 @@ mod tests {
             !tools.iter().any(|t| t.name == "geo"),
             "geo must be removed"
         );
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 17);
         Ok(())
     }
 
@@ -227,7 +231,7 @@ mod tests {
         ToolsRepo::sync_from_registry(&pool, &defs).await?;
         ToolsRepo::sync_from_registry(&pool, &defs).await?;
         let tools = ToolsRepo::list(&pool).await?;
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 17);
         Ok(())
     }
 

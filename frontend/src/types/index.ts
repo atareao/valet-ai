@@ -273,3 +273,15 @@ export interface SkillsResponse {
   skills: SkillInfo[];
   core_tools: string[];
 }
+
+/**
+ * Estado de la conexión con Strava (`GET /api/strava/status`). Espejo del
+ * contrato del backend: **nunca** incluye tokens, solo si hay conexión y los
+ * datos públicos del atleta autorizado.
+ */
+export interface StravaStatus {
+  connected: boolean;
+  athlete_id: string | null;
+  athlete_name: string | null;
+  scope: string | null;
+}
