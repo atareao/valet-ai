@@ -5,7 +5,7 @@
 **Tema 1:** ✅ Cerrado (PR #155, merge `d109f8d`)
 **Tema 2:** ✅ Cerrado (PR #159, merge `bd2892e`)
 **Tema 3:** ✅ Cerrado (PR #163, merge `46b3e0d`)
-**Tema 4:** 📝 Spec en revisión (change OpenSpec `strava-diagnostics`)
+**Tema 4:** ✅ Cerrado (PRs #166/#167)
 **Fecha:** 2026-10-09
 **Metodología:** OpenSpec (SDD) + TDD (Red-Green-Refactor)
 
@@ -270,7 +270,7 @@ Frontend:
 
 ## Tema 4 — Diagnóstico de la conexión con Strava
 
-**Estado:** 📝 Change OpenSpec `strava-diagnostics` creado; pendiente de aprobación.
+**Estado:** ✅ Completado en los PRs #166 (change OpenSpec) y #167 (implementación); archivado en OpenSpec como `2026-10-10-strava-diagnostics`.
 
 ### Objetivo
 
@@ -304,21 +304,21 @@ cuerpo de la respuesta y mostraba «Conectada como \<atleta\>» mientras todo fa
 
 ### Tareas técnicas (TDD — checklist)
 
-- [ ] F0 — Change OpenSpec `strava-diagnostics` (proposal + design + specs + tasks) → **STOP** y aprobación.
-- [ ] F1 — RED: mapeo del cuerpo de error, `check` sin caché, desconexión con aviso, handler, UI.
-- [ ] F2 — GREEN: servicio + rutas + frontend.
-- [ ] F3 — REFACTOR: `cargo fmt`, `clippy -D warnings`, `tsc`, lint.
-- [ ] F4 — VERIFY: `cargo test`, `vitest`, `openspec validate --strict`, reviews.
-- [ ] F5 — Cierre: archivar el change, actualizar este plan y `AGENTS.md § V` si procede.
+- [x] F0 — Change OpenSpec `strava-diagnostics` (proposal + design + specs + tasks) → **STOP** y aprobación.
+- [x] F1 — RED: mapeo del cuerpo de error, `check` sin caché, desconexión con aviso, handler, UI.
+- [x] F2 — GREEN: servicio + rutas + frontend.
+- [x] F3 — REFACTOR: `cargo fmt`, `clippy -D warnings`, `tsc`, lint.
+- [x] F4 — VERIFY: `cargo test`, `vitest`, `openspec validate --strict`, reviews.
+- [x] F5 — Cierre: archivar el change, actualizar este plan y `AGENTS.md § V` si procede.
 
 ### DoD
 
-- [ ] Un `403` de aplicación inactiva produce un mensaje que nombra la suscripción y la URL de reactivación (test).
-- [ ] Un `403` genérico incorpora el `message` y el `field`/`code` de Strava (test).
-- [ ] `GET /api/strava/check` responde `200` con `ok:false` + mensaje cuando la app está inactiva (test).
-- [ ] La desconexión borra los tokens siempre y avisa cuando la revocación no se confirma (test).
-- [ ] `cargo test`, `npx vitest run`, `tsc --noEmit`, lint y `openspec validate --all --strict` en verde.
-- [ ] `openspec archive strava-diagnostics`.
+- [x] Un `403` de aplicación inactiva produce un mensaje que nombra la suscripción y la URL de reactivación (test).
+- [x] Un `403` genérico incorpora el `message` y el `field`/`code` de Strava (test).
+- [x] `GET /api/strava/check` responde `200` con `ok:false` + mensaje cuando la app está inactiva (test).
+- [x] La desconexión borra los tokens siempre y avisa cuando la revocación no se confirma (test).
+- [x] `cargo test`, `npx vitest run`, `tsc --noEmit`, lint y `openspec validate --all --strict` en verde.
+- [x] `openspec archive strava-diagnostics`.
 
 ### Riesgos / notas
 
@@ -326,6 +326,13 @@ cuerpo de la respuesta y mostraba «Conectada como \<atleta\>» mientras todo fa
 - `GET /api/strava/check` sale a la red por diseño: no debe usarse en bucle.
 - No se persiste estado nuevo: el diagnóstico no añade claves a `settings`.
 
+### Notas de cierre
+
+- **Causa real del incidente**: la app de Strava estaba `Inactive` (`{"resource":"Application","field":"Status","code":"Inactive"}`) porque la cuenta propietaria no tenía una **suscripción activa** — requisito de Strava desde el 1 de julio de 2026. No era un fallo de Valet: el token y los scopes (`read`, `activity:read_all`) eran correctos.
+- **Diagnóstico el 2026-10-10**: exigió sacar el `access_token` de `settings` con `sqlite3` y preguntarle a la API con `curl`. De ahí nace este Tema.
+- **Hueco conocido que NO cubre este cambio**: el callback OAuth sigue desviando **cualquier** fallo a `/?strava=error`, sin motivo. Si el canje falla por una app inactiva, el usuario ve `?strava=error` y nada más. Candidato a un cambio futuro (requiere spec: el requisito OAuth y su mensaje en la UI).
+- **No-objetivos congelados**: `approval_prompt=force` al reconectar, persistir el último error en `settings`, widget de gráficas y MCP oficial de Strava.
+
 ## Temas pendientes
 
-Temas 1, 2 y 3 cerrados (PR #155, #159 y #163). Tema 4 en spec (`strava-diagnostics`).
+Temas 1, 2, 3 y 4 cerrados (PRs #155, #159, #163 y #166/#167). Pendiente de definir el **Tema 5** y siguientes.
