@@ -192,9 +192,7 @@ async fn test_rss_migration_does_not_touch_others() {
     let pool = setup().await;
 
     assert!(
-        !setting_value(&pool, "SKILL_EMAIL_PROMPT")
-            .await
-            .is_empty(),
+        !setting_value(&pool, "SKILL_EMAIL_PROMPT").await.is_empty(),
         "SKILL_EMAIL_PROMPT must survive the rss migration"
     );
     assert_eq!(
