@@ -23,6 +23,7 @@ pub enum Skill {
     Running,
     Timeline,
     Email,
+    Rss,
 }
 
 /// Especificación cerrada de una skill.
@@ -57,7 +58,7 @@ pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 9] = [
+static CATALOG: [SkillSpec; 10] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
@@ -174,6 +175,22 @@ static CATALOG: [SkillSpec; 9] = [
         prompt_key: "SKILL_EMAIL_PROMPT",
         prompt_heading: "# SKILL ACTIVA: EMAIL",
     },
+    SkillSpec {
+        skill: Skill::Rss,
+        id: "rss",
+        instructions: "¿La respuesta requiere mirar las noticias o los artículos que el usuario sigue en su lector de feeds?",
+        criteria_true: "El mensaje se refiere a las noticias, a los artículos sin leer del lector de feeds o a lo publicado por un medio o un blog que el usuario sigue; también pedir buscar algo en esos artículos o cambiar su estado de leído.",
+        criteria_false: "El mensaje no se refiere a ningún feed ni a ningún artículo: no pide ver qué hay sin leer, ni buscar en lo publicado, ni cambiar el estado de un artículo.",
+        threshold: 0.10,
+        tools: &[
+            "rss_list_unread",
+            "rss_get_entry",
+            "rss_search_entries",
+            "rss_mark_read",
+        ],
+        prompt_key: "SKILL_RSS_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: RSS",
+    },
 ];
 
 /// Catálogo cerrado de skills, en el orden canónico del sistema.
@@ -215,9 +232,9 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las nueve variantes del enum, para exigir que el catálogo las cubra
+    /// Las diez variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 9] = [
+    const ALL_SKILLS: [Skill; 10] = [
         Skill::Agenda,
         Skill::Pendientes,
         Skill::Recuerdos,
@@ -227,6 +244,7 @@ mod tests {
         Skill::Running,
         Skill::Timeline,
         Skill::Email,
+        Skill::Rss,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -441,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_declares_exactly_the_nine_wide_domain_ids() {
+    fn catalog_declares_exactly_the_ten_wide_domain_ids() {
         let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
 
         for id in [
@@ -454,6 +472,7 @@ mod tests {
             "running",
             "timeline",
             "email",
+            "rss",
         ] {
             assert!(
                 ids.contains(&id),
@@ -462,8 +481,8 @@ mod tests {
         }
         assert_eq!(
             ids.len(),
-            9,
-            "el catálogo debe tener exactamente nueve skills; tiene {ids:?}"
+            10,
+            "el catálogo debe tener exactamente diez skills; tiene {ids:?}"
         );
     }
 
@@ -566,6 +585,50 @@ mod tests {
     }
 
     #[test]
+    fn rss_covers_its_four_tools_and_is_a_domain_skill() {
+        let rss = catalog().iter().find(|spec| spec.skill == Skill::Rss);
+        assert!(rss.is_some(), "rss debe estar en el catálogo");
+        let rss = rss.unwrap();
+
+        for tool in [
+            "rss_list_unread",
+            "rss_get_entry",
+            "rss_search_entries",
+            "rss_mark_read",
+        ] {
+            assert!(
+                rss.tools.contains(&tool),
+                "rss debe cubrir {tool}: {:?}",
+                rss.tools
+            );
+        }
+        assert_eq!(
+            rss.tools.len(),
+            4,
+            "rss debe cubrir exactamente las cuatro herramientas rss_*: {:?}",
+            rss.tools
+        );
+
+        for &tool in rss.tools {
+            assert!(
+                !CORE_TOOLS.contains(&tool),
+                "rss es enrutable: {tool} no debe pertenecer al core"
+            );
+            assert_eq!(
+                skill_of_tool(tool),
+                Some(Skill::Rss),
+                "{tool} debe enrutarse con la skill rss"
+            );
+        }
+
+        assert_eq!(
+            pct(rss.threshold),
+            10,
+            "rss debe declarar el umbral 0.10 de las skills de dominio"
+        );
+    }
+
+    #[test]
     fn core_is_time_and_location_and_widget_is_not_core() {
         assert_eq!(
             CORE_TOOLS,
@@ -591,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_twenty_four_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_twenty_eight_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -603,8 +666,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            24,
-            "el core más las nueve skills deben cubrir las veinticuatro herramientas: {covered:?}"
+            28,
+            "el core más las diez skills deben cubrir las veintiocho herramientas: {covered:?}"
         );
         for spec in catalog() {
             assert!(
@@ -616,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_keys_are_the_nine_canonical_keys() {
+    fn prompt_keys_are_the_ten_canonical_keys() {
         let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
 
         for key in [
@@ -629,6 +692,7 @@ mod tests {
             "SKILL_RUNNING_PROMPT",
             "SKILL_TIMELINE_PROMPT",
             "SKILL_EMAIL_PROMPT",
+            "SKILL_RSS_PROMPT",
         ] {
             assert!(
                 keys.contains(&key),
@@ -637,8 +701,8 @@ mod tests {
         }
         assert_eq!(
             keys.len(),
-            9,
-            "el catálogo debe declarar exactamente nueve claves de fragmento; tiene {keys:?}"
+            10,
+            "el catálogo debe declarar exactamente diez claves de fragmento; tiene {keys:?}"
         );
         for legacy in [
             "SKILL_TAREAS_PROMPT",
