@@ -27,6 +27,11 @@ const DEFAULT_LIMIT: i64 = 50;
 /// más. Acota el consumo de recursos para que el argumento no sea una vía de DoS.
 const MAX_LIMIT: i64 = 500;
 
+/// Tope de longitud de un `location` en `timeline_add_event`: uno más largo se
+/// descarta (queda a `NULL`) sin fallar la llamada. Espeja el límite del
+/// extractor (`TIMELINE_MAX_LOCATION_CHARS` en `src/workers/episodic_memory.rs`).
+const MAX_LOCATION_CHARS: usize = 120;
+
 /// `timeline_get_events` — lee los hechos de un rango, filtrables por categoría.
 ///
 /// Todos los parámetros son opcionales: sin rango devuelve los hechos más
@@ -52,9 +57,11 @@ impl Tool for TimelineGetEventsTool {
     fn description(&self) -> &'static str {
         "Devuelve los hechos del timeline dentro de un rango de fechas, opcionalmente acotados \
          por categoría y limitados en número. Los hechos vienen ordenados del más reciente al \
-         más antiguo. Todos los parámetros son opcionales: `start` y `end` son fechas ISO 8601 \
-         inclusivas, `category` filtra por una de las categorías del conjunto cerrado y `limit` \
-         acota el número de hechos devueltos (50 por defecto)."
+         más antiguo y cada uno lleva su `id`, su `timestamp`, su `category`, su `fact` y su \
+         `location` (nulo cuando no se conoce el lugar). Todos los parámetros son opcionales: \
+         `start` y `end` son fechas ISO 8601 inclusivas, `category` filtra por una de las \
+         categorías del conjunto cerrado y `limit` acota el número de hechos devueltos (50 por \
+         defecto)."
     }
 
     fn parameters(&self) -> Value {
@@ -147,8 +154,9 @@ impl Tool for TimelineGetEventsTool {
 /// `timeline_add_event` — registra un hecho nuevo.
 ///
 /// `fact` es obligatorio y no puede estar vacío ni compuesto solo por espacios.
-/// `category` es opcional (`lifestyle` por defecto) y `timestamp` también
-/// (hora actual en UTC si se omite).
+/// `category` es opcional (`lifestyle` por defecto), `timestamp` también
+/// (hora actual en UTC si se omite) y `location` es opcional: se recorta y, si
+/// queda vacío o pasa de [`MAX_LOCATION_CHARS`], se guarda a `NULL` sin error.
 pub struct TimelineAddEventTool {
     db: SqlitePool,
 }
@@ -167,8 +175,11 @@ impl Tool for TimelineAddEventTool {
 
     fn description(&self) -> &'static str {
         "Registra un hecho en el timeline. El argumento `fact` es obligatorio y no puede quedar \
-         vacío. `category` es opcional (por defecto `lifestyle`) y `timestamp` es opcional: si se \
-         omite, se usa la hora actual en UTC. Devuelve el identificador del hecho creado."
+         vacío. `category` es opcional (por defecto `lifestyle`), `timestamp` es opcional: si se \
+         omite, se usa la hora actual en UTC, y `location` es opcional: el lugar donde ocurrió el \
+         hecho (si falta o pasa de 120 caracteres, se omite). Si el hecho ya estaba registrado \
+         ese mismo día, no se duplica y se informa de ello; en caso contrario, devuelve el \
+         identificador del hecho creado."
     }
 
     fn parameters(&self) -> Value {
@@ -187,6 +198,10 @@ impl Tool for TimelineAddEventTool {
                 "timestamp": {
                     "type": "string",
                     "description": "Fecha ISO 8601 del hecho; si se omite, se usa la hora actual en UTC"
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Lugar donde ocurrió el hecho (opcional; si falta, está en blanco o pasa de 120 caracteres, se omite)"
                 }
             },
             "required": ["fact"]
@@ -231,15 +246,35 @@ impl Tool for TimelineAddEventTool {
             Utc::now().to_rfc3339()
         };
 
+        let location = args
+            .get("location")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && l.chars().count() <= MAX_LOCATION_CHARS)
+            .map(str::to_string);
+
         let event = NewTimelineEvent {
             id: uuid::Uuid::new_v4().to_string(),
             timestamp,
             category: category.to_string(),
             fact: fact.to_string(),
+            location,
             source_message_id: None,
         };
 
-        TimelineRepo::insert_many(&self.db, std::slice::from_ref(&event)).await?;
+        // `insert_many` is `INSERT OR IGNORE`: a duplicate of the unique index
+        // (same fact, same day) is a silent no-op that returns `0`.
+        let inserted = TimelineRepo::insert_many(&self.db, std::slice::from_ref(&event)).await?;
+
+        if inserted == 0 {
+            return Ok(ToolResult {
+                success: true,
+                data: json!({}),
+                message: Some(
+                    "El hecho ya estaba registrado ese mismo día; no se ha duplicado".into(),
+                ),
+            });
+        }
 
         Ok(ToolResult {
             success: true,
@@ -345,6 +380,7 @@ mod tests {
             category: category.to_string(),
             fact: fact.to_string(),
             source_message_id: None,
+            location: None,
         };
         TimelineRepo::insert_many(pool, &[event]).await.unwrap();
     }
@@ -774,6 +810,238 @@ mod tests {
         // The mandatory arguments are documented in the descriptions.
         assert!(del.description().contains("obligatorio"));
         assert!(add.description().contains("obligatorio"));
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // 1.10 / tools — el lugar en `timeline_add_event` y `timeline_get_events`
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_add_event_stores_the_location() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        let result = tool
+            .execute(json!({
+                "fact": "Comí pulpo",
+                "location": "Pulpería Terra Meiga"
+            }))
+            .await?;
+        assert!(result.success);
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].location.as_deref(),
+            Some("Pulpería Terra Meiga"),
+            "the event must keep the location it was given"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_trims_the_location() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        let result = tool
+            .execute(json!({
+                "fact": "Paseé en bici",
+                "location": "  vía verde  "
+            }))
+            .await?;
+        assert!(result.success);
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].location.as_deref(),
+            Some("vía verde"),
+            "the location must be trimmed"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_blank_location_is_stored_as_null(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        for (fact, location) in [("hecho uno", ""), ("hecho dos", "   ")] {
+            let result = tool
+                .execute(json!({ "fact": fact, "location": location }))
+                .await?;
+            assert!(
+                result.success,
+                "a blank location must not fail the call for {fact:?}"
+            );
+        }
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 2, "both facts must still be stored");
+        for event in &events {
+            assert_eq!(
+                event.location, None,
+                "a blank location must be stored as NULL, got {:?} for {:?}",
+                event.location, event.fact
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_discards_an_overlong_location() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        let too_long = "x".repeat(121);
+        let exactly_max = "y".repeat(120);
+
+        tool.execute(json!({ "fact": "lugar de más", "location": too_long }))
+            .await?;
+        tool.execute(json!({ "fact": "lugar justo", "location": exactly_max }))
+            .await?;
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 2, "both facts must still be stored");
+
+        let over = events
+            .iter()
+            .find(|e| e.fact == "lugar de más")
+            .expect("the overlong-location fact must be stored");
+        assert_eq!(
+            over.location, None,
+            "a location over 120 characters must be discarded"
+        );
+
+        let exact = events
+            .iter()
+            .find(|e| e.fact == "lugar justo")
+            .expect("the exact-length-location fact must be stored");
+        assert_eq!(
+            exact.location.as_deref(),
+            Some(exactly_max.as_str()),
+            "a location of exactly 120 characters must be kept"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_reports_an_existing_fact_without_inserting(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        let first = tool
+            .execute(json!({
+                "fact": "Cené mochis",
+                "timestamp": "2026-10-11T20:21:00+00:00"
+            }))
+            .await?;
+        assert!(first.success);
+        assert!(
+            first.data.get("id").is_some(),
+            "the first call must return the created id"
+        );
+
+        let second = tool
+            .execute(json!({
+                "fact": "Cené mochis",
+                "timestamp": "2026-10-11T21:00:00+00:00"
+            }))
+            .await?;
+        assert!(second.success, "an existing fact must not be an error");
+        assert!(
+            second.data.get("id").is_none(),
+            "an ignored insert must not return a new id, got: {:?}",
+            second.data
+        );
+        let message = second.message.unwrap_or_default();
+        assert!(
+            message.contains("ya estaba registrado"),
+            "the message must say the fact was already recorded, got: {message}"
+        );
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 1, "only the first row must exist");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_events_returns_the_location() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        insert_event(
+            &db,
+            "with",
+            "2026-01-15T08:00:00+00:00",
+            "sport",
+            "Paseé en bici",
+        )
+        .await;
+
+        let located = NewTimelineEvent {
+            id: "located".to_string(),
+            timestamp: "2026-01-15T09:00:00+00:00".to_string(),
+            category: "lifestyle".to_string(),
+            fact: "Comí pulpo".to_string(),
+            source_message_id: None,
+            location: Some("Pulpería Terra Meiga".to_string()),
+        };
+        TimelineRepo::insert_many(&db, &[located]).await?;
+
+        let tool = TimelineGetEventsTool::new(db);
+        let result = tool.execute(json!({})).await?;
+        assert!(result.success);
+
+        let events = result
+            .data
+            .as_array()
+            .expect("data must be an array of events");
+
+        let with = events
+            .iter()
+            .find(|e| e["id"] == "located")
+            .expect("the located event must be returned");
+        let without = events
+            .iter()
+            .find(|e| e["id"] == "with")
+            .expect("the unlocated event must be returned");
+
+        assert_eq!(
+            with["location"], "Pulpería Terra Meiga",
+            "the located event must carry its place"
+        );
+        assert!(
+            without["location"].is_null(),
+            "the unlocated event must serialise its place as null, got: {}",
+            without["location"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_schema_documents_location() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db);
+
+        let params = tool.parameters();
+        let location = &params["properties"]["location"];
+        assert!(
+            !location.is_null(),
+            "the schema must document a 'location' property, got: {params}"
+        );
+        assert_eq!(
+            location["type"], "string",
+            "'location' must be declared as a string"
+        );
+        assert!(
+            tool.description().contains("location"),
+            "the description must mention 'location', got: {}",
+            tool.description()
+        );
         Ok(())
     }
 }
