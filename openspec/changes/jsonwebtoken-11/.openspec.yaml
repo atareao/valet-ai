@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-11
+goal: Actualizar jsonwebtoken de 9.3.1 a 11.1.0 seleccionando el CryptoProvider
+  aws_lc_rs, sin cambios de comportamiento en la autenticación
