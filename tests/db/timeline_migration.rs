@@ -137,6 +137,10 @@ async fn test_timeline_events_category_check_roundtrip() {
     let pool = setup().await;
 
     // Every declared category is accepted.
+    //
+    // Each row carries a distinct `fact`: the unique index over
+    // `(lower(trim(fact)), substr(timestamp,1,10))` makes the same fact on the
+    // same day a duplicate, which is orthogonal to the category CHECK under test.
     for (i, category) in [
         "sport",
         "lifestyle",
@@ -155,7 +159,7 @@ async fn test_timeline_events_category_check_roundtrip() {
         .bind(format!("ev-{i}"))
         .bind("2026-10-10T08:00:00Z")
         .bind(category)
-        .bind("hecho")
+        .bind(format!("hecho {i}"))
         .execute(&pool)
         .await
         .unwrap_or_else(|e| panic!("category '{category}' must be accepted: {e}"));
@@ -528,6 +532,7 @@ async fn test_source_message_id_is_nulled_when_message_deleted() {
             timestamp: "2026-10-10T08:00:00Z".into(),
             category: "social".into(),
             fact: "Quedé con Ana".into(),
+            location: None,
             source_message_id: Some("m1".into()),
         }],
     )

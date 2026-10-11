@@ -27,6 +27,11 @@ const DEFAULT_LIMIT: i64 = 50;
 /// más. Acota el consumo de recursos para que el argumento no sea una vía de DoS.
 const MAX_LIMIT: i64 = 500;
 
+/// Tope de longitud de un `location` en `timeline_add_event`: uno más largo se
+/// descarta (queda a `NULL`) sin fallar la llamada. Espeja el límite del
+/// extractor (`TIMELINE_MAX_LOCATION_CHARS` en `src/workers/episodic_memory.rs`).
+const MAX_LOCATION_CHARS: usize = 120;
+
 /// `timeline_get_events` — lee los hechos de un rango, filtrables por categoría.
 ///
 /// Todos los parámetros son opcionales: sin rango devuelve los hechos más
@@ -52,9 +57,11 @@ impl Tool for TimelineGetEventsTool {
     fn description(&self) -> &'static str {
         "Devuelve los hechos del timeline dentro de un rango de fechas, opcionalmente acotados \
          por categoría y limitados en número. Los hechos vienen ordenados del más reciente al \
-         más antiguo. Todos los parámetros son opcionales: `start` y `end` son fechas ISO 8601 \
-         inclusivas, `category` filtra por una de las categorías del conjunto cerrado y `limit` \
-         acota el número de hechos devueltos (50 por defecto)."
+         más antiguo y cada uno lleva su `id`, su `timestamp`, su `category`, su `fact` y su \
+         `location` (nulo cuando no se conoce el lugar). Todos los parámetros son opcionales: \
+         `start` y `end` son fechas ISO 8601 inclusivas, `category` filtra por una de las \
+         categorías del conjunto cerrado y `limit` acota el número de hechos devueltos (50 por \
+         defecto)."
     }
 
     fn parameters(&self) -> Value {
@@ -147,8 +154,9 @@ impl Tool for TimelineGetEventsTool {
 /// `timeline_add_event` — registra un hecho nuevo.
 ///
 /// `fact` es obligatorio y no puede estar vacío ni compuesto solo por espacios.
-/// `category` es opcional (`lifestyle` por defecto) y `timestamp` también
-/// (hora actual en UTC si se omite).
+/// `category` es opcional (`lifestyle` por defecto), `timestamp` también
+/// (hora actual en UTC si se omite) y `location` es opcional: se recorta y, si
+/// queda vacío o pasa de [`MAX_LOCATION_CHARS`], se guarda a `NULL` sin error.
 pub struct TimelineAddEventTool {
     db: SqlitePool,
 }
@@ -167,8 +175,11 @@ impl Tool for TimelineAddEventTool {
 
     fn description(&self) -> &'static str {
         "Registra un hecho en el timeline. El argumento `fact` es obligatorio y no puede quedar \
-         vacío. `category` es opcional (por defecto `lifestyle`) y `timestamp` es opcional: si se \
-         omite, se usa la hora actual en UTC. Devuelve el identificador del hecho creado."
+         vacío. `category` es opcional (por defecto `lifestyle`), `timestamp` es opcional: si se \
+         omite, se usa la hora actual en UTC, y `location` es opcional: el lugar donde ocurrió el \
+         hecho (si falta o pasa de 120 caracteres, se omite). Si el hecho ya estaba registrado \
+         ese mismo día, no se duplica y se informa de ello; en caso contrario, devuelve el \
+         identificador del hecho creado."
     }
 
     fn parameters(&self) -> Value {
@@ -187,6 +198,10 @@ impl Tool for TimelineAddEventTool {
                 "timestamp": {
                     "type": "string",
                     "description": "Fecha ISO 8601 del hecho; si se omite, se usa la hora actual en UTC"
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Lugar donde ocurrió el hecho (opcional; si falta, está en blanco o pasa de 120 caracteres, se omite)"
                 }
             },
             "required": ["fact"]
@@ -231,15 +246,35 @@ impl Tool for TimelineAddEventTool {
             Utc::now().to_rfc3339()
         };
 
+        let location = args
+            .get("location")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && l.chars().count() <= MAX_LOCATION_CHARS)
+            .map(str::to_string);
+
         let event = NewTimelineEvent {
             id: uuid::Uuid::new_v4().to_string(),
             timestamp,
             category: category.to_string(),
             fact: fact.to_string(),
+            location,
             source_message_id: None,
         };
 
-        TimelineRepo::insert_many(&self.db, std::slice::from_ref(&event)).await?;
+        // `insert_many` is `INSERT OR IGNORE`: a duplicate of the unique index
+        // (same fact, same day) is a silent no-op that returns `0`.
+        let inserted = TimelineRepo::insert_many(&self.db, std::slice::from_ref(&event)).await?;
+
+        if inserted == 0 {
+            return Ok(ToolResult {
+                success: true,
+                data: json!({}),
+                message: Some(
+                    "El hecho ya estaba registrado ese mismo día; no se ha duplicado".into(),
+                ),
+            });
+        }
 
         Ok(ToolResult {
             success: true,
