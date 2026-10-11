@@ -165,3 +165,7 @@ path = "tests/db/timeline_migration.rs"
 [[test]]
 name = "email-migration"
 path = "tests/db/email_migration.rs"
+
+[[test]]
+name = "rss-migration"
+path = "tests/db/rss_migration.rs"
