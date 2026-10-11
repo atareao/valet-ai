@@ -1618,6 +1618,7 @@ mod tests {
         ChatMessage, ChatRequest, ChatResponse, LLMError, ReasoningEffort, ReasoningSpec,
         ResponseFormat, TokenUsage,
     };
+    use crate::models::timeline::TimelineEvent;
     use async_trait::async_trait;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::sync::{Arc, Mutex};
@@ -3890,10 +3891,14 @@ mod tests {
             umsg("m1", "user", "Fui a correr 8 km", "2026-10-10T08:15:00Z"),
             umsg("m2", "assistant", "¡Bien!", "2026-10-10T08:16:00Z"),
         ];
-        let block = format_timeline_block(&primary);
-        assert_eq!(
-            block,
-            "[1] 2026-10-10T08:15:00Z | user: Fui a correr 8 km\n[2] 2026-10-10T08:16:00Z | assistant: ¡Bien!"
+        let block = format_timeline_block(&primary, &[]);
+        assert!(
+            block.contains("[1] 2026-10-10T08:15:00Z | user: Fui a correr 8 km"),
+            "each line must carry its number, date and role: {block}"
+        );
+        assert!(
+            block.contains("[2] 2026-10-10T08:16:00Z | assistant: ¡Bien!"),
+            "each line must carry its number, date and role: {block}"
         );
     }
 
@@ -4147,6 +4152,338 @@ mod tests {
         assert_eq!(
             request.messages[0].content, DEFAULT_TIMELINE_PROMPT_FALLBACK,
             "an empty key must use the minimal fallback"
+        );
+    }
+
+    // ─── Integridad del hecho: parser, fuente, fecha, lugar y bloque ───────
+    //
+    // Contrato fijado por el change `timeline-fact-integrity`. Describen el
+    // comportamiento esperado tras la fase GREEN: `RawTimelineEvent` gana
+    // `timestamp` y `location`; `validate_timeline_events` restringe la fuente al
+    // rol `user`, valida la fecha propuesta, normaliza el lugar y descarta el
+    // hecho desmedido; y `format_timeline_block` pasa a recibir los hechos ya
+    // registrados y a emitir el instante de referencia del lote.
+
+    /// The `created_at` of the cited message, i.e. the fallback anchor.
+    const ANCHOR: &str = "2026-10-11T15:25:09+00:00";
+
+    /// A primary batch of a single `user` message whose `created_at` is the
+    /// anchor used by the date checks.
+    fn anchor_primary() -> Vec<UnindexedMessage> {
+        vec![umsg("m1", "user", "Fui a correr", ANCHOR)]
+    }
+
+    /// Build the `{"events":[…]}` envelope from a comma-separated list of raw
+    /// event objects, exactly as the extractor does.
+    fn raw_events(items: &str) -> Vec<RawTimelineEvent> {
+        parse_timeline_events(&format!(r#"{{"events":[{}]}}"#, items))
+            .expect("the test envelope must parse")
+    }
+
+    /// A persisted timeline event as the block builder reads it from the table.
+    fn tlevent(id: &str, fact: &str) -> TimelineEvent {
+        TimelineEvent {
+            id: id.to_string(),
+            timestamp: "2026-10-11T10:21:00+00:00".to_string(),
+            category: "lifestyle".to_string(),
+            fact: fact.to_string(),
+            source_message_id: Some("m1".to_string()),
+            location: None,
+            created_at: ANCHOR.to_string(),
+        }
+    }
+
+    // ─── 1.4 parser: timestamp y location ─────────────────────────────────
+
+    #[test]
+    fn test_parse_timeline_events_reads_timestamp_and_location() {
+        let body = r#"{"events":[{"source":1,"category":"sport","fact":"Fui a correr","timestamp":"2026-10-11T10:21:00+00:00","location":"vía verde"}]}"#;
+        let raw = parse_timeline_events(body).expect("a valid envelope must parse");
+        assert_eq!(
+            raw[0].timestamp.as_deref(),
+            Some("2026-10-11T10:21:00+00:00"),
+            "a present timestamp must be read"
+        );
+        assert_eq!(
+            raw[0].location.as_deref(),
+            Some("vía verde"),
+            "a present location must be read"
+        );
+    }
+
+    #[test]
+    fn test_parse_timeline_events_defaults_missing_timestamp_and_location_to_none() {
+        let body = r#"{"events":[{"source":1,"category":"sport","fact":"Fui a correr"}]}"#;
+        let raw = parse_timeline_events(body).expect("a valid envelope must parse");
+        assert_eq!(raw[0].timestamp, None, "a missing timestamp is None");
+        assert_eq!(raw[0].location, None, "a missing location is None");
+        assert_eq!(raw[0].source, Some(1), "the rest of the event is untouched");
+        assert_eq!(raw[0].category.as_deref(), Some("sport"));
+        assert_eq!(raw[0].fact.as_deref(), Some("Fui a correr"));
+    }
+
+    #[test]
+    fn test_parse_timeline_events_tolerates_ill_typed_timestamp_and_location() {
+        let body = r#"{"events":[{"source":1,"category":"sport","fact":"Fui a correr","timestamp":42,"location":{"a":1}}]}"#;
+        let raw = parse_timeline_events(body).expect("a valid envelope must parse");
+        assert_eq!(raw[0].timestamp, None, "an ill-typed timestamp is None");
+        assert_eq!(raw[0].location, None, "an ill-typed location is None");
+        assert_eq!(
+            raw[0].fact.as_deref(),
+            Some("Fui a correr"),
+            "the fact must survive an ill-typed field"
+        );
+    }
+
+    // ─── 1.5 fuente: solo el usuario origina hechos ───────────────────────
+
+    #[test]
+    fn test_validate_discards_events_sourced_from_a_non_user_line() {
+        let primary = vec![
+            umsg("u1", "user", "uno", "2026-10-11T15:25:09+00:00"),
+            umsg("a1", "assistant", "dos", "2026-10-11T15:25:10+00:00"),
+            umsg("t1", "tool", "tres", "2026-10-11T15:25:11+00:00"),
+            umsg("s1", "system", "cuatro", "2026-10-11T15:25:12+00:00"),
+        ];
+        let raw = raw_events(
+            r#"{"source":1,"category":"sport","fact":"del usuario"},{"source":2,"category":"sport","fact":"del asistente"},{"source":3,"category":"sport","fact":"de tool"},{"source":4,"category":"sport","fact":"de system"}"#,
+        );
+        let events = validate_timeline_events(raw, &primary);
+        assert_eq!(
+            events.len(),
+            1,
+            "only a fact sourced from a `user` line survives"
+        );
+        assert_eq!(events[0].fact, "del usuario");
+    }
+
+    #[test]
+    fn test_validate_keeps_the_user_line_and_points_at_it() {
+        let primary = vec![umsg("user-msg-id", "user", "Fui a correr", ANCHOR)];
+        let raw = raw_events(r#"{"source":1,"category":"sport","fact":"Corrí 9,34 km"}"#);
+        let events = validate_timeline_events(raw, &primary);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].fact, "Corrí 9,34 km", "the fact is kept");
+        assert_eq!(
+            events[0].source_message_id.as_deref(),
+            Some("user-msg-id"),
+            "source_message_id is the id of the cited user line"
+        );
+    }
+
+    // ─── 1.6 fecha: la propone el modelo y se valida ──────────────────────
+
+    #[test]
+    fn test_validate_uses_the_proposed_timestamp_when_valid() {
+        let raw = raw_events(
+            r#"{"source":1,"category":"sport","fact":"Corrí 9,34 km","timestamp":"2026-10-11T10:21:00+00:00"}"#,
+        );
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].timestamp, "2026-10-11T10:21:00+00:00",
+            "a valid proposed timestamp is the fact's date"
+        );
+    }
+
+    #[test]
+    fn test_validate_falls_back_when_timestamp_is_missing() {
+        let raw = raw_events(r#"{"source":1,"category":"sport","fact":"Corrí 9,34 km"}"#);
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(
+            events[0].timestamp, ANCHOR,
+            "a missing timestamp falls back to the cited message's created_at"
+        );
+    }
+
+    #[test]
+    fn test_validate_falls_back_when_timestamp_is_unparseable() {
+        let raw = raw_events(
+            r#"{"source":1,"category":"sport","fact":"Corrí 9,34 km","timestamp":"ayer por la mañana"}"#,
+        );
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(events[0].timestamp, ANCHOR);
+    }
+
+    #[test]
+    fn test_validate_falls_back_when_timestamp_has_no_offset() {
+        let raw = raw_events(
+            r#"{"source":1,"category":"sport","fact":"Corrí 9,34 km","timestamp":"2026-10-11T10:21"}"#,
+        );
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(events[0].timestamp, ANCHOR);
+    }
+
+    #[test]
+    fn test_validate_falls_back_when_timestamp_is_in_the_future() {
+        // 35 minutes after the anchor, beyond the 5-minute tolerance.
+        let anchor = chrono::DateTime::parse_from_rfc3339(ANCHOR).expect("the anchor must parse");
+        let future = (anchor + chrono::Duration::minutes(35)).to_rfc3339();
+        let raw = raw_events(&format!(
+            r#"{{"source":1,"category":"sport","fact":"Corrí 9,34 km","timestamp":"{}"}}"#,
+            future
+        ));
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(events[0].timestamp, ANCHOR);
+    }
+
+    #[test]
+    fn test_validate_falls_back_when_timestamp_is_older_than_the_window() {
+        // More than 7 days before the anchor.
+        let anchor = chrono::DateTime::parse_from_rfc3339(ANCHOR).expect("the anchor must parse");
+        let old = (anchor - chrono::Duration::days(7) - chrono::Duration::hours(5)).to_rfc3339();
+        let raw = raw_events(&format!(
+            r#"{{"source":1,"category":"sport","fact":"Corrí 9,34 km","timestamp":"{}"}}"#,
+            old
+        ));
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(events[0].timestamp, ANCHOR);
+    }
+
+    #[test]
+    fn test_validate_accepts_a_timestamp_on_the_edge_of_the_window() {
+        // Exactly 7 days before the anchor: inside the window.
+        let anchor = chrono::DateTime::parse_from_rfc3339(ANCHOR).expect("the anchor must parse");
+        let edge = (anchor - chrono::Duration::days(7)).to_rfc3339();
+        let raw = raw_events(&format!(
+            r#"{{"source":1,"category":"sport","fact":"Corrí 9,34 km","timestamp":"{}"}}"#,
+            edge
+        ));
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(
+            events[0].timestamp, edge,
+            "a timestamp exactly at the window's edge is accepted"
+        );
+    }
+
+    // ─── 1.7 lugar y sustancia ────────────────────────────────────────────
+
+    #[test]
+    fn test_validate_trims_the_location() {
+        let raw = raw_events(
+            r#"{"source":1,"category":"sport","fact":"Corrí 9,34 km","location":"  vía verde  "}"#,
+        );
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].location.as_deref(), Some("vía verde"));
+    }
+
+    #[test]
+    fn test_validate_blanks_an_empty_location() {
+        let raw = raw_events(
+            r#"{"source":1,"category":"sport","fact":"hecho uno","location":""},{"source":1,"category":"sport","fact":"hecho dos","location":"   "},{"source":1,"category":"sport","fact":"hecho tres"}"#,
+        );
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(events.len(), 3, "an empty location must not drop the fact");
+        for event in &events {
+            assert_eq!(
+                event.location, None,
+                "an empty or blank location must be NULL"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_discards_an_overlong_location() {
+        let too_long = "a".repeat(121);
+        let exact = "a".repeat(120);
+        let raw = raw_events(&format!(
+            r#"{{"source":1,"category":"sport","fact":"hecho largo","location":"{}"}},{{"source":1,"category":"sport","fact":"hecho exacto","location":"{}"}}"#,
+            too_long, exact
+        ));
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(
+            events.len(),
+            2,
+            "an overlong location must not drop the fact"
+        );
+        assert_eq!(
+            events[0].location, None,
+            "a location over 120 chars is discarded"
+        );
+        assert_eq!(
+            events[1].location.as_deref(),
+            Some(exact.as_str()),
+            "a location of exactly 120 chars is kept"
+        );
+    }
+
+    #[test]
+    fn test_validate_discards_a_fact_over_the_limit() {
+        let too_long = "a".repeat(281);
+        let exact = "a".repeat(280);
+        let raw = raw_events(&format!(
+            r#"{{"source":1,"category":"sport","fact":"{}"}},{{"source":1,"category":"sport","fact":"{}"}}"#,
+            too_long, exact
+        ));
+        let events = validate_timeline_events(raw, &anchor_primary());
+        assert_eq!(events.len(), 1, "only the overlong fact is discarded");
+        assert_eq!(events[0].fact, exact, "a fact of exactly 280 chars is kept");
+    }
+
+    // ─── 1.9 bloque del prompt ────────────────────────────────────────────
+
+    #[test]
+    fn test_format_timeline_block_numbers_date_and_role() {
+        let primary = vec![
+            umsg("m1", "user", "Ya en casa", "2026-10-11T15:25:09+00:00"),
+            umsg(
+                "m2",
+                "assistant",
+                "En casa a las 17:25",
+                "2026-10-11T15:25:17+00:00",
+            ),
+        ];
+        let block = format_timeline_block(&primary, &[]);
+        assert!(
+            block.contains("[1] 2026-10-11T15:25:09+00:00 | user: Ya en casa"),
+            "the first line must carry its number, date and role: {block}"
+        );
+        assert!(
+            block.contains("[2] 2026-10-11T15:25:17+00:00 | assistant: En casa a las 17:25"),
+            "the second line must carry its number, date and role: {block}"
+        );
+    }
+
+    #[test]
+    fn test_format_timeline_block_carries_the_reference_instant() {
+        let primary = vec![
+            umsg("m1", "user", "a", "2026-10-11T15:25:09+00:00"),
+            umsg("m2", "assistant", "b", "2026-10-11T15:25:17+00:00"),
+        ];
+        let block = format_timeline_block(&primary, &[]);
+        assert!(
+            block.contains("INSTANTE DE REFERENCIA: 2026-10-11T15:25:17+00:00"),
+            "the block must carry the created_at of the last message: {block}"
+        );
+    }
+
+    #[test]
+    fn test_format_timeline_block_lists_the_known_facts() {
+        let primary = vec![umsg("m1", "user", "a", "2026-10-11T15:25:09+00:00")];
+        let known = vec![tlevent("e1", "Cené mochis"), tlevent("e2", "Corrí 9,34 km")];
+        let block = format_timeline_block(&primary, &known);
+        assert!(
+            block.contains("HECHOS YA REGISTRADOS (no los repitas):"),
+            "the block must head the known-facts list: {block}"
+        );
+        assert!(
+            block.contains("- Cené mochis"),
+            "each known fact is listed: {block}"
+        );
+        assert!(
+            block.contains("- Corrí 9,34 km"),
+            "each known fact is listed: {block}"
+        );
+    }
+
+    #[test]
+    fn test_format_timeline_block_says_none_when_there_are_no_known_facts() {
+        let primary = vec![umsg("m1", "user", "a", "2026-10-11T15:25:09+00:00")];
+        let block = format_timeline_block(&primary, &[]);
+        assert!(
+            block.contains("(ninguno)"),
+            "with no known facts the block must say (ninguno): {block}"
         );
     }
 }
