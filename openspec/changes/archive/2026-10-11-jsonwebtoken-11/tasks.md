@@ -30,6 +30,6 @@
 - [x] 4.1 No fue necesario: ni el compilador ni los tests exigieron tocar `src/auth.rs`, así que no hay hallazgo que añadir a `design.md`.
 - [x] 4.2 `cargo clippy --all-targets -- -D warnings` limpio y `cargo fmt --check` OK.
 - [x] 4.3 `openspec validate --all --strict` → 47 passed / 1 failed, el `infra` preexistente; sin fallos nuevos, y `openspec validate jsonwebtoken-11 --strict` válido.
-- [ ] 4.4 PR `feature/jsonwebtoken-11` ← `development`, CI en verde y merge.
-- [ ] 4.5 Cerrar el PR #147 como superado, con un comentario que apunte al PR nuevo.
-- [ ] 4.6 Archivar el change con `openspec archive jsonwebtoken-11`.
+- [x] 4.4 PR #176 (`feature/jsonwebtoken-11` ← `development`), CI en verde (Backend Rust 2m12s, Frontend Node 1m48s) y merge en `f07294f`.
+- [x] 4.5 PR #147 cerrado como superado, con un comentario que apunta al #176, y su rama `dependabot/cargo/jsonwebtoken-10.3.0` borrada.
+- [x] 4.6 Change archivado como `openspec/changes/archive/2026-10-11-jsonwebtoken-11`, con el delta fusionado en `openspec/specs/dependencies/spec.md` (+1 requisito, ~1 corregido).
