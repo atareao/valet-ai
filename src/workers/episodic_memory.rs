@@ -4228,6 +4228,71 @@ mod tests {
         );
     }
 
+    // ─── S3: an empty events array is the success path, not the error path ───
+
+    /// Scenario S3 (`workers`): a batch whose extractor returns `{"events": []}`
+    /// inserts no rows, yet the card, the state and the batch mark are written
+    /// and the stat is a success — unlike the two best-effort tests above, whose
+    /// `""` / non-JSON bodies take the error branch.
+    #[tokio::test]
+    async fn test_evaluate_timeline_empty_events_still_persists() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).timeline(r#"{"events": []}"#);
+
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            mock.wrap(),
+            embedding_provider(),
+            &EpisodicMemoryConfig {
+                inactivity_minutes: 0,
+                ..Default::default()
+            },
+            &no_attempt(),
+        )
+        .await;
+
+        assert_eq!(count_memory(&db).await, 1, "the card is written");
+        assert_eq!(
+            count_persistent_memory(&db).await,
+            1,
+            "the state is written"
+        );
+        assert_eq!(count_unindexed(&db).await, 0, "the batch is marked");
+        assert_eq!(
+            count_timeline(&db).await,
+            0,
+            "an empty events array must insert no rows"
+        );
+
+        let success_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests WHERE kind = 'timeline' AND status = 'success'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            success_rows, 1,
+            "an empty events array is a success, not an error"
+        );
+
+        let error_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests WHERE kind = 'timeline' AND status = 'error'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            error_rows, 0,
+            "the empty-array path must not be recorded as an error"
+        );
+    }
+
     // ─── 1.7 prompt ────────────────────────────────────────────────────────
 
     /// Run the extractor once and return the captured request.

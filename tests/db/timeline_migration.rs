@@ -692,14 +692,20 @@ fn has_unique_fact_index(sqls: &[String]) -> bool {
 }
 
 /// The exact rules the new seeded extractor prompt must state, plus the phrase
-/// it must no longer contain.
-const NEW_PROMPT_RULES: [&str; 6] = [
+/// it must no longer contain. This helper is only used for the extractor prompt
+/// (`timeline_prompt`); the skill prompt (`SKILL_TIMELINE_PROMPT`) is asserted
+/// separately and does **not** carry the worked example.
+const NEW_PROMPT_RULES: [&str; 8] = [
     "un solo hecho",
     "estados transitorios",
     "órdenes dirigidas al asistente",
     "ISO 8601",
     "location",
     "hechos ya registrados",
+    // S17: the seeded prompt puts the worked example of a single fact spread
+    // over its phases ("salir a correr, correr y terminar el entrenamiento").
+    "Salir a correr",
+    "terminar el entrenamiento",
 ];
 
 fn assert_new_prompt_contract(prompt: &str) {

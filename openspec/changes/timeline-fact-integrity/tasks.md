@@ -28,8 +28,8 @@
 
 ## 3. REFACTOR / limpieza
 
-- [ ] 3.1 `cargo fmt` y `cargo clippy --all-targets -- -D warnings` limpios; sin código muerto ni variantes sin usar.
-- [ ] 3.2 Comprobar que ningún test afirma ya el comportamiento viejo (fecha tomada siempre del mensaje, `source` de cualquier rol) y que las specs no se contradicen entre sí.
+- [x] 3.1 `cargo fmt` y `cargo clippy --all-targets -- -D warnings` limpios; sin código muerto ni variantes sin usar.
+- [x] 3.2 Comprobar que ningún test afirma ya el comportamiento viejo (fecha tomada siempre del mensaje, `source` de cualquier rol) y que las specs no se contradicen entre sí.
 
 ## 4. VERIFICACIÓN
 
@@ -55,3 +55,12 @@
 - **1.3 / 2.1 / 2.4 — el prompt «exacto» no contenía un literal que el RED exige.** El texto entregado decía `NO extraigas órdenes ni peticiones dirigidas al asistente`, que no contiene el literal `órdenes dirigidas al asistente` de `NEW_PROMPT_RULES`; como las reglas prohíben tocar los tests, se reescribió la línea a `NO extraigas órdenes dirigidas al asistente ni peticiones dirigidas a él (…)` (mismo significado; mantiene `un solo hecho`, `estados transitorios`, `ISO 8601`, `location` y `hechos ya registrados`, y no reintroduce `NO devuelvas ninguna fecha`). Es la única desviación del texto del prompt.
 - **2.4 — `DEFAULT_TIMELINE_PROMPT_FALLBACK`.** Reescrito como *raw string* coherente con el contrato nuevo; ningún test fija su contenido (solo se compara consigo mismo), así que no está constreñido por el RED.
 - **Verificación.** `cargo test --no-fail-fast` → **1254 passed / 0 failed / 1 ignored** (base 1208 + 46 del RED). `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios (exit 0).
+
+### REFACTOR — hallazgos del review y cómo se cerraron
+
+Dos hallazgos importantes del `rust-reviewer` (cero bloqueantes). Ambos cerrados sin tocar la migración ni los textos de los prompts, sin debilitar ninguna aserción existente.
+
+- **H1 — `INSERT OR IGNORE` enmascaraba violaciones que no eran duplicados.** Con `INSERT OR IGNORE` una violación del `CHECK` de categoría se saltaba en silencio (solo la del índice único debía ignorarse), y `timeline_add_event` la reportaba como «ya estaba registrado». Se cambió a `INSERT … ON CONFLICT(lower(trim(fact)), substr(timestamp, 1, 10)) DO NOTHING`: el conflicto queda acotado a la unicidad, el duplicado sigue siendo un no-op (semántica de lote y `rows_affected` intactos) y una violación real (CHECK/FK) pasa a ser un error ruidoso. La consecuencia asumida —una violación de CHECK/FK aborta la transacción de la pasada— queda documentada en el doc de `insert_many`: es aceptable porque la Capa D es *best-effort*, la validación previa hace esas violaciones inalcanzables y la pasada se reintenta.
+- **H2 — faltaba el test del escenario S3 («Sin hechos no hay filas nuevas»).** Solo estaba cubierto el parser (`test_parse_timeline_events_empty_array`); los dos tests de best-effort existentes usaban `""` y contenido sin JSON, o sea la rama de error. Se añadió `test_evaluate_timeline_empty_events_still_persists`, end-to-end sobre la pasada: con el extractor devolviendo `{"events": []}` no se inserta ninguna fila, el lote queda con `is_indexed = 1`, la ficha y el estado se escriben y la estadística de la llamada queda con `kind = 'timeline'` y `status = 'success'` (y no `'error'`).
+- **Menor cerrado — S17 (el prompt siembra el ejemplo).** `assert_new_prompt_contract` solo comprobaba `un solo hecho`; se añadieron las subcadenas del ejemplo (`Salir a correr` y `terminar el entrenamiento`) a `NEW_PROMPT_RULES`. El helper solo se usa para el prompt del **extractor**; el de la skill se afirma aparte y no lleva el ejemplo, así que no se contamina.
+- **Verificación.** `cargo test --no-fail-fast` → **1255 passed / 0 failed / 1 ignored** (1254 + el test nuevo de S3). `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios (exit 0).

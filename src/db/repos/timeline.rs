@@ -10,10 +10,27 @@ impl TimelineRepo {
     /// transaction can be shared. An empty batch executes nothing and returns
     /// `0`.
     ///
-    /// The insert is `INSERT OR IGNORE`: a row that repeats the unique index
-    /// (`lower(trim(fact))` + day of `timestamp`) is the expected result of the
-    /// de-duplication, not an error. The returned `u64` is how many rows really
-    /// entered, so callers can tell a new fact from an already-known one.
+    /// The conflict is scoped to the unique index on
+    /// `(lower(trim(fact)), substr(timestamp, 1, 10))` with `ON CONFLICT …
+    /// DO NOTHING`, **not** `INSERT OR IGNORE`. The two differ in what they
+    /// swallow. A row that repeats that index — the expected result of the
+    /// de-duplication — is skipped by both, but `INSERT OR IGNORE` would also
+    /// silently drop a `CHECK` violation: a `category` outside the closed set
+    /// would vanish and the caller would report it as "already recorded", a lie.
+    /// Scoping the conflict keeps the duplicate a no-op while a real constraint
+    /// violation (CHECK or foreign key) surfaces as a loud error instead of a
+    /// lost row.
+    ///
+    /// Consequence: a CHECK/FK violation on the worker path now aborts the
+    /// pass's transaction. That is acceptable because Layer D is *best-effort*
+    /// and the validation that runs before the insert makes those violations
+    /// unreachable; and because the pass is retried — the messages stay
+    /// unmarked and the batch comes back.
+    ///
+    /// The batch semantics are preserved: inside a multi-row `VALUES`, a
+    /// duplicate is skipped while the rest enter, and the returned `u64` is the
+    /// real number of rows that entered, so callers can tell a new fact from an
+    /// already-known one.
     pub async fn insert_many<'e, E>(
         executor: E,
         events: &[NewTimelineEvent],
@@ -26,7 +43,7 @@ impl TimelineRepo {
         }
 
         let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-            "INSERT OR IGNORE INTO timeline_events \
+            "INSERT INTO timeline_events \
              (id, timestamp, category, fact, location, source_message_id) ",
         );
         qb.push_values(events, |mut row, event| {
@@ -37,6 +54,7 @@ impl TimelineRepo {
                 .push_bind(&event.location)
                 .push_bind(&event.source_message_id);
         });
+        qb.push(" ON CONFLICT(lower(trim(fact)), substr(timestamp, 1, 10)) DO NOTHING");
         let result = qb.build().execute(executor).await?;
         Ok(result.rows_affected())
     }
