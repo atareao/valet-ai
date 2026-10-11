@@ -36,9 +36,9 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 
 ## 6. Verificación
 
-- [ ] 6.1 Anotar el recuento de tests **antes y después** y dejar la suite de Rust completa en verde con `cargo test --no-fail-fast` (0 fallos).
-- [ ] 6.2 `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios (0 warnings).
-- [ ] 6.3 En el frontend, `npx vitest run`, `npx tsc --noEmit` y el lint (`npm run lint`) en verde.
+- [x] 6.1 Anotar el recuento de tests **antes y después** y dejar la suite de Rust completa en verde con `cargo test --no-fail-fast` (0 fallos). Antes: 1165 passed / 0 failed / 1 ignored. Después: **1208 passed / 0 failed / 1 ignored**. (El frontend pasó de 349 a 352 tests.)
+- [x] 6.2 `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios (0 warnings).
+- [x] 6.3 En el frontend, `npx vitest run`, `npx tsc --noEmit` y el lint (`npm run lint`) en verde. `npx vitest run` en verde con **352 tests** (49 ficheros, 0 fallos), `npx tsc --noEmit` limpio y `npm run lint` limpio.
 - [ ] 6.4 Ya con el token puesto por el usuario en Ajustes → API Keys, comprobar en producción que el asistente **lista los no leídos**, **lee un artículo entero** (`rss_get_entry`) y **lo marca como leído** cuando se lo piden (`rss_mark_read`), sin marcarlo al leerlo.
 
 ## Notas
