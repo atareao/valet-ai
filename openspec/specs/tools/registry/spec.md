@@ -73,18 +73,18 @@ Toda operación de borrado de una tool multioperación SHALL declarar `ExplicitA
 
 La construcción del registry de producción SHALL registrar todas las herramientas integradas
 (incluidas `notes`, `unified_search`, `render_widget`, las cuatro herramientas `strava_*`, las tres
-`timeline_*` y las cuatro `email_*`), garantizando nombres únicos.
+`timeline_*`, las cuatro `email_*` y las cuatro `rss_*`), garantizando nombres únicos.
 
 **Given** la aplicación Valet con su registro de herramientas de producción
 **When** se consulta el catálogo de herramientas registradas
-**Then** figuran entre ellas `notes`, `unified_search`, `render_widget`, las cuatro `strava_*`, las tres `timeline_*` y las cuatro `email_*`
+**Then** figuran entre ellas `notes`, `unified_search`, `render_widget`, las cuatro `strava_*`, las tres `timeline_*`, las cuatro `email_*` y las cuatro `rss_*`
 **And** no hay dos herramientas con el mismo nombre
 
 #### Scenario: El registry de producción incluye todas las herramientas integradas
 
 **Given** la aplicación Valet construida con su registro de herramientas de producción
 **When** se consulta el catálogo de herramientas registradas
-**Then** `notes`, `unified_search`, `render_widget`, las cuatro `strava_*`, las tres `timeline_*` y las cuatro `email_*` figuran entre ellas
+**Then** `notes`, `unified_search`, `render_widget`, las cuatro `strava_*`, las tres `timeline_*`, las cuatro `email_*` y las cuatro `rss_*` figuran entre ellas
 **And** no hay dos herramientas con el mismo nombre
 
 #### Scenario: Las herramientas del correo se ofrecen al modelo
@@ -94,6 +94,13 @@ La construcción del registry de producción SHALL registrar todas las herramien
 **Then** la lista contiene las cuatro
 **And** las tres de lectura y marcado declaran un permiso que no requiere aprobación
 **And** `email_send` declara `ExplicitApproval`
+
+#### Scenario: Las herramientas del feed se ofrecen al modelo
+
+**Given** el registry de producción con la skill `rss` habilitada
+**When** se solicitan las definiciones del subconjunto de las cuatro `rss_*`
+**Then** la lista contiene las cuatro
+**And** las cuatro declaran un permiso que no requiere aprobación
 
 ### Requirement: El registry SHALL registrar la herramienta `render_widget`
 

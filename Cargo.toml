@@ -1,6 +1,6 @@
 [package]
 name = "valet"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 autobins = false
 
@@ -26,7 +26,7 @@ base64 = "0.23"
 futures = "0.3"
 async-stream = "0.3"
 url = "2"
-jsonwebtoken = "9"
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 cookie = "0.18"
 rand = "0.10"
@@ -165,3 +165,7 @@ path = "tests/db/timeline_migration.rs"
 [[test]]
 name = "email-migration"
 path = "tests/db/email_migration.rs"
+
+[[test]]
+name = "rss-migration"
+path = "tests/db/rss_migration.rs"

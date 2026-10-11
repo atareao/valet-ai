@@ -36,4 +36,4 @@
 - [x] 4.2 Review de `@rust-reviewer` (cambios necesarios) y `@react-reviewer` (aprobado); hallazgos aplicados: `email_get_body` propaga `null` en vez de `""`, `Debug` de `ApimailConfig` enmascara la clave, `email_send` resuelve la configuración una sola vez, `to` rechaza direcciones en blanco, responder a un mensaje sin asunto no deja un `Re:` colgando, y los caminos de éxito y la traducción de errores de las cuatro herramientas ganan test a nivel de tool.
 - [x] 4.3 `openspec archive email-skill`.
 - [x] 4.4 PR a `development` y merge (PR #174).
-- [ ] 4.5 Comprobar en producción con la API key configurada: la skill aparece en «Skills» con su interruptor, umbral, pregunta, criterios y fragmento; el modelo lista no leídos, lee un cuerpo, lo marca como leído y **envía una respuesta que pide aprobación antes de salir**.
+- [x] 4.5 Verificado en producción por el usuario sobre la v0.12.0: la skill aparece en «Skills» con su interruptor, umbral, pregunta, criterios y fragmento, y el ciclo completo —listar no leídos, leer un cuerpo, marcar como leído y enviar pidiendo aprobación antes de salir— funciona sin incidencias.

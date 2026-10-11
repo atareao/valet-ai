@@ -44,4 +44,4 @@
 - [x] 5.1 `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo fmt --check` y `openspec validate activity-timeline --strict` en verde.
 - [x] 5.2 Review de `@rust-reviewer`; hallazgos aplicados.
 - [x] 5.3 `openspec archive activity-timeline` y cierre del Tema en `plans/PLAN-005.md`.
-- [ ] 5.4 En producción: comprobar que aparecen filas de `llm_requests` con `kind='timeline'` y que `timeline_events` crece con los días.
+- [x] 5.4 En producción: comprobar que aparecen filas de `llm_requests` con `kind='timeline'` y que `timeline_events` crece con los días.

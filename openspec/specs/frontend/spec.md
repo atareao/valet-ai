@@ -436,7 +436,7 @@ SettingsDialog SHALL display a "Prompts" tab with one sub-tab per editable promp
 
 ### Requirement: SettingsDialog SHALL display API Keys tab
 
-SettingsDialog SHALL display an "API Keys" tab with password fields for API keys and the apimail connection settings.
+SettingsDialog SHALL display an "API Keys" tab with password fields for API keys, the apimail connection settings and the Miniflux connection settings.
 
 **Given** el SettingsDialog está abierto en la tab "API Keys"
 **When** se renderiza
@@ -445,7 +445,9 @@ SettingsDialog SHALL display an "API Keys" tab with password fields for API keys
 - "Google Places API Key"
 - "Brave Search API Key"
 - "apimail · API Key"
+- "Miniflux · token de API"
 **And** muestra un campo de texto para "apimail · URL base"
+**And** muestra un campo de texto para "Miniflux · URL base"
 
 #### Scenario: API Keys se guardan
 **Given** el usuario introduce una API key de OpenWeatherMap
@@ -463,6 +465,18 @@ SettingsDialog SHALL display an "API Keys" tab with password fields for API keys
 **Given** el SettingsDialog abierto en la tab "API Keys" sin `apimail_base_url` en settings
 **When** se renderiza el campo de URL base
 **Then** su placeholder es `https://apimail.territoriolinux.es`
+
+#### Scenario: La configuración de Miniflux se muestra y se guarda
+**Given** el SettingsDialog abierto en la tab "API Keys" con `miniflux_base_url` y `miniflux_api_key` en settings
+**When** se renderiza
+**Then** el campo de URL base muestra el valor vigente
+**And** el campo del token está enmascarado
+**And** al editar el token y guardar, `updateSettings` se llama con `miniflux_api_key`
+
+#### Scenario: La URL base de Miniflux tiene un valor por defecto
+**Given** el SettingsDialog abierto en la tab "API Keys" sin `miniflux_base_url` en settings
+**When** se renderiza el campo de URL base de Miniflux
+**Then** su placeholder es `https://miniflux.territoriolinux.es`
 
 ### Requirement: SettingsDialog SHALL unify profile and settings buttons
 

@@ -2,7 +2,7 @@
 
 ## 0. Preparación y aprobación
 
-- [ ] 0.1 Presentar este change (proposal + specs + tasks) y **esperar aprobación explícita** antes de escribir código.
+- [x] 0.1 Presentar este change (proposal + specs + tasks) y **esperar aprobación explícita** antes de escribir código.
 
 ## 1. RED: fijar el contrato
 
@@ -32,4 +32,4 @@
 - [x] 4.2 Review de `@rust-reviewer` y `@react-reviewer`; hallazgos aplicados.
 - [x] 4.3 `openspec archive timeline-observability-wiring`.
 - [x] 4.4 PR a `development` y merge (PR #173).
-- [ ] 4.5 Desplegar y comprobar en producción: el timeline aparece como proceso de fondo, su tabla sale en Database Sizes, y su prompt y sus parámetros son editables en Settings.
+- [x] 4.5 Verificado en producción por el usuario sobre la v0.12.0: el timeline aparece como proceso de fondo, su tabla sale en «Database Sizes», y su prompt y sus parámetros son editables en Ajustes. Sin incidencias.
