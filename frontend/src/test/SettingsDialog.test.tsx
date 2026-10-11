@@ -55,6 +55,8 @@ const defaultSettings: Record<string, string> = {
   brave_search_api_key: "",
   apimail_base_url: "",
   apimail_api_key: "",
+  miniflux_base_url: "",
+  miniflux_api_key: "",
   MEMORY_HALF_LIFE_DAYS: "30",
   SIMILARITY_THRESHOLD: "0.4",
   RAG_BUDGET_TOKENS: "400",
@@ -543,7 +545,7 @@ describe("SettingsDialog", () => {
     });
   });
 
-  it("renders API Keys tab with the four password fields and the apimail URL base field", async () => {
+  it("renders API Keys tab with the five password fields and the two URL base fields", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
@@ -568,15 +570,117 @@ describe("SettingsDialog", () => {
       "type",
       "password",
     );
+    expect(screen.getByLabelText("Miniflux · API Key")).toHaveAttribute(
+      "type",
+      "password",
+    );
 
-    // El campo de URL base es de texto y, sin `apimail_base_url` en settings,
-    // muestra el placeholder con el endpoint por defecto.
-    const baseUrl = screen.getByLabelText("apimail · URL base");
-    expect(baseUrl).toHaveAttribute("type", "text");
-    expect(baseUrl).toHaveAttribute(
+    // Los campos de URL base son de texto y, sin valor en settings, muestran
+    // el placeholder con el endpoint por defecto.
+    const apimailBaseUrl = screen.getByLabelText("apimail · URL base");
+    expect(apimailBaseUrl).toHaveAttribute("type", "text");
+    expect(apimailBaseUrl).toHaveAttribute(
       "placeholder",
       "https://apimail.territoriolinux.es",
     );
+
+    const minifluxBaseUrl = screen.getByLabelText("Miniflux · URL base");
+    expect(minifluxBaseUrl).toHaveAttribute("type", "text");
+    expect(minifluxBaseUrl).toHaveAttribute(
+      "placeholder",
+      "https://miniflux.territoriolinux.es",
+    );
+  });
+
+  it("renders the Miniflux URL base and API Key fields", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("API Keys"));
+
+    // La URL base de Miniflux es un campo de texto con el endpoint por defecto
+    // como marcador; sin `miniflux_base_url` en settings no hay valor pintado.
+    const baseUrl = screen.getByLabelText("Miniflux · URL base");
+    expect(baseUrl).toHaveAttribute("type", "text");
+    expect(baseUrl).toHaveAttribute(
+      "placeholder",
+      "https://miniflux.territoriolinux.es",
+    );
+
+    // El token de Miniflux es un campo de contraseña con el mismo marcador que
+    // el resto de claves.
+    const apiKey = screen.getByLabelText("Miniflux · API Key");
+    expect(apiKey).toHaveAttribute("type", "password");
+    expect(apiKey).toHaveAttribute(
+      "placeholder",
+      "Dejar vacío para usar variable de entorno",
+    );
+  });
+
+  it("muestra la URL base vigente y guarda la configuración de Miniflux", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    mockSettings = {
+      ...mockSettings,
+      miniflux_base_url: "https://miniflux.test.local",
+      miniflux_api_key: "clave-previa",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("API Keys"));
+
+    // El campo de URL base muestra el valor vigente.
+    expect(screen.getByLabelText("Miniflux · URL base")).toHaveValue(
+      "https://miniflux.test.local",
+    );
+
+    // La API key se edita y se envía al guardar.
+    const apiKey = screen.getByLabelText("Miniflux · API Key");
+    await user.clear(apiKey);
+    await user.type(apiKey, "nueva-clave-miniflux");
+
+    const form = apiKey.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          miniflux_api_key: "nueva-clave-miniflux",
+          miniflux_base_url: "https://miniflux.test.local",
+        }),
+      );
+    });
+  });
+
+  it("conserva la URL base de Miniflux al guardar desde otra pestaña", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    mockSettings = {
+      ...mockSettings,
+      miniflux_base_url: "https://miniflux.test.local",
+      miniflux_api_key: "clave",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // Se abre «API Keys» para que los campos de Miniflux queden registrados en
+    // el formulario compartido.
+    await user.click(screen.getByText("API Keys"));
+
+    // Se cambia a otra pestaña y se guarda desde ella: la URL base vigente no
+    // debe perderse en el payload.
+    await user.click(screen.getByText("Interfaz"));
+
+    const fontSize = screen.getByLabelText("Tamaño de fuente");
+    const form = fontSize.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          miniflux_base_url: "https://miniflux.test.local",
+        }),
+      );
+    });
   });
 
   it("muestra la URL base vigente y guarda la configuración de apimail", async () => {
