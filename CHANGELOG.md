@@ -1,4 +1,39 @@
 # Changelog
+## [0.13.0] - 2026-10-11
+
+### Dependencies
+
+- Jsonwebtoken 9 a 11 con el CryptoProvider aws_lc_rs
+- Source-map-js 1.2.1 a 1.2.2
+
+### Documentation
+
+- *(openspec)* Change jsonwebtoken-11
+- *(openspec)* Archiva jsonwebtoken-11
+- *(openspec)* Cierra las tareas del change jsonwebtoken-11
+- *(openspec)* Cierra la verificación en producción de v0.12.0
+- *(openspec)* Propone la skill rss, lector de feeds Miniflux
+- *(openspec)* Cierra las tareas 1.1 a 1.4 del change rss
+- *(openspec)* Cierra las tareas 3.1 a 3.6 del change rss
+- *(openspec)* Cierra las tareas 4.1 a 4.3 y 5.1 a 5.2 del change rss
+- *(openspec)* Archiva la skill rss en las specs
+- *(openspec)* Cierra la verificación en CLI del change rss
+- *(openspec)* Cierra las tareas 5.4 y 0.1 de los changes archivados
+
+### Features
+
+- *(db)* Siembra los ajustes de la skill rss
+- *(rss)* Implementa el cliente de la API v1 de Miniflux
+- *(rss)* Añade categories() al cliente y arregla un futuro !Send
+- *(rss)* Implementa las cuatro herramientas del feed
+- *(rss)* Añade la skill rss al catálogo y registra sus herramientas
+- *(settings)* Añade los ajustes de Miniflux a Ajustes
+
+### Testing
+
+- *(db)* Añade en rojo el test de la migración de los ajustes de rss
+- *(rss)* Añade en rojo los tests del cliente Miniflux
+- *(settings)* Exige los campos de Miniflux en API Keys
 ## [0.12.0] - 2026-10-11
 
 ### Bug Fixes
