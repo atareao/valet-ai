@@ -9,14 +9,8 @@
 //!
 //! Es el molde de [`crate::services::apimail`]: misma resolución de credenciales
 //! en cada llamada y misma traducción de errores.
-//!
-//! # Estado (fase RED — tarea 2.1)
-//!
-//! Este módulo fija la **superficie pública** y los tests que describen el
-//! contrato. Los cuerpos de [`Miniflux::resolve_config`] y de los cuatro métodos
-//! HTTP son todavía `unimplemented!()`: se implementan en la fase GREEN (tarea
-//! 2.2). Por eso `cargo test miniflux` está en rojo a propósito.
 
+use crate::db::repos::settings::SettingsRepo;
 use sqlx::SqlitePool;
 
 /// URL base por defecto de Miniflux cuando ni el ajuste ni la variable de
@@ -50,6 +44,28 @@ pub enum MinifluxError {
     Http(String),
 }
 
+impl std::fmt::Display for MinifluxError {
+    /// Mensajes accionables en español. **Ninguno** incluye el token.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MinifluxError::MissingCredentials => write!(
+                f,
+                "no hay token de Miniflux configurado: defínelo en Ajustes → API Keys o en MINIFLUX_API_KEY"
+            ),
+            MinifluxError::Unauthorized => {
+                write!(f, "el token de Miniflux no es válido o ha caducado")
+            }
+            MinifluxError::NotFound => write!(f, "la entrada solicitada no existe en Miniflux"),
+            MinifluxError::Unavailable => {
+                write!(f, "Miniflux no está disponible (fallo de red o error del servidor)")
+            }
+            MinifluxError::Http(detail) => {
+                write!(f, "Miniflux devolvió un error inesperado: {detail}")
+            }
+        }
+    }
+}
+
 /// Configuración resuelta de Miniflux.
 #[derive(Clone, PartialEq)]
 pub struct MinifluxConfig {
@@ -68,10 +84,6 @@ impl std::fmt::Debug for MinifluxConfig {
 }
 
 /// Cliente de Miniflux atado a una URL base.
-///
-/// En la fase RED los campos aún no se leen (los métodos son stubs); se silencia
-/// `dead_code` hasta que la fase GREEN los use.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Miniflux {
     http: reqwest::Client,
@@ -102,11 +114,16 @@ impl Miniflux {
     /// devuelve [`MinifluxError::MissingCredentials`]. Las claves se leen en
     /// **cada llamada**, de modo que editarlas surte efecto sin reiniciar. Un
     /// error de lectura de settings se trata como ausencia (nunca revienta).
-    ///
-    /// RED stub: se implementa en la tarea 2.2.
     pub async fn resolve_config(pool: &SqlitePool) -> Result<MinifluxConfig, MinifluxError> {
-        let _ = pool;
-        unimplemented!("resolve_config: fase RED — se implementa en la tarea 2.2")
+        let base_url = setting_or_env(pool, "miniflux_base_url", "MINIFLUX_BASE_URL")
+            .await
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let api_key = setting_or_env(pool, "miniflux_api_key", "MINIFLUX_API_KEY").await;
+
+        match api_key {
+            Some(api_key) => Ok(MinifluxConfig { base_url, api_key }),
+            None => Err(MinifluxError::MissingCredentials),
+        }
     }
 
     /// `GET /v1/entries?status=unread&limit={limit}[&category_id={category}]`
@@ -114,60 +131,167 @@ impl Miniflux {
     /// Devuelve el JSON `{total, entries:[…]}` sin el contenido de cada entrada.
     /// El token viaja en la cabecera `X-Auth-Token`. Sin token (vacío o en
     /// blanco) devuelve [`MinifluxError::MissingCredentials`] sin tocar la red.
-    ///
-    /// RED stub: se implementa en la tarea 2.2.
     pub async fn list_unread(
         &self,
         api_key: &str,
         limit: u32,
         category: Option<i64>,
     ) -> Result<serde_json::Value, MinifluxError> {
-        let _ = (api_key, limit, category);
-        unimplemented!("list_unread: fase RED — se implementa en la tarea 2.2")
+        require_token(api_key)?;
+
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query.append_pair("status", "unread");
+        query.append_pair("limit", &limit.to_string());
+        if let Some(category_id) = category {
+            query.append_pair("category_id", &category_id.to_string());
+        }
+        let url = format!("{}/v1/entries?{}", self.base_url, query.finish());
+
+        let response = self
+            .http
+            .get(url)
+            .header("X-Auth-Token", api_key)
+            .send()
+            .await
+            .map_err(|_| MinifluxError::Unavailable)?;
+        decode_json(response).await
     }
 
     /// `GET /v1/entries/{entry_id}` — una sola entrada, con su `content`. **No**
     /// cambia su estado. El token viaja en `X-Auth-Token`.
-    ///
-    /// RED stub: se implementa en la tarea 2.2.
     pub async fn get_entry(
         &self,
         api_key: &str,
         entry_id: i64,
     ) -> Result<serde_json::Value, MinifluxError> {
-        let _ = (api_key, entry_id);
-        unimplemented!("get_entry: fase RED — se implementa en la tarea 2.2")
+        require_token(api_key)?;
+
+        let response = self
+            .http
+            .get(format!("{}/v1/entries/{entry_id}", self.base_url))
+            .header("X-Auth-Token", api_key)
+            .send()
+            .await
+            .map_err(|_| MinifluxError::Unavailable)?;
+        decode_json(response).await
     }
 
     /// `GET /v1/entries?search={query}&limit={limit}` — **sin** `status`, para
     /// encontrar también lo ya leído. El token viaja en `X-Auth-Token`.
-    ///
-    /// RED stub: se implementa en la tarea 2.2.
     pub async fn search_entries(
         &self,
         api_key: &str,
         query: &str,
         limit: u32,
     ) -> Result<serde_json::Value, MinifluxError> {
-        let _ = (api_key, query, limit);
-        unimplemented!("search_entries: fase RED — se implementa en la tarea 2.2")
+        require_token(api_key)?;
+
+        let query_string = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("search", query)
+            .append_pair("limit", &limit.to_string())
+            .finish();
+        let url = format!("{}/v1/entries?{query_string}", self.base_url);
+
+        let response = self
+            .http
+            .get(url)
+            .header("X-Auth-Token", api_key)
+            .send()
+            .await
+            .map_err(|_| MinifluxError::Unavailable)?;
+        decode_json(response).await
     }
 
     /// `PUT /v1/entries` con `{"entry_ids":[…],"status":"read"}` — marca las
     /// entradas como leídas en una sola petición (idempotente, `204`). El token
     /// viaja en `X-Auth-Token`.
-    ///
-    /// RED stub: se implementa en la tarea 2.2.
     pub async fn mark_read(&self, api_key: &str, ids: &[i64]) -> Result<(), MinifluxError> {
-        let _ = (api_key, ids);
-        unimplemented!("mark_read: fase RED — se implementa en la tarea 2.2")
+        require_token(api_key)?;
+
+        let body = serde_json::json!({ "entry_ids": ids, "status": "read" });
+        let response = self
+            .http
+            .put(format!("{}/v1/entries", self.base_url))
+            .header("X-Auth-Token", api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| MinifluxError::Unavailable)?;
+
+        let status = response.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            Err(error_from_status(status.as_u16()))
+        }
+    }
+}
+
+/// Rechaza un token vacío o en blanco **antes** de tocar la red.
+fn require_token(api_key: &str) -> Result<(), MinifluxError> {
+    if api_key.trim().is_empty() {
+        Err(MinifluxError::MissingCredentials)
+    } else {
+        Ok(())
+    }
+}
+
+/// Lee una clave de `settings`; si está vacía o ilegible, cae a la variable de
+/// entorno. Un error de la base de datos se trata como ausencia y se registra
+/// con `tracing::warn!`, nunca como fallo.
+async fn setting_or_env(pool: &SqlitePool, key: &str, env: &str) -> Option<String> {
+    match SettingsRepo::get(pool, key).await {
+        Ok(Some(value)) => {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                setting = key,
+                "no se pudo leer el ajuste de miniflux: {error}"
+            );
+        }
+    }
+
+    std::env::var(env)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Parsea el JSON de una respuesta correcta o traduce el error de Miniflux.
+///
+/// Una respuesta correcta que no sea JSON interpretable se traduce a
+/// [`MinifluxError::Http`]; el texto del error de `reqwest` no incluye el token
+/// (viaja en una cabecera, no en la URL).
+async fn decode_json(response: reqwest::Response) -> Result<serde_json::Value, MinifluxError> {
+    let status = response.status();
+    if status.is_success() {
+        return response
+            .json::<serde_json::Value>()
+            .await
+            .map_err(|error| MinifluxError::Http(error.to_string()));
+    }
+
+    Err(error_from_status(status.as_u16()))
+}
+
+/// Traduce un estado HTTP de error de Miniflux a su [`MinifluxError`].
+fn error_from_status(status: u16) -> MinifluxError {
+    match status {
+        401 => MinifluxError::Unauthorized,
+        404 => MinifluxError::NotFound,
+        500..=599 => MinifluxError::Unavailable,
+        _ => MinifluxError::Http(format!("miniflux respondió {status}")),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::repos::settings::SettingsRepo;
     use serial_test::serial;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use wiremock::matchers::{header, method, path, query_param};
@@ -261,7 +385,9 @@ mod tests {
     #[serial]
     async fn resolve_config_defaults_base_url_when_nothing_set() {
         let pool = setup_pool().await;
-        SettingsRepo::set(&pool, "miniflux_base_url", "").await.unwrap();
+        SettingsRepo::set(&pool, "miniflux_base_url", "")
+            .await
+            .unwrap();
         SettingsRepo::set(&pool, "miniflux_api_key", "only-key")
             .await
             .unwrap();
@@ -284,7 +410,10 @@ mod tests {
 
         let err = Miniflux::resolve_config(&pool).await.unwrap_err();
 
-        assert!(matches!(err, MinifluxError::MissingCredentials), "err: {err:?}");
+        assert!(
+            matches!(err, MinifluxError::MissingCredentials),
+            "err: {err:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -292,19 +421,74 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Scenario: Sin token no se envía ninguna petición. Se levanta un
-    /// `MockServer` para vigilar que no llega nada y se llama al cliente con un
-    /// token vacío: debe devolver `MissingCredentials` sin tocar la red.
+    /// `MockServer` para vigilar que no llega nada y se llama con un token vacío:
+    /// `MissingCredentials` y cero peticiones. Se cubren **las cuatro**
+    /// operaciones, porque la comprobación del token está repetida en cada una.
     #[tokio::test]
-    async fn missing_token_sends_no_request() {
+    async fn missing_token_sends_no_request_list_unread() {
         let server = MockServer::start().await;
         let client = Miniflux::new(server.uri());
 
         let err = client.list_unread("", 20, None).await.unwrap_err();
 
-        assert!(matches!(err, MinifluxError::MissingCredentials), "err: {err:?}");
+        assert!(
+            matches!(err, MinifluxError::MissingCredentials),
+            "err: {err:?}"
+        );
         assert!(
             server.received_requests().await.unwrap().is_empty(),
-            "sin token no debe enviarse ninguna petición"
+            "list_unread sin token no debe enviar ninguna petición"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_token_sends_no_request_get_entry() {
+        let server = MockServer::start().await;
+        let client = Miniflux::new(server.uri());
+
+        let err = client.get_entry("", 1).await.unwrap_err();
+
+        assert!(
+            matches!(err, MinifluxError::MissingCredentials),
+            "err: {err:?}"
+        );
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "get_entry sin token no debe enviar ninguna petición"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_token_sends_no_request_search_entries() {
+        let server = MockServer::start().await;
+        let client = Miniflux::new(server.uri());
+
+        let err = client.search_entries("", "rust", 20).await.unwrap_err();
+
+        assert!(
+            matches!(err, MinifluxError::MissingCredentials),
+            "err: {err:?}"
+        );
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "search_entries sin token no debe enviar ninguna petición"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_token_sends_no_request_mark_read() {
+        let server = MockServer::start().await;
+        let client = Miniflux::new(server.uri());
+
+        let err = client.mark_read("", &[1, 2]).await.unwrap_err();
+
+        assert!(
+            matches!(err, MinifluxError::MissingCredentials),
+            "err: {err:?}"
+        );
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "mark_read sin token no debe enviar ninguna petición"
         );
     }
 
@@ -350,28 +534,79 @@ mod tests {
     // Traducción de errores — el token nunca aparece
     // -----------------------------------------------------------------------
 
-    /// Scenario: Un `401` se traduce a `Unauthorized` y el token no aparece en
-    /// el mensaje de error.
+    /// Scenario: Un `401` se traduce a `Unauthorized` y el token no aparece ni
+    /// en el `Debug` ni en el `Display` del error.
+    ///
+    /// El mock responde con un cuerpo que **sí contiene** el token, de modo que
+    /// la aserción fallaría si el cliente reenviara el cuerpo del error: así el
+    /// test prueba que el token no se filtra por ese camino.
     #[tokio::test]
     async fn error_401_is_unauthorized_and_hides_token() {
+        const TOKEN: &str = "super-secret-token";
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/v1/entries"))
-            .respond_with(ResponseTemplate::new(401).set_body_string("unauthorized"))
+            .respond_with(
+                ResponseTemplate::new(401).set_body_string(format!("unauthorized: {TOKEN}")),
+            )
             .mount(&server)
             .await;
 
         let client = Miniflux::new(server.uri());
-        let err = client
-            .list_unread("super-secret-token", 20, None)
-            .await
-            .unwrap_err();
+        let err = client.list_unread(TOKEN, 20, None).await.unwrap_err();
 
         assert!(matches!(err, MinifluxError::Unauthorized), "err: {err:?}");
         let debug = format!("{err:?}");
+        assert!(!debug.contains(TOKEN), "el Debug filtra el token: {debug}");
+        let display = err.to_string();
         assert!(
-            !debug.contains("super-secret-token"),
-            "el token no debe aparecer en el error: {debug}"
+            !display.contains(TOKEN),
+            "el Display filtra el token: {display}"
+        );
+    }
+
+    /// Scenario: Un `5xx` (aquí `503`) se traduce a `Unavailable`.
+    #[tokio::test]
+    async fn error_503_is_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/entries"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("miniflux down"))
+            .mount(&server)
+            .await;
+
+        let client = Miniflux::new(server.uri());
+        let err = client.list_unread("test-key", 20, None).await.unwrap_err();
+
+        assert!(matches!(err, MinifluxError::Unavailable), "err: {err:?}");
+    }
+
+    /// Scenario: Un error de lectura de `settings` se trata como **ausencia** y
+    /// cae al entorno, en vez de reventar. Se rompe la tabla `settings` para
+    /// forzar el error de la consulta.
+    #[tokio::test]
+    #[serial]
+    async fn resolve_config_treats_settings_error_as_absent() {
+        let pool = setup_pool().await;
+        sqlx::query("DROP TABLE settings")
+            .execute(&pool)
+            .await
+            .expect("drop settings para forzar el error de lectura");
+
+        set_env("MINIFLUX_BASE_URL", Some("https://from-env.test"));
+        set_env("MINIFLUX_API_KEY", Some("env-key"));
+
+        let config = Miniflux::resolve_config(&pool).await.unwrap();
+
+        set_env("MINIFLUX_BASE_URL", None);
+        set_env("MINIFLUX_API_KEY", None);
+
+        assert_eq!(
+            config,
+            MinifluxConfig {
+                base_url: "https://from-env.test".to_string(),
+                api_key: "env-key".to_string(),
+            }
         );
     }
 }
