@@ -1,4 +1,24 @@
 # Changelog
+## [0.14.0] - 2026-10-11
+
+### Documentation
+
+- Registrar el análisis de granularidad y selección de skills
+- *(openspec)* Proposal, specs y tasks del change timeline-fact-integrity
+
+### Features
+
+- *(timeline)* Sin duplicados, con fecha real, lugar y grano de acontecimiento
+
+### Refactor
+
+- *(timeline)* Acotar el conflicto a la unicidad y cubrir el lote sin hechos
+
+### Testing
+
+- *(timeline)* RED — contrato de la migración de integridad y de los prompts
+- *(timeline)* RED — contrato del extractor (fuente, fecha, lugar, grano y bloque)
+- *(timeline)* RED — contrato del repositorio y de las herramientas
 ## [0.13.0] - 2026-10-11
 
 ### Dependencies

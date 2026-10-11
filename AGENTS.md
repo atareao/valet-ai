@@ -167,6 +167,15 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 
 **4. Los tokens OAuth de Strava no se exponen por la API de ajustes.** Decidido el 2026-10-10 al cerrar el Tema 3 del PLAN-003: `GET /api/settings` omite `strava_access_token` y `strava_refresh_token`, y `PUT /api/settings` los ignora. Son material de gestión interna, no ajustes editables. La lista vive en `SENSITIVE_KEYS` (`src/db/repos/settings.rs`).
 
+**5. La granularidad de las skills y las políticas de corte de la selección (top-k, presupuesto de bytes) no se tocan.** Medido el 2026-10-11 con el arnés (`valet-route-eval`) y un medidor desechable (`/tmp/opencode/budget-eval`, fuera del repo) sobre 40 turnos reales de producción (120 evaluaciones):
+
+- **Atomizar las skills: descartado.** El router activa *todas* las skills que superan su umbral, no una ganadora; partir una en dos suele hacer que ambas partes lo superen (los criterios se solapan) y expone **más** herramientas, no menos. El catálogo ya es atómico: 10 skills / 28 herramientas.
+- **top-k: descartado.** La curva cobertura↔coste es casi lineal, sin rodilla. `topk(6)` baja la cobertura al 95 % (baseline 97,5 %) ahorrando solo un 6 % de bytes; `topk(4)` ahorra un 25 % de bytes y pierde 11 puntos de cobertura. El baseline ya expone 14 de 28 herramientas con 97,5 % de cobertura: no hay margen limpio.
+- **Presupuesto de bytes: descartado.** Más agresivo que el top-k y sin ganancia a igual cobertura (`bytes(8000)` → 89,2 %).
+- **Causa de fondo:** cuatro skills superan su umbral casi siempre (`recuerdos` 97,5 %, `pendientes` 79 %, `timeline` 77 %, `agenda` 70 %) y la cobertura exige que *todas* las herramientas usadas estén expuestas, con 1,77 usos por turno.
+- Queda **sin medir** la calibración de umbrales por skill: solo pagaría en coste, y el coste no es un problema (histórico de `chat`: 0,1318 $, con el 53 % del prefijo ya cacheado), así que no se considera trabajo pendiente.
+
+**6. El router falla abierto y su margen de timeout es del 70 %.** `ROUTER_TIMEOUT_MS=800` y, al expirar, el router expone todas las skills habilitadas. En producción no ha ocurrido nunca (44 llamadas, todas `success`, media 349 ms, **máximo 567 ms**), pero si la latencia sube esos turnos pagan el catálogo entero. Dato anotado para `llm-worker-resilience` (aparcado; no reabrir sin orden explícita).
 
 ---
 

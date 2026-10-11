@@ -41,6 +41,8 @@ pub struct TimelineEvent {
     pub timestamp: String,
     pub category: String,
     pub fact: String,
+    /// Where the fact happened, when the message said so.
+    pub location: Option<String>,
     pub source_message_id: Option<String>,
     pub created_at: String,
 }
@@ -52,6 +54,8 @@ pub struct NewTimelineEvent {
     pub timestamp: String,
     pub category: String,
     pub fact: String,
+    /// Where the fact happened, when the message said so.
+    pub location: Option<String>,
     pub source_message_id: Option<String>,
 }
 
