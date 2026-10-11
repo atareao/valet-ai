@@ -11,17 +11,17 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 
 ## 2. Cliente de Miniflux (`src/services/miniflux.rs`)
 
-- [ ] 2.1 RED — tests que fallan contra un servidor de prueba HTTP con `wiremock` (mismo molde que `src/services/apimail.rs`): la configuración se resuelve **en cada llamada** y el ajuste de `settings` (`miniflux_base_url` / `miniflux_api_key`) tiene **precedencia** sobre la variable de entorno; el token viaja en la cabecera `X-Auth-Token`; **sin token no se envía ninguna petición** y el error dice dónde configurarlo; un `401` se traduce a un error accionable de credenciales inválidas y **el token no aparece en el mensaje de error**. Verificar en rojo con `cargo test miniflux`.
-- [ ] 2.2 GREEN — implementar `src/services/miniflux.rs` y exponerlo desde `src/services/mod.rs`: base inyectable, cabecera `X-Auth-Token`, resolución de configuración en cada llamada (ajuste primero, entorno después, valor por defecto **solo para la URL**) y traducción de los errores de la API v1 a mensajes accionables, enmascarando siempre el token. Confirmar `cargo test miniflux` y `cargo check` en verde.
+- [x] 2.1 RED — tests que fallan contra un servidor de prueba HTTP con `wiremock` (mismo molde que `src/services/apimail.rs`): la configuración se resuelve **en cada llamada** y el ajuste de `settings` (`miniflux_base_url` / `miniflux_api_key`) tiene **precedencia** sobre la variable de entorno; el token viaja en la cabecera `X-Auth-Token`; **sin token no se envía ninguna petición** y el error dice dónde configurarlo; un `401` se traduce a un error accionable de credenciales inválidas y **el token no aparece en el mensaje de error**. Verificar en rojo con `cargo test miniflux`.
+- [x] 2.2 GREEN — implementar `src/services/miniflux.rs` y exponerlo desde `src/services/mod.rs`: base inyectable, cabecera `X-Auth-Token`, resolución de configuración en cada llamada (ajuste primero, entorno después, valor por defecto **solo para la URL**) y traducción de los errores de la API v1 a mensajes accionables, enmascarando siempre el token. Confirmar `cargo test miniflux` y `cargo check` en verde.
 
 ## 3. Las cuatro herramientas (`src/tools/rss.rs`)
 
-- [ ] 3.1 RED — test que falla de `rss_list_unread`: devuelve el `total` y los metadatos de cada entrada (`id`, `title`, `feed`, `url`, `published_at`, `reading_time`) **sin contenido**, con `limit` por defecto 50.
-- [ ] 3.2 RED — test que falla de validación de argumentos: un `limit` fuera de `1..=200` devuelve `InvalidArguments` **sin salir a la red**; un `category` resuelve el nombre a su id y, si no existe, el error **enumera las categorías disponibles**.
-- [ ] 3.3 RED — test que falla de `rss_get_entry`: devuelve el contenido en **texto plano recortado a 20 000 caracteres** y **no** marca la entrada como leída.
-- [ ] 3.4 RED — test que falla de `rss_search_entries`: la petición va **sin filtro de estado** (encuentra lo ya leído) y una búsqueda sin resultados devuelve **lista vacía**, no un error.
-- [ ] 3.5 RED — test que falla de `rss_mark_read`: marca los `entry_ids` en **una sola petición** (`PUT /v1/entries`), es **idempotente** y rechaza una **lista vacía sin salir a la red**.
-- [ ] 3.6 GREEN — implementar las cuatro herramientas en `src/tools/rss.rs` (todas con `Permission::NoConfirm`) y registrarlas en `src/tools/mod.rs` y en `build_tool_registry` (`src/lib.rs`). Confirmar `cargo test rss` y `cargo check` en verde.
+- [x] 3.1 RED — test que falla de `rss_list_unread`: devuelve el `total` y los metadatos de cada entrada (`id`, `title`, `feed`, `url`, `published_at`, `reading_time`) **sin contenido**, con `limit` por defecto 50.
+- [x] 3.2 RED — test que falla de validación de argumentos: un `limit` fuera de `1..=200` devuelve `InvalidArguments` **sin salir a la red**; un `category` resuelve el nombre a su id y, si no existe, el error **enumera las categorías disponibles**.
+- [x] 3.3 RED — test que falla de `rss_get_entry`: devuelve el contenido en **texto plano recortado a 20 000 caracteres** y **no** marca la entrada como leída.
+- [x] 3.4 RED — test que falla de `rss_search_entries`: la petición va **sin filtro de estado** (encuentra lo ya leído) y una búsqueda sin resultados devuelve **lista vacía**, no un error.
+- [x] 3.5 RED — test que falla de `rss_mark_read`: marca los `entry_ids` en **una sola petición** (`PUT /v1/entries`), es **idempotente** y rechaza una **lista vacía sin salir a la red**.
+- [x] 3.6 GREEN — implementar las cuatro herramientas en `src/tools/rss.rs` (todas con `Permission::NoConfirm`) y registrarlas en `src/tools/mod.rs` y en `build_tool_registry` (`src/lib.rs`). Confirmar `cargo test rss` y `cargo check` en verde. (Al implementarlas, el cliente ganó un quinto método, `categories()`, para resolver el nombre de categoría a su id, que es lo que necesitaba la validación de argumentos de la tarea 3.2; y el registro en `build_tool_registry` se trasladó a la sección 4, porque el test de integridad del catálogo acopla registro y catálogo y registrar las herramientas sin su skill haría fallar ese test.)
 
 ## 4. Catálogo y enrutado
 
