@@ -542,3 +542,530 @@ fn test_normalize_category_four_cases() {
     assert_eq!(normalize_category(""), DEFAULT_TIMELINE_CATEGORY);
     assert_eq!(normalize_category("SPORT"), DEFAULT_TIMELINE_CATEGORY);
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// timeline-fact-integrity (RED): the new migration, its unique index, the
+// wipe and the updated seeded prompts. Nothing here passes until the change is
+// implemented: `fact_integrity_migration_sql()` reads a file that does not
+// exist yet, so every test that touches it fails with the helper's `panic!`.
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Version of `migrations/20261011000001_timeline_fact_integrity.sql`.
+const FACT_INTEGRITY_VERSION: i64 = 20261011000001;
+
+/// Read the fact-integrity migration SQL from disk.
+fn fact_integrity_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261011000001_timeline_fact_integrity.sql");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "the `timeline-fact-integrity` migration does not exist yet at {}: {e}",
+            path.display()
+        )
+    })
+}
+
+/// A pool with every migration **older** than `before` applied, so it is left in
+/// the state the previous release had: `timeline_events` without `location`, sin
+/// índice único y con las filas que le metas. La migración nueva NO se aplica.
+async fn pool_before(before: i64) -> SqlitePool {
+    // 1) `run_migrations` calls `register_vec_extension()` before anything else,
+    //    and `sqlite3_auto_extension` is process-global but only reaches
+    //    connections opened *after* it runs. A throwaway pool is enough to
+    //    trigger the registration; one of the older migrations creates a `vec0`
+    //    virtual table, so the new pool below needs the extension in place.
+    let throwaway = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+    valet::db::schema::run_migrations(&throwaway).await.unwrap();
+    drop(throwaway);
+
+    // 2) A brand-new in-memory pool. Its connections are opened after the
+    //    registration, so they inherit `vec0`.
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+
+    // 3) Apply, in version order, every migration strictly older than `before`.
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let migrator = sqlx::migrate::Migrator::new(manifest.join("migrations"))
+        .await
+        .unwrap();
+    let mut migrations: Vec<sqlx::migrate::Migration> = migrator.iter().cloned().collect();
+    migrations.sort();
+    for migration in &migrations {
+        if migration.version < before {
+            sqlx::raw_sql(sqlx::AssertSqlSafe(migration.sql.as_ref()))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "failed to apply migration {} ({}): {e}",
+                        migration.version, migration.description
+                    )
+                });
+        }
+    }
+
+    pool
+}
+
+/// Read a `settings` value, or `None` when the key is absent.
+async fn settings_value(pool: &SqlitePool, key: &str) -> Option<String> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or_else(|e| panic!("reading setting '{key}' must not fail: {e}"))
+}
+
+/// Insert a fact, letting `category` and `created_at` take their defaults.
+async fn insert_fact(
+    pool: &SqlitePool,
+    id: &str,
+    timestamp: &str,
+    fact: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO timeline_events (id, timestamp, fact) VALUES (?1, ?2, ?3)")
+        .bind(id)
+        .bind(timestamp)
+        .bind(fact)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+/// The `sql` of every index declared on `timeline_events` (NULL for implicit
+/// indexes, which `sqlite_master` does not spell out).
+async fn timeline_index_sqls(pool: &SqlitePool) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master \
+         WHERE type='index' AND tbl_name='timeline_events' AND sql IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// Whether one of the index declarations is a `UNIQUE` index over
+/// `lower(trim(fact))` (whitespace- and case-insensitive match).
+fn has_unique_fact_index(sqls: &[String]) -> bool {
+    sqls.iter().any(|sql| {
+        let normalized = sql.to_lowercase().replace(' ', "");
+        normalized.contains("unique") && normalized.contains("lower(trim(fact))")
+    })
+}
+
+/// The exact rules the new seeded extractor prompt must state, plus the phrase
+/// it must no longer contain.
+const NEW_PROMPT_RULES: [&str; 6] = [
+    "un solo hecho",
+    "estados transitorios",
+    "órdenes dirigidas al asistente",
+    "ISO 8601",
+    "location",
+    "hechos ya registrados",
+];
+
+fn assert_new_prompt_contract(prompt: &str) {
+    for needle in NEW_PROMPT_RULES {
+        assert!(
+            prompt.contains(needle),
+            "the seeded prompt must contain {needle:?}; got: {prompt}"
+        );
+    }
+    assert!(
+        !prompt.contains("NO devuelvas ninguna fecha"),
+        "the seeded prompt must no longer forbid dates; got: {prompt}"
+    );
+}
+
+// ── 1.1: the `location` column and the unique index (freshly migrated db) ───
+
+#[tokio::test]
+async fn test_timeline_events_has_location_column() {
+    let pool = setup().await;
+
+    #[derive(sqlx::FromRow)]
+    struct ColumnInfo {
+        name: String,
+        r#type: String,
+        notnull: bool,
+    }
+
+    let columns: Vec<ColumnInfo> =
+        sqlx::query_as("SELECT * FROM pragma_table_info('timeline_events')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    let location = columns
+        .iter()
+        .find(|c| c.name == "location")
+        .expect("column 'location' must exist after the migration");
+
+    assert_eq!(location.r#type.to_uppercase(), "TEXT");
+    assert!(
+        !location.notnull,
+        "'location' must be nullable (a fact without a place stores NULL)"
+    );
+}
+
+#[tokio::test]
+async fn test_timeline_events_unique_index_exists() {
+    let pool = setup().await;
+
+    // (a) a UNIQUE index over the normalised fact.
+    let sqls = timeline_index_sqls(&pool).await;
+    assert!(
+        has_unique_fact_index(&sqls),
+        "a UNIQUE index over lower(trim(fact)) must exist; indexes: {sqls:?}"
+    );
+
+    // (b) the three previous indexes survive the new migration.
+    for name in [
+        "idx_timeline_events_timestamp",
+        "idx_timeline_events_category",
+        "idx_timeline_events_source_message",
+    ] {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = ?1",
+        )
+        .bind(name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "index '{name}' must survive the new migration");
+    }
+}
+
+#[tokio::test]
+async fn test_same_fact_same_day_is_rejected() {
+    let pool = setup().await;
+
+    insert_fact(&pool, "ev-1", "2026-10-11T20:21:00+00:00", "Cené mochis")
+        .await
+        .expect("the first row must insert cleanly");
+
+    let second = insert_fact(&pool, "ev-2", "2026-10-11T21:00:00+00:00", "Cené mochis").await;
+    assert!(
+        second.is_err(),
+        "the same fact on the same day must be rejected by the unique index"
+    );
+
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events WHERE fact = 'Cené mochis'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 1, "the first row must survive the rejected insert");
+}
+
+#[tokio::test]
+async fn test_same_fact_different_day_coexists() {
+    let pool = setup().await;
+
+    insert_fact(&pool, "ev-1", "2026-10-11T20:21:00+00:00", "Cené mochis")
+        .await
+        .expect("the first day must insert cleanly");
+    insert_fact(&pool, "ev-2", "2026-10-12T20:21:00+00:00", "Cené mochis")
+        .await
+        .expect("the same fact on a different day is a different fact and must insert");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2, "the same fact on two days must coexist");
+}
+
+#[tokio::test]
+async fn test_normalization_ignores_case_and_spaces() {
+    let pool = setup().await;
+
+    insert_fact(&pool, "ev-1", "2026-10-11T10:21:00+00:00", "Corrí 9,34 km")
+        .await
+        .expect("the first row must insert cleanly");
+
+    let padded = insert_fact(
+        &pool,
+        "ev-2",
+        "2026-10-11T17:23:00+00:00",
+        "  corrí 9,34 km  ",
+    )
+    .await;
+    assert!(
+        padded.is_err(),
+        "'  corrí 9,34 km  ' must collide with 'Corrí 9,34 km' the same day"
+    );
+}
+
+// ── 1.2: the wipe (pre-migration state) ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_migration_wipes_timeline_events() {
+    let pool = pool_before(FACT_INTEGRITY_VERSION).await;
+
+    // Two exact duplicates (same fact and day, distinct id and created_at) plus
+    // one unrelated fact: none may survive.
+    for (id, timestamp, created_at) in [
+        ("a1", "2026-10-11T10:00:00+00:00", "2026-10-11T10:05:00Z"),
+        ("a2", "2026-10-11T10:00:00+00:00", "2026-10-11T10:06:00Z"),
+        ("b1", "2026-10-10T20:00:00+00:00", "2026-10-10T20:05:00Z"),
+    ] {
+        sqlx::query(
+            "INSERT INTO timeline_events (id, timestamp, fact, created_at) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(id)
+        .bind(timestamp)
+        .bind("Corrí 9,34 km")
+        .bind(created_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(before >= 3, "the pre-migration table must hold the rows");
+
+    let sql = fact_integrity_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(after, 0, "the migration must leave timeline_events empty");
+}
+
+#[tokio::test]
+async fn test_migration_does_not_touch_messages() {
+    let pool = pool_before(FACT_INTEGRITY_VERSION).await;
+
+    for (id, content) in [("m1", "hola"), ("m2", "qué tal")] {
+        sqlx::query("INSERT INTO messages (id, role, content) VALUES (?1, 'user', ?2)")
+            .bind(id)
+            .bind(content)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    insert_fact(&pool, "e1", "2026-10-11T10:00:00+00:00", "Corrí 9,34 km")
+        .await
+        .unwrap();
+
+    let sql = fact_integrity_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let messages: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(messages, 2, "messages must keep every row");
+
+    let facts: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(facts, 0, "timeline_events is the only table emptied");
+}
+
+#[tokio::test]
+async fn test_migration_succeeds_with_prior_duplicates_and_creates_the_index() {
+    let pool = pool_before(FACT_INTEGRITY_VERSION).await;
+
+    // Duplicates that would make `CREATE UNIQUE INDEX` fail on a non-empty table.
+    insert_fact(&pool, "d1", "2026-10-11T10:00:00+00:00", "Corrí 9,34 km")
+        .await
+        .unwrap();
+    insert_fact(
+        &pool,
+        "d2",
+        "2026-10-11T17:00:00+00:00",
+        "  corrí 9,34 km  ",
+    )
+    .await
+    .unwrap();
+
+    let sql = fact_integrity_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .expect("the migration must wipe before creating the index and not fail");
+
+    let sqls = timeline_index_sqls(&pool).await;
+    assert!(
+        has_unique_fact_index(&sqls),
+        "the unique index must exist after the migration; indexes: {sqls:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_migration_adds_location_to_a_pre_migration_table() {
+    let pool = pool_before(FACT_INTEGRITY_VERSION).await;
+
+    let before: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('timeline_events')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        !before.contains(&"location".to_string()),
+        "the pre-migration table must NOT have 'location'; got: {before:?}"
+    );
+
+    let sql = fact_integrity_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let after: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('timeline_events')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        after.contains(&"location".to_string()),
+        "the post-migration table must have 'location'; got: {after:?}"
+    );
+}
+
+// ── 1.3: the seeded prompts (pre-migration state) ───────────────────────────
+
+#[tokio::test]
+async fn test_migration_updates_the_untouched_prompt() {
+    let pool = pool_before(FACT_INTEGRITY_VERSION).await;
+
+    // Read the value seeded by `20261010000004` from the database; never hardcode
+    // it, the assertion is that the migration replaces *that* value.
+    let seeded = settings_value(&pool, "timeline_prompt")
+        .await
+        .expect("timeline_prompt must be seeded by 20261010000004");
+
+    let sql = fact_integrity_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let updated = settings_value(&pool, "timeline_prompt")
+        .await
+        .expect("timeline_prompt must still exist after the migration");
+    assert_ne!(updated, seeded, "the untouched prompt must be replaced");
+    assert_new_prompt_contract(&updated);
+}
+
+#[tokio::test]
+async fn test_migration_respects_a_customized_prompt() {
+    let pool = pool_before(FACT_INTEGRITY_VERSION).await;
+
+    sqlx::query("UPDATE settings SET value = 'MI PROMPT A MEDIDA' WHERE key = 'timeline_prompt'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = fact_integrity_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        settings_value(&pool, "timeline_prompt").await.as_deref(),
+        Some("MI PROMPT A MEDIDA"),
+        "a customised prompt must be left untouched"
+    );
+}
+
+#[tokio::test]
+async fn test_migration_fills_a_missing_prompt() {
+    let pool = pool_before(FACT_INTEGRITY_VERSION).await;
+
+    sqlx::query("DELETE FROM settings WHERE key = 'timeline_prompt'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = fact_integrity_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = settings_value(&pool, "timeline_prompt")
+        .await
+        .expect("a missing timeline_prompt must be filled by the migration");
+    assert_new_prompt_contract(&value);
+}
+
+#[tokio::test]
+async fn test_migration_updates_the_skill_prompt() {
+    let pool = pool_before(FACT_INTEGRITY_VERSION).await;
+
+    let sql = fact_integrity_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let skill = settings_value(&pool, "SKILL_TIMELINE_PROMPT")
+        .await
+        .expect("SKILL_TIMELINE_PROMPT must exist after the migration");
+    assert!(
+        skill.contains("location"),
+        "the updated skill prompt must mention location; got: {skill}"
+    );
+
+    // A customisation is respected exactly like the extractor prompt.
+    let custom = pool_before(FACT_INTEGRITY_VERSION).await;
+    sqlx::query(
+        "UPDATE settings SET value = 'MI SKILL A MEDIDA' WHERE key = 'SKILL_TIMELINE_PROMPT'",
+    )
+    .execute(&custom)
+    .await
+    .unwrap();
+
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&custom)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        settings_value(&custom, "SKILL_TIMELINE_PROMPT")
+            .await
+            .as_deref(),
+        Some("MI SKILL A MEDIDA"),
+        "a customised skill prompt must be left untouched"
+    );
+}
+
+#[tokio::test]
+async fn test_seeded_prompt_states_the_new_rules() {
+    let pool = setup().await;
+
+    let value = settings_value(&pool, "timeline_prompt")
+        .await
+        .expect("timeline_prompt must be seeded in a freshly migrated database");
+    assert_new_prompt_contract(&value);
+}
