@@ -25,14 +25,14 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 
 ## 4. Catálogo y enrutado
 
-- [ ] 4.1 RED — tests que fallan de integridad en `src/orchestrator/skills.rs`: el catálogo declara **diez** skills; sus claves de fragmento son diez e incluyen `SKILL_RSS_PROMPT`; la unión del core y las diez skills cubre las **veintiocho** herramientas sin huérfanas; `rss` cubre exactamente las cuatro `rss_*`.
-- [ ] 4.2 RED — test que falla del router: el fallo abierto con todas las skills habilitadas expone las **veintiocho** herramientas; actualizar la lista `ALL_TOOLS` de los tests de `src/orchestrator/skill_router.rs`.
-- [ ] 4.3 GREEN — implementar la variante `Skill::Rss` y su entrada en el catálogo (pregunta, dos criterios, umbral, `prompt_key` `SKILL_RSS_PROMPT` y encabezado `# SKILL ACTIVA: RSS`, habilitada por defecto), con sus **dos aserciones de recuento**. Actualizar el comentario de `src/lib.rs` que dice «all 24 built-in tools» a las veintiocho del registro. Confirmar `cargo test skills` y `cargo test skill_router` en verde.
+- [x] 4.1 RED — tests que fallan de integridad en `src/orchestrator/skills.rs`: el catálogo declara **diez** skills; sus claves de fragmento son diez e incluyen `SKILL_RSS_PROMPT`; la unión del core y las diez skills cubre las **veintiocho** herramientas sin huérfanas; `rss` cubre exactamente las cuatro `rss_*`.
+- [x] 4.2 RED — test que falla del router: el fallo abierto con todas las skills habilitadas expone las **veintiocho** herramientas; actualizar la lista `ALL_TOOLS` de los tests de `src/orchestrator/skill_router.rs`.
+- [x] 4.3 GREEN — implementar la variante `Skill::Rss` y su entrada en el catálogo (pregunta, dos criterios, umbral, `prompt_key` `SKILL_RSS_PROMPT` y encabezado `# SKILL ACTIVA: RSS`, habilitada por defecto), con sus **dos aserciones de recuento**. Actualizar el comentario de `src/lib.rs` que dice «all 24 built-in tools» a las veintiocho del registro. Confirmar `cargo test skills` y `cargo test skill_router` en verde. Hubo que ajustar también `tests/api/tools.rs`, que afirmaba que el catálogo tiene nueve skills: ese recuento pasó a diez.
 
 ## 5. Interfaz
 
-- [ ] 5.1 RED — test que falla de `SettingsDialog` (siguiendo el patrón de los campos de apimail): la pestaña «API Keys» muestra los dos campos nuevos de Miniflux —URL base (con marcador `https://miniflux.territoriolinux.es`) y API key— y los envía al guardar. Verificar en rojo con `npx vitest run`.
-- [ ] 5.2 GREEN — implementar los dos campos en `frontend/src/components/SettingsDialog.tsx`. Confirmar `npx vitest run` y `npx tsc --noEmit` en verde.
+- [x] 5.1 RED — test que falla de `SettingsDialog` (siguiendo el patrón de los campos de apimail): la pestaña «API Keys» muestra los dos campos nuevos de Miniflux —URL base (con marcador `https://miniflux.territoriolinux.es`) y API key— y los envía al guardar. Verificar en rojo con `npx vitest run`.
+- [x] 5.2 GREEN — implementar los dos campos en `frontend/src/components/SettingsDialog.tsx`. Confirmar `npx vitest run` y `npx tsc --noEmit` en verde. No hizo falta tocar el backend, porque `src/routes/settings.rs` guarda los ajustes de forma genérica y no mantiene lista blanca de claves; y el test de recuento de campos de la pestaña «API Keys» pasó de «cuatro contraseñas y una URL base» a «cinco y dos».
 
 ## 6. Verificación
 
