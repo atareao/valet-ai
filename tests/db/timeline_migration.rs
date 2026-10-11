@@ -37,6 +37,24 @@ fn sample(id: &str, timestamp: &str, category: &str, fact: &str) -> NewTimelineE
         category: category.into(),
         fact: fact.into(),
         source_message_id: None,
+        location: None,
+    }
+}
+
+fn sample_with_location(
+    id: &str,
+    timestamp: &str,
+    category: &str,
+    fact: &str,
+    location: &str,
+) -> NewTimelineEvent {
+    NewTimelineEvent {
+        id: id.into(),
+        timestamp: timestamp.into(),
+        category: category.into(),
+        fact: fact.into(),
+        source_message_id: None,
+        location: Some(location.into()),
     }
 }
 
@@ -1068,4 +1086,189 @@ async fn test_seeded_prompt_states_the_new_rules() {
         .await
         .expect("timeline_prompt must be seeded in a freshly migrated database");
     assert_new_prompt_contract(&value);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// timeline-fact-integrity (RED): the repository contract. `insert_many` now
+// returns how many rows really entered (INSERT OR IGNORE, so a duplicate of the
+// unique index is a silent no-op) and `list` carries each event's `location`.
+// ════════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_insert_many_returns_the_number_of_rows_inserted() {
+    let pool = setup().await;
+
+    let inserted = TimelineRepo::insert_many(
+        &pool,
+        &[
+            sample("e1", "2026-10-10T08:00:00Z", "sport", "Fui a correr"),
+            sample("e2", "2026-10-10T09:00:00Z", "work", "Cerré el PR"),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(inserted, 2, "both distinct rows must be counted");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 2, "both rows must be stored");
+}
+
+#[tokio::test]
+async fn test_insert_many_ignores_a_duplicate_and_returns_zero() {
+    let pool = setup().await;
+
+    let first = TimelineRepo::insert_many(
+        &pool,
+        &[sample(
+            "e1",
+            "2026-10-11T20:21:00+00:00",
+            "lifestyle",
+            "Cené mochis",
+        )],
+    )
+    .await
+    .unwrap();
+    assert_eq!(first, 1, "the first row must enter");
+
+    let second = TimelineRepo::insert_many(
+        &pool,
+        &[sample(
+            "e2",
+            "2026-10-11T21:00:00+00:00",
+            "lifestyle",
+            "Cené mochis",
+        )],
+    )
+    .await
+    .expect("a duplicate of the unique index must be ignored, not an error");
+    assert_eq!(second, 0, "the ignored duplicate must not be counted");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "the duplicate must leave a single row");
+}
+
+#[tokio::test]
+async fn test_insert_many_ignores_duplicates_inside_the_batch() {
+    let pool = setup().await;
+
+    let inserted = TimelineRepo::insert_many(
+        &pool,
+        &[
+            sample(
+                "e1",
+                "2026-10-11T20:21:00+00:00",
+                "lifestyle",
+                "Cené mochis",
+            ),
+            sample(
+                "e2",
+                "2026-10-11T21:00:00+00:00",
+                "lifestyle",
+                "Cené mochis",
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        inserted, 1,
+        "only one of the two identical rows inside the batch may enter"
+    );
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1, "the batch must leave a single row");
+}
+
+#[tokio::test]
+async fn test_insert_many_counts_only_the_rows_that_entered() {
+    let pool = setup().await;
+
+    TimelineRepo::insert_many(
+        &pool,
+        &[sample(
+            "e1",
+            "2026-10-11T20:21:00+00:00",
+            "lifestyle",
+            "Cené mochis",
+        )],
+    )
+    .await
+    .unwrap();
+
+    let inserted = TimelineRepo::insert_many(
+        &pool,
+        &[
+            // Repeats the already-stored fact the same day: must be ignored.
+            sample(
+                "e2",
+                "2026-10-11T21:00:00+00:00",
+                "lifestyle",
+                "Cené mochis",
+            ),
+            sample("e3", "2026-10-11T08:00:00+00:00", "sport", "Corrí 9,34 km"),
+            sample("e4", "2026-10-11T09:00:00+00:00", "work", "Cerré el PR"),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(inserted, 2, "only the two brand-new rows may be counted");
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM timeline_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 3, "the pre-existing row plus the two new ones");
+}
+
+#[tokio::test]
+async fn test_list_returns_the_location() {
+    let pool = setup().await;
+
+    TimelineRepo::insert_many(
+        &pool,
+        &[
+            sample_with_location(
+                "with",
+                "2026-10-10T08:00:00Z",
+                "sport",
+                "Paseé en bici",
+                "vía verde",
+            ),
+            sample("without", "2026-10-10T09:00:00Z", "work", "Cerré el PR"),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let events = TimelineRepo::list(&pool, None, None, None, 10)
+        .await
+        .unwrap();
+
+    let with = events
+        .iter()
+        .find(|e| e.id == "with")
+        .expect("the located event must be listed");
+    let without = events
+        .iter()
+        .find(|e| e.id == "without")
+        .expect("the unlocated event must be listed");
+
+    assert_eq!(
+        with.location.as_deref(),
+        Some("vía verde"),
+        "the event with a place must return it"
+    );
+    assert_eq!(
+        without.location, None,
+        "the event without a place must return NULL"
+    );
 }

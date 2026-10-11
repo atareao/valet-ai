@@ -345,6 +345,7 @@ mod tests {
             category: category.to_string(),
             fact: fact.to_string(),
             source_message_id: None,
+            location: None,
         };
         TimelineRepo::insert_many(pool, &[event]).await.unwrap();
     }
@@ -774,6 +775,238 @@ mod tests {
         // The mandatory arguments are documented in the descriptions.
         assert!(del.description().contains("obligatorio"));
         assert!(add.description().contains("obligatorio"));
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // 1.10 / tools — el lugar en `timeline_add_event` y `timeline_get_events`
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_add_event_stores_the_location() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        let result = tool
+            .execute(json!({
+                "fact": "Comí pulpo",
+                "location": "Pulpería Terra Meiga"
+            }))
+            .await?;
+        assert!(result.success);
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].location.as_deref(),
+            Some("Pulpería Terra Meiga"),
+            "the event must keep the location it was given"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_trims_the_location() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        let result = tool
+            .execute(json!({
+                "fact": "Paseé en bici",
+                "location": "  vía verde  "
+            }))
+            .await?;
+        assert!(result.success);
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].location.as_deref(),
+            Some("vía verde"),
+            "the location must be trimmed"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_blank_location_is_stored_as_null(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        for (fact, location) in [("hecho uno", ""), ("hecho dos", "   ")] {
+            let result = tool
+                .execute(json!({ "fact": fact, "location": location }))
+                .await?;
+            assert!(
+                result.success,
+                "a blank location must not fail the call for {fact:?}"
+            );
+        }
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 2, "both facts must still be stored");
+        for event in &events {
+            assert_eq!(
+                event.location, None,
+                "a blank location must be stored as NULL, got {:?} for {:?}",
+                event.location, event.fact
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_discards_an_overlong_location() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        let too_long = "x".repeat(121);
+        let exactly_max = "y".repeat(120);
+
+        tool.execute(json!({ "fact": "lugar de más", "location": too_long }))
+            .await?;
+        tool.execute(json!({ "fact": "lugar justo", "location": exactly_max }))
+            .await?;
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 2, "both facts must still be stored");
+
+        let over = events
+            .iter()
+            .find(|e| e.fact == "lugar de más")
+            .expect("the overlong-location fact must be stored");
+        assert_eq!(
+            over.location, None,
+            "a location over 120 characters must be discarded"
+        );
+
+        let exact = events
+            .iter()
+            .find(|e| e.fact == "lugar justo")
+            .expect("the exact-length-location fact must be stored");
+        assert_eq!(
+            exact.location.as_deref(),
+            Some(exactly_max.as_str()),
+            "a location of exactly 120 characters must be kept"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_reports_an_existing_fact_without_inserting(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db.clone());
+
+        let first = tool
+            .execute(json!({
+                "fact": "Cené mochis",
+                "timestamp": "2026-10-11T20:21:00+00:00"
+            }))
+            .await?;
+        assert!(first.success);
+        assert!(
+            first.data.get("id").is_some(),
+            "the first call must return the created id"
+        );
+
+        let second = tool
+            .execute(json!({
+                "fact": "Cené mochis",
+                "timestamp": "2026-10-11T21:00:00+00:00"
+            }))
+            .await?;
+        assert!(second.success, "an existing fact must not be an error");
+        assert!(
+            second.data.get("id").is_none(),
+            "an ignored insert must not return a new id, got: {:?}",
+            second.data
+        );
+        let message = second.message.unwrap_or_default();
+        assert!(
+            message.contains("ya estaba registrado"),
+            "the message must say the fact was already recorded, got: {message}"
+        );
+
+        let events = TimelineRepo::list(&db, None, None, None, 10).await?;
+        assert_eq!(events.len(), 1, "only the first row must exist");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_events_returns_the_location() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        insert_event(
+            &db,
+            "with",
+            "2026-01-15T08:00:00+00:00",
+            "sport",
+            "Paseé en bici",
+        )
+        .await;
+
+        let located = NewTimelineEvent {
+            id: "located".to_string(),
+            timestamp: "2026-01-15T09:00:00+00:00".to_string(),
+            category: "lifestyle".to_string(),
+            fact: "Comí pulpo".to_string(),
+            source_message_id: None,
+            location: Some("Pulpería Terra Meiga".to_string()),
+        };
+        TimelineRepo::insert_many(&db, &[located]).await?;
+
+        let tool = TimelineGetEventsTool::new(db);
+        let result = tool.execute(json!({})).await?;
+        assert!(result.success);
+
+        let events = result
+            .data
+            .as_array()
+            .expect("data must be an array of events");
+
+        let with = events
+            .iter()
+            .find(|e| e["id"] == "located")
+            .expect("the located event must be returned");
+        let without = events
+            .iter()
+            .find(|e| e["id"] == "with")
+            .expect("the unlocated event must be returned");
+
+        assert_eq!(
+            with["location"], "Pulpería Terra Meiga",
+            "the located event must carry its place"
+        );
+        assert!(
+            without["location"].is_null(),
+            "the unlocated event must serialise its place as null, got: {}",
+            without["location"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_add_event_schema_documents_location() -> Result<(), Box<dyn std::error::Error>> {
+        let db = setup_db().await?;
+        let tool = TimelineAddEventTool::new(db);
+
+        let params = tool.parameters();
+        let location = &params["properties"]["location"];
+        assert!(
+            !location.is_null(),
+            "the schema must document a 'location' property, got: {params}"
+        );
+        assert_eq!(
+            location["type"], "string",
+            "'location' must be declared as a string"
+        );
+        assert!(
+            tool.description().contains("location"),
+            "the description must mention 'location', got: {}",
+            tool.description()
+        );
         Ok(())
     }
 }
