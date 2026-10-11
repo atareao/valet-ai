@@ -139,13 +139,18 @@ impl Miniflux {
     ) -> Result<serde_json::Value, MinifluxError> {
         require_token(api_key)?;
 
-        let mut query = url::form_urlencoded::Serializer::new(String::new());
-        query.append_pair("status", "unread");
-        query.append_pair("limit", &limit.to_string());
-        if let Some(category_id) = category {
-            query.append_pair("category_id", &category_id.to_string());
-        }
-        let url = format!("{}/v1/entries?{}", self.base_url, query.finish());
+        // El `Serializer` se libera dentro de este bloque: si sobreviviera al
+        // `.await` de la petición, el futuro dejaría de ser `Send` (el trait
+        // `Tool` exige `Send`).
+        let url = {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("status", "unread");
+            query.append_pair("limit", &limit.to_string());
+            if let Some(category_id) = category {
+                query.append_pair("category_id", &category_id.to_string());
+            }
+            format!("{}/v1/entries?{}", self.base_url, query.finish())
+        };
 
         let response = self
             .http
@@ -186,11 +191,16 @@ impl Miniflux {
     ) -> Result<serde_json::Value, MinifluxError> {
         require_token(api_key)?;
 
-        let query_string = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("search", query)
-            .append_pair("limit", &limit.to_string())
-            .finish();
-        let url = format!("{}/v1/entries?{query_string}", self.base_url);
+        // Mismo cuidado que en `list_unread`: el `Serializer` se construye y se
+        // consume dentro del bloque, de modo que ningún valor no-`Send` cruza el
+        // `.await` y el futuro sigue siendo `Send`.
+        let url = {
+            let query_string = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("search", query)
+                .append_pair("limit", &limit.to_string())
+                .finish();
+            format!("{}/v1/entries?{query_string}", self.base_url)
+        };
 
         let response = self
             .http
@@ -224,6 +234,26 @@ impl Miniflux {
         } else {
             Err(error_from_status(status.as_u16()))
         }
+    }
+
+    /// `GET /v1/categories` — devuelve el array de categorías (`[{id, title,
+    /// …}]`) tal cual, para resolver el **nombre** de una categoría a su `id`.
+    /// El token viaja en la cabecera `X-Auth-Token`. Sin token (vacío o en
+    /// blanco) devuelve [`MinifluxError::MissingCredentials`] sin tocar la red;
+    /// un `401` se traduce a [`MinifluxError::Unauthorized`], un `5xx` o un
+    /// fallo de transporte a [`MinifluxError::Unavailable`] y un cuerpo que no
+    /// sea JSON interpretable a [`MinifluxError::Http`].
+    pub async fn categories(&self, api_key: &str) -> Result<serde_json::Value, MinifluxError> {
+        require_token(api_key)?;
+
+        let response = self
+            .http
+            .get(format!("{}/v1/categories", self.base_url))
+            .header("X-Auth-Token", api_key)
+            .send()
+            .await
+            .map_err(|_| MinifluxError::Unavailable)?;
+        decode_json(response).await
     }
 }
 
@@ -531,6 +561,49 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // GET /v1/categories — cabecera X-Auth-Token y cuerpo
+    // -----------------------------------------------------------------------
+
+    /// Scenario: `categories` pide `GET /v1/categories`, envía el token en
+    /// `X-Auth-Token` y devuelve el array de categorías tal cual.
+    #[tokio::test]
+    async fn categories_sends_token_and_returns_array() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/categories"))
+            .and(header("X-Auth-Token", "test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "id": 1, "title": "Tech" },
+                { "id": 2, "title": "News" }
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = Miniflux::new(server.uri());
+        let value = client.categories("test-key").await.unwrap();
+
+        assert_eq!(
+            value,
+            serde_json::json!([
+                { "id": 1, "title": "Tech" },
+                { "id": 2, "title": "News" }
+            ])
+        );
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0]
+                .headers
+                .get("x-auth-token")
+                .expect("la petición debe llevar la cabecera X-Auth-Token")
+                .to_str()
+                .unwrap(),
+            "test-key"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // Traducción de errores — el token nunca aparece
     // -----------------------------------------------------------------------
 
@@ -608,5 +681,24 @@ mod tests {
                 api_key: "env-key".to_string(),
             }
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Los futuros públicos deben ser `Send` (el trait `Tool` lo exige)
+    // -----------------------------------------------------------------------
+
+    /// Aserción de compilación: los cinco futuros públicos tienen que ser
+    /// `Send`, porque el trait `Tool` los ejecuta en un runtime multihilo. Un
+    /// `url::form_urlencoded::Serializer` vivo a través de un `.await` rompe
+    /// esta propiedad sin que un `#[tokio::test]` de un solo hilo lo note.
+    #[test]
+    fn public_futures_are_send() {
+        fn assert_send<T: Send>(_: T) {}
+        let client = Miniflux::new("http://localhost:1".to_string());
+        assert_send(client.list_unread("k", 1, None));
+        assert_send(client.search_entries("k", "q", 1));
+        assert_send(client.get_entry("k", 1));
+        assert_send(client.mark_read("k", &[1]));
+        assert_send(client.categories("k"));
     }
 }
