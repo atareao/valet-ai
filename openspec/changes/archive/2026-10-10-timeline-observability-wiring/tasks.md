@@ -2,7 +2,7 @@
 
 ## 0. Preparación y aprobación
 
-- [ ] 0.1 Presentar este change (proposal + specs + tasks) y **esperar aprobación explícita** antes de escribir código.
+- [x] 0.1 Presentar este change (proposal + specs + tasks) y **esperar aprobación explícita** antes de escribir código.
 
 ## 1. RED: fijar el contrato
 
