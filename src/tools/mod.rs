@@ -9,6 +9,7 @@ pub mod notes;
 pub mod permission;
 pub mod registry;
 pub mod reminders;
+pub mod rss;
 pub mod strava;
 pub mod tasks;
 pub mod time_format;
