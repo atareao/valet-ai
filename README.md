@@ -223,6 +223,8 @@ Background workers in `src/workers/`: `briefing`, `collapse`, `conflict_detector
 | GET | `/api/stats/db/sizes` | Database table sizes |
 | GET | `/api/stats/llm/export` | Export LLM stats as CSV |
 
+The notification ingest API, the inbox and the WebPush transport are documented in [`docs/api-notifications.md`](docs/api-notifications.md).
+
 ## 🧪 Development and Tests
 
 ```bash
