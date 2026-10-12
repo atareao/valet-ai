@@ -42,6 +42,47 @@ pub struct TickOutcome {
     pub pruned: usize,
     /// Recordatorios cuyo `datetime` no parseó: ni se envían ni se marcan.
     pub unparseable: usize,
+    /// Envíos individuales intentados, incluidos los que terminan en `Gone` o
+    /// en `Err(PushError)`.
+    pub attempted: usize,
+    /// Envíos que el push service aceptó (`Delivered`).
+    pub accepted: usize,
+    /// Envíos que no fueron aceptados ni depurados: rechazos (`Failed`,
+    /// cualquier código que no sea 404/410) y errores de transporte.
+    pub failed: usize,
+}
+
+impl TickOutcome {
+    /// ¿Merece este ciclo una línea de resumen?
+    ///
+    /// Predicado puro: verdadero cuando **cualquiera** de los contadores difiere
+    /// de cero. Un ciclo sin nada que hacer (todos a cero) no registra resumen.
+    pub fn should_log_summary(&self) -> bool {
+        self.delivered != 0
+            || self.skipped_old != 0
+            || self.pruned != 0
+            || self.unparseable != 0
+            || self.attempted != 0
+            || self.accepted != 0
+            || self.failed != 0
+    }
+}
+
+/// Marcador que sustituye a un endpoint ilegible en los registros.
+const UNPARSEABLE_ENDPOINT: &str = "(endpoint no parseable)";
+
+/// Extrae el **host** de un endpoint de suscripción para los registros.
+///
+/// Un endpoint WebPush es una **URL de capacidad**: quien la posee puede enviar
+/// avisos a ese dispositivo. Para diagnosticar basta con el host («falló en
+/// `fcm.googleapis.com`»), mientras que registrar la URL completa filtraría un
+/// secreto. Por eso esta función devuelve **solo** el host, o un marcador fijo
+/// si el valor no rinde uno reconocible: **nunca** la cadena original.
+fn endpoint_host(endpoint: &str) -> String {
+    url::Url::parse(endpoint)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_else(|| UNPARSEABLE_ENDPOINT.to_string())
 }
 
 /// Entrega los recordatorios vencidos que corresponden a este ciclo.
@@ -126,27 +167,36 @@ pub async fn deliver_due_reminders(
         let mut gone_endpoints: Vec<String> = Vec::new();
 
         for sub in &subscriptions {
+            // Todo envío cuenta como intentado, sea cual sea su desenlace.
+            outcome.attempted += 1;
             match sender.send(sub, &payload).await {
                 Ok(DeliveryOutcome::Delivered) => {
+                    outcome.accepted += 1;
                     delivered_any = true;
                 }
                 Ok(DeliveryOutcome::Gone) => {
                     outcome.pruned += 1;
                     gone_endpoints.push(sub.endpoint.clone());
                     tracing::warn!(
-                        endpoint = %sub.endpoint,
+                        sub_id = %sub.id,
+                        endpoint_host = %endpoint_host(&sub.endpoint),
                         "reminder_push: suscripción caducada; se elimina"
                     );
                 }
                 Ok(DeliveryOutcome::Failed) => {
+                    outcome.failed += 1;
                     tracing::warn!(
-                        endpoint = %sub.endpoint,
+                        sub_id = %sub.id,
+                        endpoint_host = %endpoint_host(&sub.endpoint),
                         "reminder_push: fallo de envío; la suscripción se conserva"
                     );
                 }
                 Err(error) => {
+                    // Un fallo de transporte no llegó: cuenta como fallido.
+                    outcome.failed += 1;
                     tracing::warn!(
-                        endpoint = %sub.endpoint,
+                        sub_id = %sub.id,
+                        endpoint_host = %endpoint_host(&sub.endpoint),
                         error = %error,
                         "reminder_push: error al enviar; la suscripción se conserva"
                     );
@@ -221,11 +271,15 @@ impl ReminderPushWorker {
         let sender = push::WebPushSender::new(client, keys);
         match deliver_due_reminders(db, &sender, Utc::now(), grace_hours).await {
             Ok(outcome) => {
-                if outcome.delivered > 0 || outcome.skipped_old > 0 || outcome.pruned > 0 {
+                if outcome.should_log_summary() {
                     tracing::info!(
                         delivered = %outcome.delivered,
                         skipped_old = %outcome.skipped_old,
                         pruned = %outcome.pruned,
+                        unparseable = %outcome.unparseable,
+                        attempted = %outcome.attempted,
+                        accepted = %outcome.accepted,
+                        failed = %outcome.failed,
                         "reminder_push: ciclo completado"
                     );
                 }
@@ -721,6 +775,241 @@ mod tests {
                 read_grace_hours(&pool).await,
                 expected,
                 "grace_hours setting {raw:?} must resolve to {expected}"
+            );
+        }
+    }
+
+    /// Scenario: una mezcla de resultados cuenta cada suscripción por separado.
+    ///
+    /// 3 suscripciones que devuelven `Delivered`, `Gone` y `Failed`: se
+    /// intentan 3 envíos, acepta 1, depura 1 y falla 1; el recordatorio se
+    /// marca porque al menos una entrega fue aceptada.
+    #[tokio::test]
+    async fn tick_outcome_counts_each_subscription_result() {
+        let pool = setup().await;
+        add_subscription(&pool, "https://example.invalid/push/ok").await;
+        add_subscription(&pool, "https://example.invalid/push/gone").await;
+        add_subscription(&pool, "https://example.invalid/push/failed").await;
+        add_reminder(&pool, "due", "Aviso", "2026-10-12T11:00:00Z").await;
+
+        let sender = FakeSender::new();
+        {
+            let mut state = sender.state.lock().expect("lock");
+            state.outcomes.insert(
+                "https://example.invalid/push/gone".to_string(),
+                DeliveryOutcome::Gone,
+            );
+            state.outcomes.insert(
+                "https://example.invalid/push/failed".to_string(),
+                DeliveryOutcome::Failed,
+            );
+        }
+
+        let outcome = deliver_due_reminders(&pool, &sender, now(), 24)
+            .await
+            .expect("tick");
+
+        assert_eq!(outcome.attempted, 3, "three deliveries attempted");
+        assert_eq!(outcome.accepted, 1, "one push service accepted");
+        assert_eq!(outcome.pruned, 1, "one Gone pruned");
+        assert_eq!(outcome.failed, 1, "one Failed");
+        assert_eq!(
+            outcome.delivered, 1,
+            "at least one accepted delivery marks the reminder"
+        );
+        assert!(notified_at(&pool, "due").await.is_some());
+    }
+
+    /// Scenario: un fallo de transporte cuenta como intentado y fallido.
+    ///
+    /// `Err(PushError)` no desaparece del recuento: es un envío intentado que
+    /// no llegó, igual que un `Failed`.
+    #[tokio::test]
+    async fn transport_error_counts_as_attempted_and_failed() {
+        let pool = setup().await;
+        add_subscription(&pool, "https://example.invalid/push/1").await;
+        add_reminder(&pool, "due", "Aviso", "2026-10-12T11:00:00Z").await;
+
+        let sender = FakeSender::failing();
+        let outcome = deliver_due_reminders(&pool, &sender, now(), 24)
+            .await
+            .expect("tick");
+
+        assert_eq!(outcome.attempted, 1, "the transport failure was attempted");
+        assert_eq!(outcome.failed, 1, "the transport failure counts as failed");
+        assert_eq!(outcome.accepted, 0, "nothing was accepted");
+        assert_eq!(outcome.pruned, 0, "nothing was pruned");
+        assert_eq!(outcome.delivered, 0);
+        assert!(
+            notified_at(&pool, "due").await.is_none(),
+            "no delivery means no mark"
+        );
+    }
+
+    /// Scenario: todos los envíos fallan.
+    #[tokio::test]
+    async fn all_failed_subscriptions_are_counted() {
+        let pool = setup().await;
+        add_subscription(&pool, "https://example.invalid/push/a").await;
+        add_subscription(&pool, "https://example.invalid/push/b").await;
+        add_reminder(&pool, "due", "Aviso", "2026-10-12T11:00:00Z").await;
+
+        let sender = FakeSender::new();
+        {
+            let mut state = sender.state.lock().expect("lock");
+            state.outcomes.insert(
+                "https://example.invalid/push/a".to_string(),
+                DeliveryOutcome::Failed,
+            );
+            state.outcomes.insert(
+                "https://example.invalid/push/b".to_string(),
+                DeliveryOutcome::Failed,
+            );
+        }
+
+        let outcome = deliver_due_reminders(&pool, &sender, now(), 24)
+            .await
+            .expect("tick");
+
+        assert_eq!(outcome.failed, 2, "both deliveries failed");
+        assert_eq!(outcome.accepted, 0);
+        assert_eq!(outcome.delivered, 0);
+        assert!(
+            notified_at(&pool, "due").await.is_none(),
+            "all failures must not consume the reminder"
+        );
+    }
+
+    /// Scenario: sin suscripciones no hay envíos intentados.
+    #[tokio::test]
+    async fn no_subscriptions_means_no_attempts() {
+        let pool = setup().await;
+        add_reminder(&pool, "due", "Aviso", "2026-10-12T11:00:00Z").await;
+
+        let sender = FakeSender::new();
+        let outcome = deliver_due_reminders(&pool, &sender, now(), 24)
+            .await
+            .expect("tick");
+
+        assert_eq!(outcome.attempted, 0);
+        assert_eq!(outcome.accepted, 0);
+        assert_eq!(outcome.delivered, 0);
+        assert!(
+            notified_at(&pool, "due").await.is_none(),
+            "without subscriptions the reminder must NOT be consumed"
+        );
+    }
+
+    /// Scenario: un ciclo sin nada que hacer no registra resumen.
+    ///
+    /// Sin suscripciones y sin recordatorios vencidos, todos los contadores
+    /// quedan a cero y el predicado es falso.
+    #[tokio::test]
+    async fn idle_tick_does_not_request_summary() {
+        let pool = setup().await;
+
+        let sender = FakeSender::new();
+        let outcome = deliver_due_reminders(&pool, &sender, now(), 24)
+            .await
+            .expect("tick");
+
+        assert_eq!(outcome, TickOutcome::default(), "an idle tick is all zeros");
+        assert!(
+            !outcome.should_log_summary(),
+            "an idle tick must not log a summary"
+        );
+    }
+
+    /// Scenario: un `datetime` no parseable pide resumen.
+    #[tokio::test]
+    async fn unparseable_datetime_requests_summary() {
+        let pool = setup().await;
+        add_reminder(&pool, "broken", "Roto", "no-es-una-fecha").await;
+
+        let sender = FakeSender::new();
+        let outcome = deliver_due_reminders(&pool, &sender, now(), 24)
+            .await
+            .expect("tick");
+
+        assert_eq!(outcome.unparseable, 1);
+        assert_eq!(outcome.delivered, 0);
+        assert!(
+            outcome.should_log_summary(),
+            "an unparseable datetime must request a summary"
+        );
+    }
+
+    /// Scenario: el ayudante devuelve el host de una URL normal.
+    #[test]
+    fn endpoint_host_returns_host_of_a_normal_url() {
+        assert_eq!(
+            endpoint_host("https://fcm.googleapis.com/fcm/send/abc"),
+            "fcm.googleapis.com",
+            "the host, not the whole URL, must be extracted"
+        );
+    }
+
+    /// Scenario: el ayudante marca lo que no puede interpretar.
+    ///
+    /// Cadenas vacías, basura y valores sin esquema/host rinden el marcador y
+    /// **nunca** la cadena original.
+    #[test]
+    fn endpoint_host_marks_unparseable_values() {
+        for value in ["", "no-es-una-url", "https://", "//sin-esquema"] {
+            let host = endpoint_host(value);
+            assert_eq!(
+                host, "(endpoint no parseable)",
+                "an endpoint without a recognizable host must yield the marker: {value:?}"
+            );
+            assert_ne!(
+                host, value,
+                "the marker must never be the original string: {value:?}"
+            );
+        }
+    }
+
+    /// Scenario: el predicado es verdadero cuando cualquier contador difiere
+    /// de cero —no solo los de recordatorio, también los de envío—.
+    #[test]
+    fn should_log_summary_is_true_when_any_counter_is_nonzero() {
+        assert!(
+            !TickOutcome::default().should_log_summary(),
+            "all-zero counters must not log a summary"
+        );
+
+        for outcome in [
+            TickOutcome {
+                delivered: 1,
+                ..Default::default()
+            },
+            TickOutcome {
+                skipped_old: 1,
+                ..Default::default()
+            },
+            TickOutcome {
+                pruned: 1,
+                ..Default::default()
+            },
+            TickOutcome {
+                unparseable: 1,
+                ..Default::default()
+            },
+            TickOutcome {
+                attempted: 1,
+                ..Default::default()
+            },
+            TickOutcome {
+                accepted: 1,
+                ..Default::default()
+            },
+            TickOutcome {
+                failed: 1,
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                outcome.should_log_summary(),
+                "a non-zero counter must request a summary: {outcome:?}"
             );
         }
     }
