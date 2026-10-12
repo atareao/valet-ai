@@ -29,13 +29,13 @@ Fichero nuevo: `migrations/20261012000002_notification_ingest.sql`. Aditiva e id
 
 Operaciones: `insert` (devuelve el `id`), `list_unread` (paginado, más recientes primero, con `total`) y `mark_read` (devuelve cuántas filas cambiaron, idempotente). Struct `Notification` con `id`, `origin`, `author`, `message`, `level`, `metadata` (JSON serializado o `None`), `read_at` y `created_at`.
 
-- [ ] 2.1.1 RED — tests unitarios en `#[cfg(test)]` dentro de `src/db/repos/notifications.rs` (patrón `src/db/repos/push.rs`), que deben fallar mientras el repo no exista. Aserciones:
+- [x] 2.1.1 RED — tests unitarios en `#[cfg(test)]` dentro de `src/db/repos/notifications.rs` (patrón `src/db/repos/push.rs`), que deben fallar mientras el repo no exista. Aserciones:
   - `insert` con `origin`, `author` y `message` persiste la fila, devuelve un `id` no vacío y la fila recién leída tiene `read_at IS NULL`, `level = 'info'` y `created_at` no nulo (scenario «Una notificación nace sin leer»);
   - `insert` sin `metadata` deja `metadata` a NULL; `insert` con un objeto JSON lo deja serializado (scenario «`metadata` admite ausencia y objeto»);
   - `list_unread` solo devuelve las filas con `read_at IS NULL`, ordenadas por `created_at DESC`, con `limit` respetado y `total` igual al número de no leídas (scenario «Solo se listan las no leídas, más recientes primero»);
   - `mark_read` con dos ids no leídos devuelve `2` y deja ambos `read_at` distinto de NULL; repetirlo con los mismos ids devuelve `0` y no cambia los `read_at` (idempotencia); un id inexistente devuelve `0` sin error (scenarios de `mark-read`).
   - Comando en rojo: `cargo test --lib notifications_repo`. **Pegar la salida en rojo.**
-- [ ] 2.1.2 GREEN — implementar el repo con `sqlx` (`INSERT`, `SELECT ... WHERE read_at IS NULL ORDER BY created_at DESC LIMIT ?`, `SELECT COUNT(*) ... WHERE read_at IS NULL`, `UPDATE ... SET read_at = datetime('now') WHERE read_at IS NULL AND id IN (...)` devolviendo `rows_affected`). Confirmar `cargo test --lib notifications_repo` y `cargo check` en verde.
+- [x] 2.1.2 GREEN — implementar el repo con `sqlx` (`INSERT`, `SELECT ... WHERE read_at IS NULL ORDER BY created_at DESC LIMIT ?`, `SELECT COUNT(*) ... WHERE read_at IS NULL`, `UPDATE ... SET read_at = datetime('now') WHERE read_at IS NULL AND id IN (...)` devolviendo `rows_affected`). Confirmar `cargo test --lib notifications_repo` y `cargo check` en verde.
 
 ### 2.2 `src/db/repos/ingest_keys.rs`
 

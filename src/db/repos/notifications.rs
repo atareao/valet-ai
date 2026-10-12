@@ -3,6 +3,155 @@
 //! El `INSERT` precede a la respuesta de la ingesta; el estado de lectura se
 //! gestiona con un `UPDATE` idempotente sobre las notificaciones no leídas.
 
+use serde::{Deserialize, Serialize};
+use sqlx::{Row, SqlitePool};
+
+/// Una notificación de la bandeja.
+///
+/// `metadata` llega como el JSON serializado tal cual se guardó (`TEXT`) o como
+/// `None` si la columna es NULL; parsearlo a un objeto JSON es cosa de la ruta.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Notification {
+    pub id: String,
+    pub origin: String,
+    pub author: String,
+    pub message: String,
+    pub level: String,
+    pub metadata: Option<String>,
+    pub read_at: Option<String>,
+    pub created_at: String,
+}
+
+pub struct NotificationsRepo;
+
+impl NotificationsRepo {
+    /// Inserta una notificación y devuelve su `id` (UUIDv4).
+    ///
+    /// La fila nace con `read_at` NULL; `created_at` lo pone la base de datos.
+    pub async fn insert(
+        pool: &SqlitePool,
+        origin: &str,
+        author: &str,
+        message: &str,
+        level: &str,
+        metadata: Option<&str>,
+    ) -> Result<String, sqlx::Error> {
+        let id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO notifications (id, origin, author, message, level, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(&id)
+        .bind(origin)
+        .bind(author)
+        .bind(message)
+        .bind(level)
+        .bind(metadata)
+        .execute(pool)
+        .await?;
+        Ok(id)
+    }
+
+    /// Devuelve una notificación por su `id`, o `None` si no existe.
+    pub async fn get_by_id(
+        pool: &SqlitePool,
+        id: &str,
+    ) -> Result<Option<Notification>, sqlx::Error> {
+        let row = sqlx::query(
+            "SELECT id, origin, author, message, level, metadata, read_at, created_at
+             FROM notifications WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+
+        Ok(row.map(|r| Notification {
+            id: r.get("id"),
+            origin: r.get("origin"),
+            author: r.get("author"),
+            message: r.get("message"),
+            level: r.get("level"),
+            metadata: r.get("metadata"),
+            read_at: r.get("read_at"),
+            created_at: r.get("created_at"),
+        }))
+    }
+
+    /// Lista las notificaciones no leídas, más recientes primero, junto con el
+    /// número total de no leídas (independiente del `limit`).
+    ///
+    /// `created_at` es `datetime('now')` con granularidad de segundo, así que dos
+    /// inserciones del mismo segundo empatan: `rowid DESC` desempata de forma
+    /// determinista cuando los timestamps coinciden.
+    pub async fn list_unread(
+        pool: &SqlitePool,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Notification>, i64), sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, origin, author, message, level, metadata, read_at, created_at
+             FROM notifications
+             WHERE read_at IS NULL
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?1 OFFSET ?2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
+
+        let items = rows
+            .iter()
+            .map(|r| Notification {
+                id: r.get("id"),
+                origin: r.get("origin"),
+                author: r.get("author"),
+                message: r.get("message"),
+                level: r.get("level"),
+                metadata: r.get("metadata"),
+                read_at: r.get("read_at"),
+                created_at: r.get("created_at"),
+            })
+            .collect();
+
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE read_at IS NULL")
+                .fetch_one(pool)
+                .await?;
+
+        Ok((items, total))
+    }
+
+    /// Marca como leídas las notificaciones no leídas cuyos `id` figuran en
+    /// `ids`, y devuelve cuántas filas cambiaron.
+    ///
+    /// Idempotente: repetir la llamada devuelve `0` sin tocar los `read_at` ya
+    /// fijados. Los ids inexistentes se ignoran y una lista vacía es un no-op.
+    pub async fn mark_read(pool: &SqlitePool, ids: &[String]) -> Result<u64, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+
+        // Build the `IN (...)` placeholders dynamically (`?,?,?`) with
+        // `QueryBuilder`, so the ids are always passed as bound parameters and
+        // never interpolated into the SQL.
+        let mut builder = sqlx::QueryBuilder::new(
+            "UPDATE notifications SET read_at = datetime('now') \
+             WHERE read_at IS NULL AND id IN (",
+        );
+        {
+            let mut separated = builder.separated(", ");
+            for id in ids {
+                separated.push_bind(id);
+            }
+        }
+        builder.push(")");
+
+        let result = builder.build().execute(pool).await?;
+        Ok(result.rows_affected())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
