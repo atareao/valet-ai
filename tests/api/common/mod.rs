@@ -68,6 +68,13 @@ impl TestApp {
         let resp = self.router.clone().oneshot(req).await.unwrap();
         TestResponse { resp }
     }
+
+    /// Like [`TestApp::delete`] but returns a [`TestRequestBuilder`] so callers
+    /// can attach a JSON body (e.g. `DELETE /api/push/subscriptions`). The
+    /// existing `delete` keeps its signature untouched.
+    pub fn delete_with_body(&self, path: &str) -> TestRequestBuilder {
+        TestRequestBuilder::new(self.router.clone(), Method::DELETE, path)
+    }
 }
 
 pub struct TestRequestBuilder {
@@ -75,6 +82,7 @@ pub struct TestRequestBuilder {
     method: Method,
     path: String,
     body: Option<String>,
+    headers: Vec<(String, String)>,
 }
 
 impl TestRequestBuilder {
@@ -84,6 +92,7 @@ impl TestRequestBuilder {
             method,
             path: path.to_string(),
             body: None,
+            headers: Vec::new(),
         }
     }
 
@@ -92,8 +101,17 @@ impl TestRequestBuilder {
         self
     }
 
+    /// Adds an arbitrary request header (e.g. `user-agent`).
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
     pub async fn send(self) -> TestResponse {
         let mut builder = Request::builder().uri(&self.path).method(&self.method);
+        for (name, value) in &self.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
         if let Some(body) = self.body {
             builder = builder.header("content-type", "application/json");
             let req = builder.body(Body::from(body)).unwrap();

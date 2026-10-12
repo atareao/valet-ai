@@ -120,6 +120,16 @@ impl RemindersRepo {
             .await?;
         Ok(())
     }
+
+    /// Marca un recordatorio como notificado, fijando `notified_at` a la hora
+    /// actual. Es lo que impide reenviar el mismo aviso en el ciclo siguiente.
+    pub async fn mark_notified(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE reminders SET notified_at = datetime('now') WHERE id = ?1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -152,7 +162,8 @@ mod tests {
                 text TEXT NOT NULL,
                 datetime TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                notified_at TEXT
             )",
         )
         .execute(&pool)
@@ -247,6 +258,49 @@ mod tests {
         RemindersRepo::delete(&pool, "r3").await.unwrap();
         let found = RemindersRepo::find_by_id(&pool, "r3").await.unwrap();
         assert!(found.is_none());
+
+        Ok(())
+    }
+
+    /// Lee `notified_at` directamente (el `Reminder` de dominio no lo expone
+    /// todavía: lo consume el worker en una fase posterior).
+    async fn notified_at(pool: &SqlitePool, id: &str) -> Option<String> {
+        sqlx::query_scalar::<_, Option<String>>("SELECT notified_at FROM reminders WHERE id = ?1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Scenario: se marca `notified_at` de un recordatorio por su `id`, y solo
+    /// de ese.
+    #[tokio::test]
+    async fn reminders_repo_mark_notified_sets_the_timestamp(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+        RemindersRepo::create(
+            &pool,
+            &sample_reminder("rem-notify-1", "Aviso", "2026-09-24T10:00:00Z"),
+        )
+        .await?;
+        RemindersRepo::create(
+            &pool,
+            &sample_reminder("rem-notify-2", "Otro", "2026-09-24T11:00:00Z"),
+        )
+        .await?;
+
+        assert!(notified_at(&pool, "rem-notify-1").await.is_none());
+
+        RemindersRepo::mark_notified(&pool, "rem-notify-1").await?;
+
+        assert!(
+            notified_at(&pool, "rem-notify-1").await.is_some(),
+            "the targeted reminder must be marked as notified"
+        );
+        assert!(
+            notified_at(&pool, "rem-notify-2").await.is_none(),
+            "only the targeted reminder must be marked"
+        );
 
         Ok(())
     }

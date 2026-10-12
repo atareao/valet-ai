@@ -19,6 +19,7 @@ import { PersistentMemoryPanel } from "./PersistentMemoryPanel";
 import { RouterControl } from "./RouterControl";
 import { SkillsTab } from "./SkillsTab";
 import { StravaIntegration } from "./StravaIntegration";
+import { NotificationsTab } from "./NotificationsTab";
 
 const { TextArea } = Input;
 
@@ -839,6 +840,11 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 updateSettings={updateSettings}
               />
             ),
+          },
+          {
+            key: "notifications",
+            label: "Notificaciones",
+            children: <NotificationsTab />,
           },
         ]}
       />
