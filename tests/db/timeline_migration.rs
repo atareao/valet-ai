@@ -588,6 +588,33 @@ fn fact_integrity_migration_sql() -> String {
     })
 }
 
+/// Version of `migrations/20261012000004_timeline_empty_events_envelope.sql`
+/// (defect B of `episodic-call-integrity`).
+const TIMELINE_ENVELOPE_VERSION: i64 = 20261012000004;
+
+/// Read the prompt-envelope migration SQL from disk. The file does not exist
+/// yet: writing this helper first is what keeps the RED honest — the test fails
+/// until the migration is written, with the same idiom as
+/// `fact_integrity_migration_sql`.
+fn timeline_envelope_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261012000004_timeline_empty_events_envelope.sql");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "the `episodic-call-integrity` prompt-envelope migration does not exist yet at {}: {e}",
+            path.display()
+        )
+    })
+}
+
+/// The contradictory sentence the untouched seed carries today: it asks for a
+/// bare empty list while the output contract is the `{"events": [...]}` object.
+const EMPTY_LIST_PHRASE: &str = "Si el lote no contiene ningún hecho, devuelve una lista vacía";
+
+/// The exact envelope the seed must ask for when the batch holds no facts: same
+/// shape as the output contract, not a loose `[]`.
+const EMPTY_ENVELOPE: &str = "{\"events\": []}";
+
 /// A pool with every migration **older** than `before` applied, so it is left in
 /// the state the previous release had: `timeline_events` without `location`, sin
 /// índice único y con las filas que le metas. La migración nueva NO se aplica.
@@ -1097,6 +1124,72 @@ async fn test_seeded_prompt_states_the_new_rules() {
         .await
         .expect("timeline_prompt must be seeded in a freshly migrated database");
     assert_new_prompt_contract(&value);
+}
+
+// ── 2.1 / 2.2 (RED): the seeded prompt stops contradicting its own contract ──
+// `episodic-call-integrity`, defect B. The seed says "devuelve una lista vacía"
+// while its format block demands `{"events": [...]}`; mistral obeys the prose and
+// emits `[]`, which the parser rejects as `NotJson`. A new migration replaces the
+// sentence with the envelope, only if the value is still the untouched seed.
+
+#[tokio::test]
+async fn test_seeded_timeline_prompt_asks_for_the_empty_envelope() {
+    // The state shipped by the previous release: the seed still carries the
+    // contradictory sentence and no empty envelope.
+    let pool = pool_before(TIMELINE_ENVELOPE_VERSION).await;
+
+    let before = settings_value(&pool, "timeline_prompt")
+        .await
+        .expect("timeline_prompt must be seeded by 20261011000001");
+    assert!(
+        before.contains(EMPTY_LIST_PHRASE),
+        "precondition: the untouched seed must still state the empty-list phrase; got: {before}"
+    );
+    assert!(
+        !before.contains(EMPTY_ENVELOPE),
+        "precondition: the untouched seed must not ask for the envelope yet; got: {before}"
+    );
+
+    let sql = timeline_envelope_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let updated = settings_value(&pool, "timeline_prompt")
+        .await
+        .expect("timeline_prompt must still exist after the migration");
+    assert!(
+        updated.contains(EMPTY_ENVELOPE),
+        "the untouched prompt must ask for the empty envelope {EMPTY_ENVELOPE:?}; got: {updated}"
+    );
+    assert!(
+        !updated.contains(EMPTY_LIST_PHRASE),
+        "the untouched prompt must no longer ask for a bare empty list; got: {updated}"
+    );
+}
+
+#[tokio::test]
+async fn test_timeline_prompt_envelope_migration_respects_a_customized_prompt() {
+    let pool = pool_before(TIMELINE_ENVELOPE_VERSION).await;
+
+    // The user's own prompt: not the seed, so the new migration must leave it be.
+    sqlx::query("UPDATE settings SET value = 'MI PROMPT A MEDIDA' WHERE key = 'timeline_prompt'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = timeline_envelope_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        settings_value(&pool, "timeline_prompt").await.as_deref(),
+        Some("MI PROMPT A MEDIDA"),
+        "a customised prompt must be left untouched by the prompt-envelope migration"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════

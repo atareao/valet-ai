@@ -143,6 +143,16 @@ fn compression_prompt() -> String {
     COMPRESSION_PROMPT_TEMPLATE.replace("__COMPRESSION_MARKER__", COMPRESSION_CALL_MARKER)
 }
 
+/// Fixed, non-empty user turn sent **besides** the `system` prompt of every
+/// consolidation/compression call.
+///
+/// A request made of a single `system` message is not a conversation: the
+/// configured model (DeepSeek v4.1-flash) answers it with `content: null` and
+/// `completion_tokens: 1` **without error**, which aborts the pass silently.
+/// This turn is a code constant, independent of the user-editable
+/// `consolidator_prompt`.
+const CONSOLIDATOR_USER_TURN: &str = "Consolida el estado de memoria persistente según las instrucciones y devuelve únicamente el objeto JSON del esquema.";
+
 // ─── Capa D: chronological fact extraction ─────────────────────────────────
 
 /// Minimal extractor prompt used only when `settings.timeline_prompt` is
@@ -237,19 +247,15 @@ enum TimelineExtractionError {
 /// any missing or ill-typed field (they are discarded later during validation).
 /// `events` is pulled out with `serde_json`. `source` is accepted as an integer
 /// or as a string that parses to an integer; anything else → `None`.
+///
+/// The **only** accepted envelope is the `{"events": [...]}` object, whose empty
+/// form `{"events": []}` is the legitimate zero-facts case. A bare top-level
+/// `[]` — like any other non-object body — is a **shape failure**
+/// ([`TimelineExtractionError::NotJson`]): the bounded retry gives it another
+/// chance rather than silently marking the batch as done with zero facts.
 fn parse_timeline_events(content: &str) -> Result<Vec<RawTimelineEvent>, TimelineExtractionError> {
     if content.trim().is_empty() {
         return Err(TimelineExtractionError::Empty);
-    }
-
-    // A bare top-level `[]` means "no facts", not a malformed body: it is the
-    // success path with zero events. A non-empty array is still `NotJson` — the
-    // only accepted envelope is the `{"events": [...]}` object.
-    if matches!(
-        serde_json::from_str::<serde_json::Value>(content.trim()),
-        Ok(serde_json::Value::Array(ref items)) if items.is_empty()
-    ) {
-        return Ok(Vec::new());
     }
 
     let value = EpisodicMemoryWorker::extract_json_object(content)
@@ -463,6 +469,24 @@ enum ConsolidationError {
     Llm(String),
     #[error("consolidator returned an invalid state: {0}")]
     Invalid(String),
+}
+
+/// A successful semantic (consolidator or compression) transport call: the raw
+/// content plus the usage data needed to write the final `llm_requests` row
+/// **after** the caller validates the content.
+///
+/// The row is deliberately not written here: a content that does not validate
+/// must land as `error`, and only the caller knows the outcome. One transport
+/// call still yields exactly one row (written by the caller).
+struct SemanticChatOutcome {
+    content: String,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    total_tokens: i64,
+    cached_tokens: i64,
+    reasoning_tokens: i64,
+    cost: f64,
+    duration_ms: i64,
 }
 
 /// Compute the cooldown (in seconds) applied after a failed LLM attempt.
@@ -1087,14 +1111,26 @@ impl EpisodicMemoryWorker {
 
     // ─── Capa C: consolidation (budget, ceiling, prompt) ───────────────────
 
-    /// Perform one semantic LLM call (consolidation or compression) and record
-    /// its stats with `profile_id = NULL`, like every other worker call.
+    /// Perform one semantic LLM call (consolidation or compression).
+    ///
+    /// The request carries the configurable prompt as a `system` message **and**
+    /// a fixed, non-empty `user` turn ([`CONSOLIDATOR_USER_TURN`]): the
+    /// single-`system` shape is not a conversation and the configured model
+    /// answers it with empty content without error.
+    ///
+    /// A transport failure (`chat` returns `Err`) is recorded here as its own
+    /// `llm_requests` row with `status = 'error'`. A successful transport is
+    /// **not** recorded here: the content can still fail the caller's
+    /// validation, so the row is written by the caller ([`Self::initial_consolidation`]
+    /// or [`Self::try_compress`]) once the outcome is known — `success` when it
+    /// validates, `error` with the reason when it does not. Either way every
+    /// attempt yields exactly one row.
     async fn call_semantic_chat(
         db: &SqlitePool,
         llm_provider: &Arc<dyn LLMProvider>,
         config: &EpisodicMemoryConfig,
         system_content: String,
-    ) -> Result<String, ConsolidationError> {
+    ) -> Result<SemanticChatOutcome, ConsolidationError> {
         let generation = crate::generation::read_generation_params(
             db,
             crate::generation::GenerationRole::Semantic,
@@ -1103,13 +1139,22 @@ impl EpisodicMemoryWorker {
 
         let request = ChatRequest {
             model: config.semantic_model.clone(),
-            messages: vec![ChatMessage {
-                role: "system".into(),
-                content: system_content,
-                tool_calls: None,
-                tool_result: None,
-                tool_call_id: None,
-            }],
+            messages: vec![
+                ChatMessage {
+                    role: "system".into(),
+                    content: system_content,
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                ChatMessage {
+                    role: "user".into(),
+                    content: CONSOLIDATOR_USER_TURN.to_string(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+            ],
             tools: None,
             temperature: Some(generation.temperature),
             max_tokens: Some(generation.max_tokens),
@@ -1160,35 +1205,55 @@ impl EpisodicMemoryWorker {
             .map(|u| u.completion_tokens as i64)
             .unwrap_or(0);
         let total_tokens = prompt_tokens + completion_tokens;
-        let _ = StatsRepo::record_request(
-            db,
-            CallKind::Consolidator,
-            &Uuid::new_v4().to_string(),
-            &config.semantic_model,
-            None,
+
+        Ok(SemanticChatOutcome {
+            content: response.message.content,
             prompt_tokens,
             completion_tokens,
             total_tokens,
-            response
+            cached_tokens: response
                 .usage
                 .as_ref()
                 .map(|u| u.cached_tokens as i64)
                 .unwrap_or(0),
-            response
+            reasoning_tokens: response
                 .usage
                 .as_ref()
                 .map(|u| u.reasoning_tokens as i64)
                 .unwrap_or(0),
-            response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
-            Some(duration_ms),
-            "success",
+            cost: response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
+            duration_ms,
+        })
+    }
+
+    /// Write the single `llm_requests` row for one semantic call whose transport
+    /// succeeded, now that the caller knows whether the content validated.
+    async fn record_consolidator_stats(
+        db: &SqlitePool,
+        model: &str,
+        outcome: &SemanticChatOutcome,
+        status: &str,
+        error_message: Option<&str>,
+    ) {
+        let _ = StatsRepo::record_request(
+            db,
+            CallKind::Consolidator,
+            &Uuid::new_v4().to_string(),
+            model,
             None,
+            outcome.prompt_tokens,
+            outcome.completion_tokens,
+            outcome.total_tokens,
+            outcome.cached_tokens,
+            outcome.reasoning_tokens,
+            outcome.cost,
+            Some(outcome.duration_ms),
+            status,
+            error_message,
             None,
             None,
         )
         .await;
-
-        Ok(response.message.content)
     }
 
     // ─── Capa D: the extractor (best-effort) ───────────────────────────────
@@ -1589,9 +1654,10 @@ impl EpisodicMemoryWorker {
         let serialized = serde_json::to_string(state).ok()?;
         let prompt = compression_prompt().replace("{{ ESTADO_ACTUAL }}", &serialized);
 
-        let raw = match Self::call_semantic_chat(db, llm_provider, config, prompt).await {
-            Ok(raw) => raw,
+        let outcome = match Self::call_semantic_chat(db, llm_provider, config, prompt).await {
+            Ok(outcome) => outcome,
             Err(e) => {
+                // The transport failure already left its own `error` row behind.
                 tracing::warn!(
                     error = %e,
                     "compression LLM call failed; degrading to the uncompressed state"
@@ -1600,9 +1666,17 @@ impl EpisodicMemoryWorker {
             }
         };
 
-        let candidate = match Self::extract_json_object(&raw) {
+        let candidate = match Self::extract_json_object(&outcome.content) {
             Some(candidate) => candidate,
             None => {
+                Self::record_consolidator_stats(
+                    db,
+                    &config.semantic_model,
+                    &outcome,
+                    "error",
+                    Some("compression returned no JSON object"),
+                )
+                .await;
                 tracing::warn!(
                     "compression returned no JSON object; degrading to the uncompressed state"
                 );
@@ -1611,8 +1685,27 @@ impl EpisodicMemoryWorker {
         };
 
         match validate_payload(&candidate) {
-            Ok(validated) => Some(validated),
+            Ok(validated) => {
+                Self::record_consolidator_stats(
+                    db,
+                    &config.semantic_model,
+                    &outcome,
+                    "success",
+                    None,
+                )
+                .await;
+                Some(validated)
+            }
             Err(e) => {
+                let reason = e.to_string();
+                Self::record_consolidator_stats(
+                    db,
+                    &config.semantic_model,
+                    &outcome,
+                    "error",
+                    Some(&reason),
+                )
+                .await;
                 tracing::warn!(
                     error = %e,
                     "compression returned an invalid state; degrading to the uncompressed state"
@@ -1642,25 +1735,51 @@ impl EpisodicMemoryWorker {
     ) -> Result<serde_json::Value, ConsolidationError> {
         let mut last_error = String::new();
         for attempt in 1..=INITIAL_CONSOLIDATION_ATTEMPTS {
-            let raw =
+            let outcome =
                 Self::call_semantic_chat(db, llm_provider, config, system_content.to_string())
                     .await?;
-            let content_len = raw.len();
-            match Self::extract_json_object(&raw) {
+            let content_len = outcome.content.len();
+            match Self::extract_json_object(&outcome.content) {
                 Some(candidate) => match validate_payload(&candidate) {
-                    Ok(validated) => return Ok(validated),
+                    Ok(validated) => {
+                        Self::record_consolidator_stats(
+                            db,
+                            &config.semantic_model,
+                            &outcome,
+                            "success",
+                            None,
+                        )
+                        .await;
+                        return Ok(validated);
+                    }
                     Err(e) => {
                         last_error = format!(
                             "invalid state (content_len={content_len}, preview=\"{}\"): {e}",
-                            Self::content_preview(&raw)
+                            Self::content_preview(&outcome.content)
                         );
+                        Self::record_consolidator_stats(
+                            db,
+                            &config.semantic_model,
+                            &outcome,
+                            "error",
+                            Some(&last_error),
+                        )
+                        .await;
                     }
                 },
                 None => {
                     last_error = format!(
                         "consolidator returned no JSON object (content_len={content_len}, preview=\"{}\")",
-                        Self::content_preview(&raw)
+                        Self::content_preview(&outcome.content)
                     );
+                    Self::record_consolidator_stats(
+                        db,
+                        &config.semantic_model,
+                        &outcome,
+                        "error",
+                        Some(&last_error),
+                    )
+                    .await;
                 }
             }
             if attempt < INITIAL_CONSOLIDATION_ATTEMPTS {
@@ -3711,6 +3830,262 @@ mod tests {
         assert!(sys.contains("BLOQUE456"));
     }
 
+    // ─── Change `episodic-call-integrity` — Bloque 1 y 3 ───────────────────
+    //
+    // RED (1.1, 1.2, 3.1): describen el comportamiento esperado tras la fase
+    // GREEN. VERDE (2.3, 3.2): redes de seguridad del contrato ya vigente.
+
+    /// A configurable consolidator prompt (carries the semantic marker so the
+    /// mock treats the call as a consolidation, not as a timeline extraction)
+    /// with both substitutable placeholders.
+    const TEST_CONSOLIDATOR_PROMPT: &str = "Eres el consolidador de memoria persistente. \
+         {{ ESTADO_ACTUAL }} {{ BLOQUE_DE_MENSAJES }}";
+
+    /// Scenario: La petición de consolidación lleva turno de usuario.
+    ///
+    /// The consolidation call SHALL send at least one non-empty `user` message
+    /// **besides** the `system` message carrying the prompt. Today
+    /// `call_semantic_chat` sends only the `system` message, so this is RED.
+    #[tokio::test]
+    async fn test_consolidation_request_carries_a_non_empty_user_turn() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &db,
+            "consolidator_prompt",
+            TEST_CONSOLIDATOR_PROMPT,
+        )
+        .await
+        .unwrap();
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE123",
+        )
+        .await
+        .expect("consolidation must succeed");
+
+        let calls = calls.lock().unwrap();
+        let request = &calls[0];
+
+        let system = request
+            .messages
+            .iter()
+            .find(|m| m.role == "system")
+            .expect("the request must carry the system message with the prompt");
+        assert!(
+            system.content.contains(SEMANTIC_CALL_MARKER),
+            "the system message carries the consolidator prompt"
+        );
+
+        let user = request
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .expect("the request must carry a `user` turn besides the `system` one");
+        assert!(
+            !user.content.trim().is_empty(),
+            "the user turn must be non-empty"
+        );
+    }
+
+    /// Scenario: El prompt configurable no cambia de rol.
+    ///
+    /// The `system` message SHALL literally carry the configurable
+    /// `consolidator_prompt` (with its placeholders substituted), and the new
+    /// user turn SHALL be independent of it. Today there is no user turn, so
+    /// this is RED.
+    #[tokio::test]
+    async fn test_consolidation_system_message_keeps_the_configured_prompt() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let custom = "Eres el consolidador de memoria persistente. \
+             UI_EDITABLE_TOKEN {{ ESTADO_ACTUAL }} {{ BLOQUE_DE_MENSAJES }}";
+        crate::db::repos::settings::SettingsRepo::set(&db, "consolidator_prompt", custom)
+            .await
+            .unwrap();
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE123",
+        )
+        .await
+        .expect("consolidation must succeed");
+
+        let calls = calls.lock().unwrap();
+        let request = &calls[0];
+
+        let system = request
+            .messages
+            .iter()
+            .find(|m| m.role == "system")
+            .expect("the request must carry the system message");
+        assert!(
+            system
+                .content
+                .starts_with("Eres el consolidador de memoria persistente. UI_EDITABLE_TOKEN"),
+            "the system message must keep the configurable prompt verbatim"
+        );
+        assert!(
+            system.content.contains("BLOQUE123"),
+            "the message block is still substituted into the system prompt"
+        );
+        assert!(
+            !system.content.contains("{{ ESTADO_ACTUAL }}")
+                && !system.content.contains("{{ BLOQUE_DE_MENSAJES }}"),
+            "the placeholders are substituted"
+        );
+
+        let user =
+            request.messages.iter().find(|m| m.role == "user").expect(
+                "the request must carry a user turn independent of the configurable prompt",
+            );
+        assert!(
+            !user.content.contains("UI_EDITABLE_TOKEN"),
+            "the user turn must be independent of the configurable prompt"
+        );
+    }
+
+    /// Scenario (contrato): el respaldo pide el envoltorio vacío.
+    ///
+    /// The minimal fallback SHALL ask for the `{"events": …}` envelope —whose
+    /// empty form is `{"events": []}`— and SHALL NOT ask for a bare `[]` list.
+    /// Already true; kept as a safety net of the output-shape contract.
+    #[tokio::test]
+    async fn test_timeline_fallback_prompt_asks_for_the_empty_envelope() {
+        // Ignore formatting whitespace so the assertions target the shape and
+        // not the pretty-printing.
+        let compact: String = DEFAULT_TIMELINE_PROMPT_FALLBACK
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+
+        assert!(
+            compact.contains(r#"{"events":["#),
+            "the fallback must ask for the {{\"events\": …}} envelope"
+        );
+        assert!(
+            !compact.contains("[]"),
+            "the fallback must NOT ask for a bare empty list `[]`"
+        );
+    }
+
+    /// Scenario: Una respuesta que no valida se registra como error.
+    ///
+    /// When the transport succeeds but the content does not validate (empty,
+    /// no JSON object or invalid schema), the `llm_requests` row SHALL end with
+    /// `status = 'error'` and the reason in `error_message`. Today the row is
+    /// written before validating, so it lands as `success`: RED.
+    #[tokio::test]
+    async fn test_consolidation_records_validation_failure_as_error() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &db,
+            "consolidator_prompt",
+            TEST_CONSOLIDATOR_PROMPT,
+        )
+        .await
+        .unwrap();
+
+        // Empty content: the transport succeeds, the validation does not. The
+        // initial consolidation retries once and then aborts the pass.
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).semantic("");
+        EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &mock.wrap(),
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE123",
+        )
+        .await
+        .expect_err("a state that does not validate must abort the pass");
+
+        let successes: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests
+             WHERE kind = 'consolidator' AND status = 'success'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            successes, 0,
+            "a consolidation whose content does not validate must NOT be recorded as success"
+        );
+
+        let errors: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests
+             WHERE kind = 'consolidator' AND status = 'error' AND error_message IS NOT NULL",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(
+            errors >= 1,
+            "the validation failure must be recorded with its reason in error_message"
+        );
+    }
+
+    /// Scenario: Una respuesta válida se registra como éxito.
+    ///
+    /// A consolidation whose content is a JSON object that passes the schema
+    /// validation SHALL leave the row with `status = 'success'`. Already true;
+    /// kept as a safety net.
+    #[tokio::test]
+    async fn test_consolidation_records_valid_state_as_success() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &db,
+            "consolidator_prompt",
+            TEST_CONSOLIDATOR_PROMPT,
+        )
+        .await
+        .unwrap();
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &mock.wrap(),
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE123",
+        )
+        .await
+        .expect("a valid state must succeed");
+
+        let successes: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests
+             WHERE kind = 'consolidator' AND status = 'success'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            successes, 1,
+            "a valid consolidation must be recorded as success"
+        );
+
+        let errors: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests
+             WHERE kind = 'consolidator' AND status = 'error'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(errors, 0, "a valid consolidation must not record any error");
+    }
+
     // ─── Contract tests: parámetros de generación por rol ──────────────────
 
     /// Run the episodic-card extraction once and return the captured request.
@@ -3956,16 +4331,18 @@ mod tests {
         assert!(raw.is_empty(), "an empty events array yields no events");
     }
 
-    /// Scenario (`timeline-extractor-resilience`): a bare top-level `[]` is zero
-    /// facts — the success path — not a `NotJson` shape failure. Today the
-    /// parser only accepts a JSON *object* envelope, so `[]` returns
-    /// `Err(NotJson)` and the pass wrongly records an error instead of success.
+    /// Contract (`episodic-call-integrity`, Alternativa 2): a bare top-level
+    /// `[]` is a **shape failure** (`NotJson`), not the zero-facts success path.
+    /// The only legitimate empty envelope is `{"events": []}`, already covered
+    /// by `test_parse_timeline_events_empty_array`. The bounded retry in
+    /// `extract_timeline` gives the `[]` another chance instead of silently
+    /// marking the batch as done with zero facts.
     #[test]
-    fn test_parse_timeline_events_bare_empty_array_is_zero_events() {
-        let raw = parse_timeline_events("[]").expect("a bare empty array is zero events");
-        assert!(
-            raw.is_empty(),
-            "a bare top-level empty array must yield zero events, not an error"
+    fn test_parse_timeline_events_bare_empty_array_is_not_json() {
+        assert_eq!(
+            parse_timeline_events("[]"),
+            Err(TimelineExtractionError::NotJson),
+            "a bare top-level empty array must be a shape failure, not zero events"
         );
     }
 
@@ -4358,10 +4735,11 @@ mod tests {
 
     // ─── `timeline-extractor-resilience`: retry a malformed envelope ───────
     //
-    // Contrato fijado por el change `timeline-extractor-resilience`. Describen
-    // el comportamiento esperado tras la fase GREEN: un array desnudo `[]` es
-    // cero hechos (ver el test del parser arriba) y un fallo de forma se
-    // reintenta un número acotado de veces dentro de la misma pasada.
+    // Contrato fijado por el change `timeline-extractor-resilience` y ajustado
+    // por `episodic-call-integrity`: un fallo de forma se reintenta un número
+    // acotado de veces dentro de la misma pasada. Un array desnudo `[]` es un
+    // fallo de forma como cualquier otro (ver el test del parser arriba); solo
+    // el envoltorio `{"events": []}` es cero hechos con `status = 'success'`.
 
     /// Number of Layer D (timeline) calls captured by the mock, mirroring how
     /// `MockEpisodicLLM::chat` classifies them (JSON mode and neither the
