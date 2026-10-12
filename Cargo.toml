@@ -192,3 +192,7 @@ path = "tests/api/push.rs"
 [[test]]
 name = "notifications"
 path = "tests/api/notifications.rs"
+
+[[test]]
+name = "ingest_keys"
+path = "tests/api/ingest_keys.rs"
