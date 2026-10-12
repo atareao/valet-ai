@@ -129,13 +129,13 @@ Fichero nuevo: `src/routes/ingest_keys.rs`, con sesión OIDC, registrado en `src
 
 ## 8. Frontend: sección de claves de ingesta en la pestaña API Keys
 
-- [ ] 8.1 RED — tests de componente con `@testing-library/react` en `frontend/src/components/` (convención `*.test.tsx`, `user-event` para la interacción). Aserciones:
+- [x] 8.1 RED — tests de componente con `@testing-library/react` en `frontend/src/components/` (convención `*.test.tsx`, `user-event` para la interacción). Aserciones:
   - crear una clave con un nombre muestra el token recién creado y un aviso explícito de que no se volverá a mostrar (scenario «Crear una clave muestra el token una sola vez con el aviso»);
   - la lista de claves muestra el prefijo de una clave creada y **no** muestra su token (scenario «La lista no contiene el token»);
   - revocar una clave hace que la lista la marque como revocada (scenario «Revocar marca la clave como revocada»);
   - un fallo del backend al crear se comunica con un aviso (`App.useApp()`, capability `ui-feedback`) y **no** deja la clave a medias en la lista (scenario «Un fallo del backend al crear se comunica sin dejar la clave a medias»).
   - Comando en rojo: `npx vitest run frontend/src/components/`. **Pegar la salida en rojo.**
-- [ ] 8.2 GREEN — añadir el cliente de API en `frontend/src/api/` (crear, listar y revocar claves de ingesta contra `/api/ingest-keys`) y la sección de claves **entrantes** en la pestaña **API Keys** del `SettingsDialog.tsx`, separada de las claves salientes que ya existen (OpenWeatherMap, Google Places, Brave, apimail y Miniflux): formulario para crear con nombre, token mostrado una sola vez con aviso, lista sin token y revocación por clave. Sin pestaña nueva de primer nivel. Los avisos, con `App.useApp()`, no con la API estática de antd. Confirmar `npx vitest run`, `npx tsc --noEmit` y `npm run lint` en verde.
+- [x] 8.2 GREEN — añadir el cliente de API en `frontend/src/api/` (crear, listar y revocar claves de ingesta contra `/api/ingest-keys`) y la sección de claves **entrantes** en la pestaña **API Keys** del `SettingsDialog.tsx`, separada de las claves salientes que ya existen (OpenWeatherMap, Google Places, Brave, apimail y Miniflux): formulario para crear con nombre, token mostrado una sola vez con aviso, lista sin token y revocación por clave. Sin pestaña nueva de primer nivel. Los avisos, con `App.useApp()`, no con la API estática de antd. Confirmar `npx vitest run`, `npx tsc --noEmit` y `npm run lint` en verde.
 
 ## 9. Verificación
 

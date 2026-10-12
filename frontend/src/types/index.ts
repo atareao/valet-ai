@@ -316,3 +316,24 @@ export interface PushSubscriptionPayload {
 export interface PushSubscriptionResponse {
   id: string;
 }
+
+/**
+ * Clave de ingesta tal como la devuelve `GET /api/ingest-keys`. Nunca incluye el
+ * token: solo su `prefix`.
+ */
+export interface IngestKey {
+  id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+/**
+ * Respuesta de `POST /api/ingest-keys`: el token en claro se entrega **una sola
+ * vez**, en el alta. No vuelve a estar disponible en ningún listado.
+ */
+export interface CreatedIngestKey extends IngestKey {
+  token: string;
+}

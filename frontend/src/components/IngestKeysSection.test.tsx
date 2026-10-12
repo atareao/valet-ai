@@ -6,8 +6,7 @@ import type { ReactNode } from "react";
 
 // Mock del módulo de API de claves de ingesta: se sustituyen las tres funciones
 // por dobles controlables desde cada prueba. No se usa `importActual` porque el
-// módulo es el objeto de este change (patrón de `NotificationsTab.test.tsx`,
-// mock parcial del cliente).
+// módulo nace con este change (patrón de `NotificationsTab.test.tsx`).
 vi.mock("../api/ingestKeys", () => ({
   listIngestKeys: vi.fn(),
   createIngestKey: vi.fn(),
