@@ -18,15 +18,15 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 
 ## 3. Ayudante de host y redacción de los `WARN` por endpoint
 
-- [ ] 3.1 RED — test que falla del ayudante puro de host: para `https://fcm.googleapis.com/fcm/send/abc` devuelve `fcm.googleapis.com`; para una cadena vacía o un valor sin host reconocible devuelve el marcador `(endpoint no parseable)` y **no** la cadena original. Verificar en rojo con `cargo test --lib reminder_push`.
-- [ ] 3.2 GREEN — implementar el ayudante puro de host y aplicarlo a los tres `WARN` por endpoint del bucle (`suscripción caducada`, `fallo de envío` y `error al enviar`), de modo que registren `endpoint_host = %endpoint_host(&sub.endpoint)` más el identificador de la suscripción, y **no** `endpoint = %sub.endpoint`. Confirmar `cargo test --lib reminder_push` y `cargo check` en verde.
+- [x] 3.1 RED — test que falla del ayudante puro de host: para `https://fcm.googleapis.com/fcm/send/abc` devuelve `fcm.googleapis.com`; para una cadena vacía o un valor sin host reconocible devuelve el marcador `(endpoint no parseable)` y **no** la cadena original. Verificar en rojo con `cargo test --lib reminder_push`.
+- [x] 3.2 GREEN — implementar el ayudante puro de host y aplicarlo a los tres `WARN` por endpoint del bucle (`suscripción caducada`, `fallo de envío` y `error al enviar`), de modo que registren `endpoint_host = %endpoint_host(&sub.endpoint)` más el identificador de la suscripción, y **no** `endpoint = %sub.endpoint`. Confirmar `cargo test --lib reminder_push` y `cargo check` en verde.
 
 ## 4. Verificación
 
-- [ ] 4.1 `cargo test --lib reminder_push` en verde, con el recuento de tests anotado antes y después.
+- [x] 4.1 `cargo test --lib reminder_push` en verde, con el recuento de tests anotado antes y después.
 - [ ] 4.2 Suite de Rust completa en verde con `cargo test --no-fail-fast` (0 fallos).
-- [ ] 4.3 `cargo clippy --all-targets -- -D warnings` limpio (0 warnings).
-- [ ] 4.4 `cargo fmt --check` limpio.
+- [x] 4.3 `cargo clippy --all-targets -- -D warnings` limpio (0 warnings).
+- [x] 4.4 `cargo fmt --check` limpio.
 
 ## Notas
 

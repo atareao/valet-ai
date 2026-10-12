@@ -68,6 +68,23 @@ impl TickOutcome {
     }
 }
 
+/// Marcador que sustituye a un endpoint ilegible en los registros.
+const UNPARSEABLE_ENDPOINT: &str = "(endpoint no parseable)";
+
+/// Extrae el **host** de un endpoint de suscripción para los registros.
+///
+/// Un endpoint WebPush es una **URL de capacidad**: quien la posee puede enviar
+/// avisos a ese dispositivo. Para diagnosticar basta con el host («falló en
+/// `fcm.googleapis.com`»), mientras que registrar la URL completa filtraría un
+/// secreto. Por eso esta función devuelve **solo** el host, o un marcador fijo
+/// si el valor no rinde uno reconocible: **nunca** la cadena original.
+fn endpoint_host(endpoint: &str) -> String {
+    url::Url::parse(endpoint)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_else(|| UNPARSEABLE_ENDPOINT.to_string())
+}
+
 /// Entrega los recordatorios vencidos que corresponden a este ciclo.
 ///
 /// Función pura respecto al reloj: recibe `now` por parámetro. Selecciona en SQL
@@ -161,14 +178,16 @@ pub async fn deliver_due_reminders(
                     outcome.pruned += 1;
                     gone_endpoints.push(sub.endpoint.clone());
                     tracing::warn!(
-                        endpoint = %sub.endpoint,
+                        sub_id = %sub.id,
+                        endpoint_host = %endpoint_host(&sub.endpoint),
                         "reminder_push: suscripción caducada; se elimina"
                     );
                 }
                 Ok(DeliveryOutcome::Failed) => {
                     outcome.failed += 1;
                     tracing::warn!(
-                        endpoint = %sub.endpoint,
+                        sub_id = %sub.id,
+                        endpoint_host = %endpoint_host(&sub.endpoint),
                         "reminder_push: fallo de envío; la suscripción se conserva"
                     );
                 }
@@ -176,7 +195,8 @@ pub async fn deliver_due_reminders(
                     // Un fallo de transporte no llegó: cuenta como fallido.
                     outcome.failed += 1;
                     tracing::warn!(
-                        endpoint = %sub.endpoint,
+                        sub_id = %sub.id,
+                        endpoint_host = %endpoint_host(&sub.endpoint),
                         error = %error,
                         "reminder_push: error al enviar; la suscripción se conserva"
                     );
@@ -917,6 +937,35 @@ mod tests {
             outcome.should_log_summary(),
             "an unparseable datetime must request a summary"
         );
+    }
+
+    /// Scenario: el ayudante devuelve el host de una URL normal.
+    #[test]
+    fn endpoint_host_returns_host_of_a_normal_url() {
+        assert_eq!(
+            endpoint_host("https://fcm.googleapis.com/fcm/send/abc"),
+            "fcm.googleapis.com",
+            "the host, not the whole URL, must be extracted"
+        );
+    }
+
+    /// Scenario: el ayudante marca lo que no puede interpretar.
+    ///
+    /// Cadenas vacías, basura y valores sin esquema/host rinden el marcador y
+    /// **nunca** la cadena original.
+    #[test]
+    fn endpoint_host_marks_unparseable_values() {
+        for value in ["", "no-es-una-url", "https://", "//sin-esquema"] {
+            let host = endpoint_host(value);
+            assert_eq!(
+                host, "(endpoint no parseable)",
+                "an endpoint without a recognizable host must yield the marker: {value:?}"
+            );
+            assert_ne!(
+                host, value,
+                "the marker must never be the original string: {value:?}"
+            );
+        }
     }
 
     /// Scenario: el predicado es verdadero cuando cualquier contador difiere
