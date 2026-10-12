@@ -73,9 +73,9 @@ static CATALOG: [SkillSpec; 10] = [
     SkillSpec {
         skill: Skill::Pendientes,
         id: "pendientes",
-        instructions: "¿La respuesta requiere gestionar tareas por hacer, recordatorios o alarmas?",
-        criteria_true: "El mensaje se refiere a tareas, pendientes, cosas por hacer, prioridades, recordatorios, alarmas o avisos a una hora. Cuenta también un saludo de apertura del día, que abre un repaso de lo que hay pendiente.",
-        criteria_false: "El mensaje no se refiere a pendientes ni a ningún aviso.",
+        instructions: "¿La respuesta requiere gestionar tareas por hacer, recordatorios, alarmas o avisos entrantes de otras aplicaciones?",
+        criteria_true: "El mensaje se refiere a tareas, pendientes, cosas por hacer, prioridades, recordatorios, alarmas o avisos a una hora. Cuenta también los avisos y mensajes entrantes de otras aplicaciones (formularios, monitorización, scripts), que no son recordatorios: los recordatorios los pone el usuario, los avisos los envían otras aplicaciones. Cuenta también un saludo de apertura del día, que abre un repaso de lo que hay pendiente.",
+        criteria_false: "El mensaje no se refiere a pendientes, recordatorios ni a ningún aviso entrante de otra aplicación.",
         threshold: 0.10,
         tools: &["tasks", "reminders", "notifications"],
         prompt_key: "SKILL_PENDIENTES_PROMPT",

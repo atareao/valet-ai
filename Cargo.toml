@@ -182,5 +182,9 @@ name = "notification_ingest_migration"
 path = "tests/db/notification_ingest_migration.rs"
 
 [[test]]
+name = "pendientes_prompt_migration"
+path = "tests/db/pendientes_prompt_migration.rs"
+
+[[test]]
 name = "push-api"
 path = "tests/api/push.rs"
