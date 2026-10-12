@@ -2,7 +2,7 @@
 
 ## 0. Preparación y aprobación
 
-- [ ] 0.1 Presentar este change (proposal + specs + tasks) y **esperar aprobación explícita** antes de escribir código.
+- [x] 0.1 Presentar este change (proposal + specs + tasks) y **esperar aprobación explícita** antes de escribir código.
 
 ## 1. RED: fijar el contrato
 
@@ -33,10 +33,11 @@
 
 ## 4. VERIFICACIÓN
 
-- [ ] 4.1 Anotar el recuento de tests **antes y después** y dejar `cargo test --no-fail-fast` en verde (0 fallos). Antes: 1208 passed / 0 failed / 1 ignored.
-- [ ] 4.2 `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios.
-- [ ] 4.3 PR a `development` con merge commit, revisado por `rust-reviewer`.
+- [x] 4.1 Anotar el recuento de tests **antes y después** y dejar `cargo test --no-fail-fast` en verde (0 fallos). Antes: 1208 passed / 0 failed / 1 ignored. Después: 1255 passed / 0 failed / 1 ignored.
+- [x] 4.2 `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios.
+- [x] 4.3 PR a `development` con merge commit, revisado por `rust-reviewer`. PR #180 (`fbfc39a`, `feature/timeline-fact-integrity` → `development`), fusionado en `main` dentro de `v0.14.0`.
 - [ ] 4.4 En producción, reproducir **el caso que lo rompió**: pedir ver el timeline y comprobar que la tabla no crece, que el hecho nuevo lleva fecha y lugar cuando el mensaje los da, que una tirada contada en dos pasos deja **un solo** hecho y que ningún hecho cita un mensaje del asistente.
+  - **Pendiente a propósito.** Es la verificación *en producción* (pedirle el timeline al asistente en el chat) y exige una interacción del usuario que el director no puede hacer. Se deja sin marcar hasta que se ejecute esa comprobación.
 
 ## Notas
 
