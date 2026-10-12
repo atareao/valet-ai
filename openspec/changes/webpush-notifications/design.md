@@ -81,11 +81,25 @@ de vencimiento, junto con la ventana de gracia, se hace **en Rust** con
    recordatorio, se entrega al arrancar si sigue dentro de la ventana; si no, se descarta con un
    aviso. La ventana de gracia es exactamente ese compromiso: no perder lo reciente, no inundar con
    lo viejo.
-3. **La entrega es como máximo una vez por recordatorio, pero el Push Service puede duplicar.** El
-   `tag` del payload hace que dos avisos del mismo recordatorio se reemplacen en lugar de apilarse,
-   pero no elimina la duplicación en origen.
+3. **La entrega es *at-least-once*, no «como máximo una vez».** Si el proceso muere entre un envío
+   correcto y el `mark_notified`, el ciclo siguiente reenvía el aviso. El `tag` del payload hace que
+   dos avisos del mismo recordatorio se reemplacen en lugar de apilarse, pero solo deduplica en
+   presentación: no elimina la repetición en origen.
 4. **El service worker no se puede probar con vitest.** No hay DOM de service worker en jsdom; solo
    se verifica en un navegador real. Por eso el diseño lo mantiene mínimo —sin handler de `fetch`—
    y concentra en TypeScript la parte testeable (la conversión base64url y el gestor de suscripción).
 5. **WebPush exige HTTPS.** `co1` va tras Traefik con TLS; en desarrollo `localhost` es un origen
    seguro y basta.
+6. **SSRF: `build_request` no valida host.** El alta solo exige `https`, así que un usuario
+   **autenticado** puede registrar un endpoint https arbitrario y hacer que el backend emita un POST
+   firmado (VAPID) hacia un host interno. El cuerpo va cifrado con claves que elige quien se
+   suscribe, así que no hay exfiltración de contenido: solo metadatos (IP de origen, timing, SNI). En
+   un despliegue **monousuario tras login** el atacante es el propio dueño → impacto bajo; **si algún
+   día es multiusuario, hará falta una allowlist** (FCM/Apple/Mozilla/WNS) o revalidar el host en el
+   envío.
+7. **Carrera teórica en la purga.** Borrar por `endpoint` entre el `list_all` y el `delete` puede
+   borrar una fila recién re-suscrita con el mismo endpoint (el navegador se re-suscribe justo en
+   medio de un ciclo de envío fallido).
+8. **Par VAPID mezclado si se edita la base a mano.** Cambiar `push_vapid_public_key` y
+   `push_vapid_private_key` de forma inconsistente deja `InvalidStoredKey` permanente, sin
+   auto-sanación: el `503` se repite hasta que se corrigen las dos a mano.

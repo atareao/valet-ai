@@ -82,6 +82,7 @@ pub struct TestRequestBuilder {
     method: Method,
     path: String,
     body: Option<String>,
+    headers: Vec<(String, String)>,
 }
 
 impl TestRequestBuilder {
@@ -91,6 +92,7 @@ impl TestRequestBuilder {
             method,
             path: path.to_string(),
             body: None,
+            headers: Vec::new(),
         }
     }
 
@@ -99,8 +101,17 @@ impl TestRequestBuilder {
         self
     }
 
+    /// Adds an arbitrary request header (e.g. `user-agent`).
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
     pub async fn send(self) -> TestResponse {
         let mut builder = Request::builder().uri(&self.path).method(&self.method);
+        for (name, value) in &self.headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
         if let Some(body) = self.body {
             builder = builder.header("content-type", "application/json");
             let req = builder.body(Body::from(body)).unwrap();

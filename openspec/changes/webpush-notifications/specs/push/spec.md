@@ -63,10 +63,13 @@ el error `push_unavailable` y SHALL NO responder nunca `200` con una clave vací
 
 El endpoint SHALL aceptar un cuerpo `{"endpoint": "...", "keys": {"p256dh": "...", "auth": "..."}}`
 y SHALL validar que `endpoint` sea una URL absoluta con esquema `https`, que `p256dh` decodifique
-(base64url sin padding) a 65 bytes y que `auth` decodifique a 16 bytes. Cualquier fallo de validación
-SHALL devolver `400` con `{"error": ...}`. Una suscripción válida SHALL registrarse como *upsert* por
-`endpoint` y SHALL responder `201` con `{"id": "<uuidv4>"}`. Volver a suscribir el mismo navegador
-SHALL actualizar `p256dh`, `auth`, `user_agent` y `updated_at`, y SHALL conservar el `id` original.
+(base64url sin padding) a 65 bytes que formen un punto válido de la curva P-256, y que `auth`
+decodifique a 16 bytes. Cualquier fallo de validación SHALL devolver `400` con `{"error": ...}`. El
+`endpoint` SHALL almacenarse en su forma **normalizada** por el parser de URL, no en la cadena cruda,
+de modo que lo aceptado en el alta se pueda volver a parsear en cada envío. Una suscripción válida
+SHALL registrarse como *upsert* por `endpoint` y SHALL responder `201` con `{"id": "<uuidv4>"}`.
+Volver a suscribir el mismo navegador SHALL actualizar `p256dh`, `auth`, `user_agent` y `updated_at`,
+y SHALL conservar el `id` original.
 
 #### Scenario: Una suscripción válida crea la fila y responde 201
 
@@ -98,6 +101,23 @@ SHALL actualizar `p256dh`, `auth`, `user_agent` y `updated_at`, y SHALL conserva
 - **When** se llama a `POST /api/push/subscriptions`
 - **Then** responde `400`
 - **And** el cuerpo contiene un error
+
+#### Scenario: Un p256dh que no es un punto P-256 válido se rechaza con 400
+
+- **Given** una suscripción cuyo `p256dh` decodifica a 65 bytes que no forman un punto SEC1 válido de
+  la curva P-256
+- **When** se llama a `POST /api/push/subscriptions`
+- **Then** responde `400`
+- **And** el cuerpo contiene un error
+- **And** no se inserta ninguna fila
+
+#### Scenario: El endpoint se guarda normalizado
+
+- **Given** una suscripción cuyo `endpoint` incluye caracteres que el parser de URL normaliza (por
+  ejemplo un espacio en el path)
+- **When** se llama a `POST /api/push/subscriptions`
+- **Then** responde `201`
+- **And** el `endpoint` almacenado es la forma normalizada, no la cadena cruda
 
 #### Scenario: Un auth de longitud incorrecta se rechaza con 400
 

@@ -416,6 +416,42 @@ mod tests {
         pool
     }
 
+    /// Pool con **varias conexiones** sobre un fichero temporal, para el test de
+    /// convergencia.
+    ///
+    /// Un pool de una sola conexión serializa las llamadas y ninguna compite por
+    /// el cerrojo de escritura de SQLite; para que la carrera sea real hacen
+    /// falta al menos dos conexiones que sostengan su transacción a la vez.
+    /// `:memory:` no vale: cada conexión abriría su propia base de datos. Se usa
+    /// un fichero temporal (con su `busy_timeout`, para que la que pierde espere
+    /// en lugar de fallar) y se devuelve la ruta para poder borrarlo.
+    async fn concurrent_pool() -> (SqlitePool, std::path::PathBuf) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let path = std::env::temp_dir().join(format!(
+            "valet-push-concurrency-{}-{}.sqlite",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(3)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(true)
+                    .busy_timeout(std::time::Duration::from_secs(5)),
+            )
+            .await
+            .expect("file sqlite");
+        crate::db::schema::run_migrations(&pool)
+            .await
+            .expect("migrations");
+        (pool, path)
+    }
+
     /// Scenario: la primera llamada genera el par y lo persiste.
     #[tokio::test]
     async fn vapid_first_call_generates_and_persists() {
@@ -474,13 +510,67 @@ mod tests {
     }
 
     /// Scenario: dos generaciones concurrentes convergen en un único par.
-    #[tokio::test]
+    ///
+    /// Este test fuerza una **carrera real** por el cerrojo de escritura de
+    /// SQLite, cosa que la versión anterior no hacía: con `max_connections(1)`
+    /// las dos llamadas de `tokio::join!` se serializaban en una única conexión
+    /// y nunca competían, así que el test pasaba aunque la convergencia fuera
+    /// incorrecta. Aquí el pool tiene tres conexiones sobre un fichero temporal:
+    ///
+    /// 1. Una conexión mantiene abierto un cerrojo de escritura (`UPDATE`).
+    /// 2. Dos tareas arrancan a la vez (barrera) y llaman a `load_or_generate`;
+    ///    las dos pasan el camino rápido (lectura permitida con el cerrojo
+    ///    `RESERVED`), generan su candidato y quedan esperando el `INSERT`.
+    /// 3. Se libera el cerrojo; una gana y escribe su par, la otra converge
+    ///    leyendo el par persistido.
+    ///
+    /// Si la lógica de convergencia fuera incorrecta —por ejemplo, un `upsert`
+    /// que pisara el valor ajeno—, la segunda llamada devolvería su propio
+    /// candidato y la aserción fallaría. Es determinista *prácticamente*: la
+    /// espera antes de liberar el cerrojo es holgada para que ambas tareas
+    /// alcancen el `INSERT`, pero la garantía estricta de que las dos estén
+    /// bloqueadas a la vez no es observable sin instrumentar SQLite.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn vapid_concurrent_calls_converge() {
-        let pool = setup().await;
+        let (pool, path) = concurrent_pool().await;
 
-        let (a, b) = tokio::join!(load_or_generate(&pool), load_or_generate(&pool));
-        let a = a.expect("first concurrent call must succeed");
-        let b = b.expect("second concurrent call must succeed");
+        // Cerrojo de escritura: impide que cualquiera de las dos tareas
+        // commitee su par hasta que lo soltemos.
+        let mut holder = pool.begin().await.expect("hold a write transaction");
+        sqlx::query("UPDATE settings SET value = value WHERE key = ?1")
+            .bind(PUBLIC_KEY_SETTING)
+            .execute(&mut *holder)
+            .await
+            .expect("acquire the write lock");
+        let _ = &holder;
+
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+        let pool_a = pool.clone();
+        let pool_b = pool.clone();
+        let gate_a = barrier.clone();
+        let gate_b = barrier.clone();
+
+        let a = tokio::spawn(async move {
+            gate_a.wait().await;
+            load_or_generate(&pool_a).await
+        });
+        let b = tokio::spawn(async move {
+            gate_b.wait().await;
+            load_or_generate(&pool_b).await
+        });
+
+        // Holgura para que ambas alcancen el `INSERT` y queden esperando.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        holder.commit().await.expect("release the write lock");
+
+        let a = a
+            .await
+            .expect("task a must not panic")
+            .expect("first concurrent call must succeed");
+        let b = b
+            .await
+            .expect("task b must not panic")
+            .expect("second concurrent call must succeed");
 
         assert_eq!(a.public_key, b.public_key, "both calls must converge");
         assert_eq!(a.private_key, b.private_key);
@@ -495,6 +585,9 @@ mod tests {
             .unwrap();
         assert_eq!(stored_public, a.public_key);
         assert_eq!(stored_private, a.private_key);
+
+        pool.close().await;
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Scenario: la clave privada no aparece ni en el `Debug` del struct ni en
@@ -517,7 +610,20 @@ mod tests {
         );
         assert!(debug.contains("public-canary"), "{debug}");
 
-        let error = PushError::InvalidStoredKey;
+        // El lado «error» debe alimentar de verdad la canaria al camino que
+        // construye el error. Una variante unitaria como `InvalidStoredKey`
+        // (que no contiene ningún dato) haría la aserción vacua: pasaría
+        // siempre. Construimos la petición con la canaria como clave privada
+        // —base64url inválida— de modo que el error sale del mismo código que
+        // procesa la clave; ni su `Display` ni su `Debug` deben reflejarla.
+        let error = build_request(
+            &keys,
+            "https://example.invalid/push/abc",
+            CONTRACT_P256DH,
+            CONTRACT_AUTH,
+            r#"{"title":"t","body":"b"}"#,
+        )
+        .expect_err("a non-base64 private key must be rejected");
         let message = format!("{error} {error:?}");
         assert!(
             !message.contains("CANARY-PRIVATE-KEY"),

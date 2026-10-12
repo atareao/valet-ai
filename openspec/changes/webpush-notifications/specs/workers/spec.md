@@ -18,10 +18,14 @@ con la señal de `shutdown`, siguiendo el mismo patrón que `EpisodicMemoryWorke
 - **When** se emite la señal de `shutdown`
 - **Then** el `ReminderPushWorker` se detiene
 
-### Requirement: El worker SHALL entregar cada recordatorio vencido como máximo una vez
+### Requirement: El worker SHALL entregar cada recordatorio vencido al menos una vez
 
 En cada ciclo —de 60 segundos— el worker SHALL seleccionar los `reminders` con `status='pending'`,
 `notified_at IS NULL` y `datetime <= ahora`, y al entregar uno con éxito SHALL fijar su `notified_at`.
+
+La garantía es *at-least-once*: si el proceso muere entre el envío correcto y la marca, el ciclo
+siguiente reenvía el aviso. El `tag` del payload evita apilar dos avisos del mismo recordatorio, pero
+no elimina la repetición; un aviso puede repetirse en ese caso.
 
 #### Scenario: Un recordatorio vencido se envía y se marca
 

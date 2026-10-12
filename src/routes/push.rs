@@ -90,7 +90,7 @@ async fn subscribe(
     headers: HeaderMap,
     Json(payload): Json<SubscribeRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), AppError> {
-    validate_endpoint(&payload.endpoint)?;
+    let endpoint = validate_endpoint(&payload.endpoint)?;
     validate_p256dh(&payload.keys.p256dh)?;
     validate_auth(&payload.keys.auth)?;
 
@@ -100,7 +100,7 @@ async fn subscribe(
 
     let id = PushRepo::upsert(
         &state.db,
-        &payload.endpoint,
+        &endpoint,
         &payload.keys.p256dh,
         &payload.keys.auth,
         user_agent,
@@ -127,8 +127,15 @@ async fn unsubscribe(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Comprueba que `endpoint` sea una URL absoluta con esquema `https`.
-fn validate_endpoint(endpoint: &str) -> Result<(), AppError> {
+/// Comprueba que `endpoint` sea una URL absoluta con esquema `https` y devuelve
+/// su forma **normalizada** por [`url::Url`].
+///
+/// Se guarda la cadena normalizada, no la cruda: `Url` y [`http::Uri`] no
+/// coinciden en qué aceptan (un espacio o un carácter UTF-8 en el path, por
+/// ejemplo, `Url` los por ciento-codifica y `Uri` los rechaza). Almacenar la
+/// forma de `Url` garantiza que lo que pasó el alta con `201` se podrá volver a
+/// parsear en `build_request` para cada envío.
+fn validate_endpoint(endpoint: &str) -> Result<String, AppError> {
     let url = url::Url::parse(endpoint)
         .map_err(|_| AppError::BadRequest("endpoint must be an absolute https URL".to_string()))?;
     if url.scheme() != "https" {
@@ -136,10 +143,17 @@ fn validate_endpoint(endpoint: &str) -> Result<(), AppError> {
             "endpoint must use the https scheme".to_string(),
         ));
     }
-    Ok(())
+    Ok(url.as_str().to_string())
 }
 
-/// Comprueba que `p256dh` decodifique (base64url sin padding) a 65 bytes.
+/// Comprueba que `p256dh` decodifique (base64url sin padding) a 65 bytes y que
+/// esos bytes formen un punto válido de la curva P-256.
+///
+/// La longitud por sí sola no basta: un blob de 65 bytes que no sea un punto
+/// SEC1 válido se guardaría y solo reventaría en cada envío, con un `201`
+/// mentiroso. Validando aquí el punto con
+/// [`web_push_native::p256::PublicKey::from_sec1_bytes`], un valor inválido se
+/// rechaza en el alta con `400`.
 fn validate_p256dh(p256dh: &str) -> Result<(), AppError> {
     let raw = engine()
         .decode(p256dh)
@@ -149,6 +163,9 @@ fn validate_p256dh(p256dh: &str) -> Result<(), AppError> {
             "p256dh must decode to 65 bytes".to_string(),
         ));
     }
+    web_push_native::p256::PublicKey::from_sec1_bytes(&raw).map_err(|_| {
+        AppError::BadRequest("p256dh must be a valid uncompressed P-256 point".to_string())
+    })?;
     Ok(())
 }
 
