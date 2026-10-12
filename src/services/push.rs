@@ -10,11 +10,13 @@
 //! log ni en el mensaje de un [`PushError`].
 
 use base64::Engine as _;
+use serde::Serialize;
 use sqlx::SqlitePool;
 use thiserror::Error;
 use web_push_native::jwt_simple::algorithms::{ECDSAP256PublicKeyLike, ES256KeyPair};
 use web_push_native::{p256::PublicKey, Auth, WebPushBuilder};
 
+use crate::db::repos::push::PushSubscription;
 use crate::db::repos::settings::SettingsRepo;
 
 /// Re-exportado para que el resto del proyecto construya claves y suscriptores
@@ -63,6 +65,9 @@ pub enum PushError {
     /// El payload no se pudo cifrar ni firmar con VAPID.
     #[error("no se pudo construir la petición WebPush")]
     Build(#[source] web_push_native::Error),
+    /// El aviso no se pudo serializar a JSON.
+    #[error("no se pudo serializar el aviso WebPush")]
+    Payload(#[source] serde_json::Error),
     /// Fallo de transporte (red o construcción del cliente) al enviar.
     #[error("no se pudo enviar la notificación")]
     Transport(#[source] reqwest::Error),
@@ -305,6 +310,88 @@ pub async fn send(
         .map_err(PushError::Transport)?;
 
     Ok(classify_status(response.status().as_u16()))
+}
+
+/// Cuerpo JSON que viaja dentro del aviso WebPush.
+///
+/// Es lo que el *service worker* del navegador recibe en el evento `push`. Los
+/// campos opcionales se omiten del JSON cuando son `None` en lugar de viajar
+/// como `null`, de modo que el payload queda mínimo.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PushPayload {
+    /// Título del aviso.
+    pub title: String,
+    /// Texto del aviso.
+    pub body: String,
+    /// Icono opcional del aviso.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// URL que se abre al pulsar el aviso.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// Etiqueta que hace que dos avisos iguales se reemplacen en vez de
+    /// apilarse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+}
+
+/// Abstracción de envío de un aviso WebPush a una suscripción concreta.
+///
+/// El worker depende de este *trait*, no de la implementación HTTP, para poder
+/// probarse sin red: los tests inyectan un doble que registra las llamadas y
+/// devuelve los códigos que se quieren ejercitar.
+#[async_trait::async_trait]
+pub trait PushSender: Send + Sync {
+    /// Envía `payload` a `sub` y clasifica la respuesta del servicio de push.
+    async fn send(
+        &self,
+        sub: &PushSubscription,
+        payload: &PushPayload,
+    ) -> Result<DeliveryOutcome, PushError>;
+}
+
+/// Implementación real del [`PushSender`]: cifra y firma con VAPID (vía
+/// [`build_request`]) y envía por HTTP con un [`reqwest::Client`].
+pub struct WebPushSender {
+    client: reqwest::Client,
+    keys: VapidKeys,
+}
+
+impl WebPushSender {
+    /// Construye el sender con el cliente HTTP y el par VAPID ya cargados.
+    pub fn new(client: reqwest::Client, keys: VapidKeys) -> Self {
+        Self { client, keys }
+    }
+}
+
+impl std::fmt::Debug for WebPushSender {
+    /// Nunca expone las claves VAPID: delega el `Debug` de [`VapidKeys`], que
+    /// redacta la privada.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebPushSender")
+            .field("keys", &self.keys)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait::async_trait]
+impl PushSender for WebPushSender {
+    async fn send(
+        &self,
+        sub: &PushSubscription,
+        payload: &PushPayload,
+    ) -> Result<DeliveryOutcome, PushError> {
+        let body = serde_json::to_string(payload).map_err(PushError::Payload)?;
+        send(
+            &self.client,
+            &self.keys,
+            &sub.endpoint,
+            &sub.p256dh,
+            &sub.auth,
+            &body,
+        )
+        .await
+    }
 }
 
 #[cfg(test)]

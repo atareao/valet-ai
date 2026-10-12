@@ -61,6 +61,17 @@ tests sustituyen el transporte por un doble que registra las llamadas y devuelve
 quieren ejercitar (`410`, `500`, éxito). El worker se prueba entero —selección, ventana, marca— sin
 tocar la red.
 
+## Los formatos de fecha de `reminders`
+
+`reminders.datetime` se guarda en **RFC 3339** (`…T…Z`, y los snoozeados con `+00:00`), mientras que
+`datetime('now')` de SQLite devuelve `… …` **con espacio**. Comparar esas cadenas en SQL es
+silenciosamente incorrecto: `'T'` (0x54) es mayor que `' '` (0x20), así que el orden lexicográfico de
+una fecha RFC 3339 frente a la forma con espacio no refleja el orden temporal. Por eso la selección
+**no filtra por fecha en SQL** —solo por `status='pending'` y `notified_at IS NULL`— y la comparación
+de vencimiento, junto con la ventana de gracia, se hace **en Rust** con
+`chrono::DateTime::parse_from_rfc3339`, que acepta las dos formas. Un test fija ese comportamiento:
+`z_and_offset_datetimes_compare_correctly`.
+
 ## Riesgos residuales
 
 1. **`web-push-native` es una crate joven** (`superboring`, `ece-native`), con menos rodaje que

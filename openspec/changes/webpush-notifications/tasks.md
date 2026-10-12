@@ -28,12 +28,12 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 
 ## 3. Worker de recordatorios
 
-- [ ] 3.1 RED — test que falla de la selección y la marca: un recordatorio vencido con suscripciones se envía y queda con `notified_at`; el mismo recordatorio no se reenvía en el ciclo siguiente; un recordatorio futuro no se toca. Verificar en rojo con `cargo test reminder_push`.
-- [ ] 3.2 RED — test que falla de la ausencia de suscripciones: sin dispositivos suscritos no hay envío ni marca; al registrar uno y seguir dentro de la ventana se entrega en el ciclo siguiente.
-- [ ] 3.3 RED — test que falla de la ventana de gracia: vencido dentro de la ventana se entrega; vencido fuera de la ventana se marca y se registra sin envío; el umbral se lee de `push_reminder_grace_hours` y con `'0'` todo lo vencido queda fuera de ventana.
-- [ ] 3.4 RED — test que falla del payload: `title` «Recordatorio», `body` el texto, `url` `/` y `tag` `reminder-<id>`. Verificar en rojo con `cargo test reminder_payload`.
-- [ ] 3.5 RED — test que falla de la inyección: un `PushSender` de prueba registra las llamadas; el worker no falla si el sender devuelve error. Verificar en rojo con `cargo test push_sender`.
-- [ ] 3.6 GREEN — implementar `src/workers/reminder_push.rs` dependiendo de la abstracción `PushSender`, registrarlo en `src/workers/mod.rs` y arrancarlo desde `src/workers/pool.rs` con el patrón de `EpisodicMemoryWorker`. Confirmar `cargo test reminder` en verde.
+- [x] 3.1 RED — test que falla de la selección y la marca: un recordatorio vencido con suscripciones se envía y queda con `notified_at`; el mismo recordatorio no se reenvía en el ciclo siguiente; un recordatorio futuro no se toca. Verificar en rojo con `cargo test reminder_push`.
+- [x] 3.2 RED — test que falla de la ausencia de suscripciones: sin dispositivos suscritos no hay envío ni marca; al registrar uno y seguir dentro de la ventana se entrega en el ciclo siguiente.
+- [x] 3.3 RED — test que falla de la ventana de gracia: vencido dentro de la ventana se entrega; vencido fuera de la ventana se marca y se registra sin envío; el umbral se lee de `push_reminder_grace_hours` y con `'0'` todo lo vencido queda fuera de ventana.
+- [x] 3.4 RED — test que falla del payload: `title` «Recordatorio», `body` el texto, `url` `/` y `tag` `reminder-<id>`. Verificar en rojo con `cargo test reminder_payload`.
+- [x] 3.5 RED — test que falla de la inyección: un `PushSender` de prueba registra las llamadas; el worker no falla si el sender devuelve error. Verificar en rojo con `cargo test push_sender`.
+- [x] 3.6 GREEN — implementar `src/workers/reminder_push.rs` dependiendo de la abstracción `PushSender`, registrarlo en `src/workers/mod.rs` y arrancarlo desde `src/workers/pool.rs` con el patrón de `EpisodicMemoryWorker`. Confirmar `cargo test reminder` en verde.
 
 ## 4. Frontend: service worker, gestor y tab de Ajustes
 
