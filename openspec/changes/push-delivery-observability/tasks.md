@@ -24,7 +24,7 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 ## 4. Verificación
 
 - [x] 4.1 `cargo test --lib reminder_push` en verde, con el recuento de tests anotado antes y después.
-- [ ] 4.2 Suite de Rust completa en verde con `cargo test --no-fail-fast` (0 fallos).
+- [x] 4.2 Suite de Rust completa en verde con `cargo test --no-fail-fast` (0 fallos).
 - [x] 4.3 `cargo clippy --all-targets -- -D warnings` limpio (0 warnings).
 - [x] 4.4 `cargo fmt --check` limpio.
 
