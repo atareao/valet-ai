@@ -118,6 +118,11 @@ fn validate_pair(keys: &VapidKeys) -> Result<(), PushError> {
     let raw = engine()
         .decode(&keys.private_key)
         .map_err(|_| PushError::InvalidStoredKey)?;
+    // `ES256KeyPair::from_bytes` panics on a wrong-length input (it asserts a
+    // 32-byte scalar), so the length is checked here, before the call.
+    if raw.len() != 32 {
+        return Err(PushError::InvalidStoredKey);
+    }
     let key_pair = ES256KeyPair::from_bytes(&raw).map_err(|_| PushError::InvalidStoredKey)?;
     let derived = engine().encode(key_pair.public_key().public_key().to_bytes_uncompressed());
     if derived != keys.public_key {

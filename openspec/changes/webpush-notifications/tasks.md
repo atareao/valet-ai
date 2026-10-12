@@ -21,10 +21,10 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 
 ## 2. Rutas y validación
 
-- [ ] 2.1 RED — test que falla de `GET /api/push/vapid-key`: `200` con `{"public_key": "..."}` no vacía; fallo de carga/generación → `503` con error `push_unavailable` y sin la clave privada en el cuerpo. Verificar en rojo con `cargo test vapid_key`.
-- [ ] 2.2 RED — tests que fallan de `POST /api/push/subscriptions`: válida → `201` con `id` UUIDv4 y fila nueva; misma `endpoint` dos veces → mismo `id` y una sola fila; `endpoint` no-https → `400`; `p256dh` de longitud incorrecta → `400`; `auth` de longitud incorrecta → `400`. Verificar en rojo con `cargo test subscribe`.
-- [ ] 2.3 RED — test que falla de `DELETE /api/push/subscriptions`: elimina y responde `204`; endpoint desconocido → `204` igualmente; sin `endpoint` → `400`. Verificar en rojo con `cargo test unsubscribe`.
-- [ ] 2.4 GREEN — implementar `src/routes/push.rs` y montar las tres rutas en `src/lib.rs`. Confirmar `cargo test subscribe` y `cargo test unsubscribe` en verde, y `cargo check` sin errores.
+- [x] 2.1 RED — test que falla de `GET /api/push/vapid-key`: `200` con `{"public_key": "..."}` no vacía; fallo de carga/generación → `503` con error `push_unavailable` y sin la clave privada en el cuerpo. Verificar en rojo con `cargo test vapid_key`.
+- [x] 2.2 RED — tests que fallan de `POST /api/push/subscriptions`: válida → `201` con `id` UUIDv4 y fila nueva; misma `endpoint` dos veces → mismo `id` y una sola fila; `endpoint` no-https → `400`; `p256dh` de longitud incorrecta → `400`; `auth` de longitud incorrecta → `400`. Verificar en rojo con `cargo test subscribe`.
+- [x] 2.3 RED — test que falla de `DELETE /api/push/subscriptions`: elimina y responde `204`; endpoint desconocido → `204` igualmente; sin `endpoint` → `400`. Verificar en rojo con `cargo test unsubscribe`.
+- [x] 2.4 GREEN — implementar `src/routes/push.rs` y montar las tres rutas en `src/lib.rs`. Confirmar `cargo test subscribe` y `cargo test unsubscribe` en verde, y `cargo check` sin errores.
 
 ## 3. Worker de recordatorios
 

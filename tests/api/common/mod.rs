@@ -68,6 +68,13 @@ impl TestApp {
         let resp = self.router.clone().oneshot(req).await.unwrap();
         TestResponse { resp }
     }
+
+    /// Like [`TestApp::delete`] but returns a [`TestRequestBuilder`] so callers
+    /// can attach a JSON body (e.g. `DELETE /api/push/subscriptions`). The
+    /// existing `delete` keeps its signature untouched.
+    pub fn delete_with_body(&self, path: &str) -> TestRequestBuilder {
+        TestRequestBuilder::new(self.router.clone(), Method::DELETE, path)
+    }
 }
 
 pub struct TestRequestBuilder {

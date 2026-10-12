@@ -6,6 +6,7 @@ pub mod memories;
 pub mod messages;
 pub mod persistent_memory;
 pub mod profile;
+pub mod push;
 pub mod search;
 pub mod settings;
 pub mod stats;

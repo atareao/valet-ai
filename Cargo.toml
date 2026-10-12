@@ -175,3 +175,7 @@ path = "tests/db/rss_migration.rs"
 [[test]]
 name = "webpush-migration"
 path = "tests/db/webpush_migration.rs"
+
+[[test]]
+name = "push-api"
+path = "tests/api/push.rs"

@@ -519,6 +519,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::auth::routes())
         // Strava integration (OAuth authorize/callback, status, disconnect)
         .merge(routes::strava::routes())
+        // WebPush (VAPID public key, subscribe, unsubscribe)
+        .merge(routes::push::routes())
         // Session middleware: enforces a valid session on `/api/*` when auth
         // is enabled; a no-op when it is disabled (dev mode).
         .layer(axum::middleware::from_fn_with_state(
