@@ -73,18 +73,18 @@ Toda operación de borrado de una tool multioperación SHALL declarar `ExplicitA
 
 La construcción del registry de producción SHALL registrar todas las herramientas integradas
 (incluidas `notes`, `unified_search`, `render_widget`, las cuatro herramientas `strava_*`, las tres
-`timeline_*`, las cuatro `email_*` y las cuatro `rss_*`), garantizando nombres únicos.
+`timeline_*`, las cuatro `email_*`, las cuatro `rss_*` y la herramienta `notifications`), garantizando nombres únicos.
 
 **Given** la aplicación Valet con su registro de herramientas de producción
 **When** se consulta el catálogo de herramientas registradas
-**Then** figuran entre ellas `notes`, `unified_search`, `render_widget`, las cuatro `strava_*`, las tres `timeline_*`, las cuatro `email_*` y las cuatro `rss_*`
+**Then** figuran entre ellas `notes`, `unified_search`, `render_widget`, las cuatro `strava_*`, las tres `timeline_*`, las cuatro `email_*`, las cuatro `rss_*` y la herramienta `notifications`
 **And** no hay dos herramientas con el mismo nombre
 
 #### Scenario: El registry de producción incluye todas las herramientas integradas
 
 **Given** la aplicación Valet construida con su registro de herramientas de producción
 **When** se consulta el catálogo de herramientas registradas
-**Then** `notes`, `unified_search`, `render_widget`, las cuatro `strava_*`, las tres `timeline_*`, las cuatro `email_*` y las cuatro `rss_*` figuran entre ellas
+**Then** `notes`, `unified_search`, `render_widget`, las cuatro `strava_*`, las tres `timeline_*`, las cuatro `email_*`, las cuatro `rss_*` y la herramienta `notifications` figuran entre ellas
 **And** no hay dos herramientas con el mismo nombre
 
 #### Scenario: Las herramientas del correo se ofrecen al modelo
