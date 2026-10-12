@@ -4,6 +4,7 @@ pub mod events;
 pub mod export;
 pub mod memories;
 pub mod messages;
+pub mod notifications;
 pub mod persistent_memory;
 pub mod profile;
 pub mod push;

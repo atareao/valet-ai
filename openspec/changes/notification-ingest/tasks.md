@@ -72,7 +72,7 @@ Operaciones: alta guardando **solo** el SHA-256 y el prefijo, búsqueda por hash
 
 ### 4.1 Middleware `require_ingest_key`
 
-- [ ] 4.1.1 RED — tests de integración en `tests/api/` (arnés `TestApp` de `tests/api/common/mod.rs`), que deben fallar mientras el middleware no exista. Con una clave de ingesta sembrada en la base de datos (vía `IngestRepo` o `INSERT` directo con el hash del token), y `POST /api/notifications` con un cuerpo válido:
+- [x] 4.1.1 RED — tests de integración en `tests/api/` (arnés `TestApp` de `tests/api/common/mod.rs`), que deben fallar mientras el middleware no exista. Con una clave de ingesta sembrada en la base de datos (vía `IngestRepo` o `INSERT` directo con el hash del token), y `POST /api/notifications` con un cuerpo válido:
   - sin cabecera `Authorization` → `401` y `notifications` no gana ninguna fila (scenario «Sin cabecera de autorización no se ingesta»);
   - con cabecera `Authorization` sin el esquema `Bearer` o con un valor arbitrario → `401` (scenario «Un token malformado no ingesta»);
   - con un token desconocido → `401`;
@@ -80,23 +80,23 @@ Operaciones: alta guardando **solo** el SHA-256 y el prefijo, búsqueda por hash
   - con un token válido → la petición alcanza el handler y `last_used_at` de la clave deja de ser NULL (scenario «Un token válido actualiza `last_used_at` y pasa»);
   - tras autenticar, el middleware deja disponible para el handler la clave autenticada (`id` y `name`, p. ej. en las extensiones de la petición), porque el handler necesita el `name` para rellenar `origin` y `author` cuando faltan; el test debe comprobar esa disponibilidad: una ingesta con una clave llamada `monitor` y un cuerpo sin `origin`/`author` persiste `origin = "monitor"` y `author = "monitor"`, lo que solo puede ocurrir si el nombre llegó al handler. Además, el token **no** aparece registrado (scenario «Los registros de ingesta no contienen el token», verificable en la medida en que el repo no guarda el token).
   - Comando en rojo: `cargo test --test notifications`. **Pegar la salida en rojo.**
-- [ ] 4.1.2 GREEN — implementar el middleware `require_ingest_key` (Bearer: leer `Authorization`, exigir el esquema, buscar por el SHA-256 del token con `IngestRepo::find_by_hash`, rechazar `401` si falta/malformado/desconocido/revocado, actualizar `last_used_at` y dejar pasar; sin registrar el token en ningún log). Confirmar el test en verde con `cargo test --test notifications` y `cargo check`.
+- [x] 4.1.2 GREEN — implementar el middleware `require_ingest_key` (Bearer: leer `Authorization`, exigir el esquema, buscar por el SHA-256 del token con `IngestRepo::find_by_hash`, rechazar `401` si falta/malformado/desconocido/revocado, actualizar `last_used_at` y dejar pasar; sin registrar el token en ningún log). Confirmar el test en verde con `cargo test --test notifications` y `cargo check`.
 
 ### 4.2 Exención de sesión por par (método, ruta)
 
-- [ ] 4.2.1 RED — tests de integración que describen la exención por par, con `AUTH_ENABLED=true` (patrón `app_with(config)` de `tests/api/auth.rs`, que inyecta `state.auth_config`):
+- [x] 4.2.1 RED — tests de integración que describen la exención por par, con `AUTH_ENABLED=true` (patrón `app_with(config)` de `tests/api/auth.rs`, que inyecta `state.auth_config`):
   - `POST /api/notifications` sin cookie de sesión pero con token de ingesta válido **no** es rechazada por el middleware de sesión y alcanza el handler (scenario «La ingesta sin sesión pero con token válido alcanza el handler»);
   - `POST /api/notifications` sin token de ingesta válido responde `401` y no ejecuta el handler (scenario «La ingesta sin token responde 401»);
   - `GET /api/notifications/unread` sin sesión pero con un token de ingesta válido presente responde `401` (scenario «Las lecturas de notificaciones exigen sesión aunque haya token de ingesta»);
   - `POST /api/notifications/mark-read` sin sesión responde `401`.
   - Comando en rojo: `cargo test --test auth`. **Pegar la salida en rojo.**
-- [ ] 4.2.2 GREEN — modificar `src/middleware/auth.rs`: sustituir la exención por prefijo de ruta por una función de exención por **par (método, ruta)** que deje pasar `POST /api/notifications` (protegido por el token de ingesta) y **no** exima `GET /api/notifications/unread` ni `POST /api/notifications/mark-read`; conservar las exenciones de `/api/health` y `/api/auth/*`. Usar un comparador de método explícito (no solo la ruta). Confirmar `cargo test --test auth` y `cargo check` en verde.
+- [x] 4.2.2 GREEN — modificar `src/middleware/auth.rs`: sustituir la exención por prefijo de ruta por una función de exención por **par (método, ruta)** que deje pasar `POST /api/notifications` (protegido por el token de ingesta) y **no** exima `GET /api/notifications/unread` ni `POST /api/notifications/mark-read`; conservar las exenciones de `/api/health` y `/api/auth/*`. Usar un comparador de método explícito (no solo la ruta). Confirmar `cargo test --test auth` y `cargo check` en verde.
 
 ## 5. Rutas de ingesta y consumo
 
 Fichero nuevo: `src/routes/notifications.rs`, siguiendo el estilo de `src/routes/push.rs` (docstrings, `AppError`, traducción del resultado a HTTP) y registrado en `src/routes/mod.rs` y en el `Router` de `app_with_state` (`src/lib.rs`).
 
-- [ ] 5.1 RED — tests de integración en `tests/api/notifications.rs` (arnés `TestApp`). Aserciones:
+- [x] 5.1 RED — tests de integración en `tests/api/notifications.rs` (arnés `TestApp`). Aserciones:
   - `POST /api/notifications` con token válido y cuerpo válido responde `201` con `{"id": "<uuid>"}` (scenario «Una clave válida ingesta con 201»);
   - `message` ausente o en blanco → `400` con `{"error": "..."}` (scenario «Un mensaje ausente o en blanco se rechaza»);
   - `origin` y `author` ausentes toman el **nombre de la clave** (con una clave llamada `monitor`, la fila persistida tiene `origin = "monitor"` y `author = "monitor"`) (scenario «`origin` y `author` ausentes toman el nombre de la clave»);
@@ -107,7 +107,7 @@ Fichero nuevo: `src/routes/notifications.rs`, siguiendo el estilo de `src/routes
   - `GET /api/notifications/unread`: solo las no leídas, más recientes primero, con `data`, `next_cursor` y `total` (`PaginatedResponse`); `metadata` parseado a objeto o `null`; `limit` por defecto 50, máximo 200; `limit=0`, `limit=201` o `limit=abc` → `400`; sin sesión → `401` (scenarios del requirement de `unread`);
   - `POST /api/notifications/mark-read`: `{"marked": 2}` con dos no leídas; repetir → `{"marked": 0}` y los `read_at` no cambian; id inexistente → `{"marked": 0}`; `ids` ausente o `[]` → `400`; sin sesión → `401` (scenarios del requirement de `mark-read`).
   - Comando en rojo: `cargo test --test notifications`. **Pegar la salida en rojo.**
-- [ ] 5.2 GREEN — implementar `src/routes/notifications.rs`: `POST /api/notifications` con validación y normalización (trim, longitudes `message ≤ 4096`, `origin ≤ 64`, `author ≤ 128`, lista blanca de `level`, `metadata` objeto ≤ 8192 bytes serializado, defaults `origin`/`author` desde el nombre de la clave), límite de cuerpo 64 KiB (`413` si lo excede) y `201` con el id tras el `INSERT`; despacho del WebPush en segundo plano (payload con título `[<origin>] <author>`, cuerpo el mensaje, `tag` `notification-<id>`, icono `/icon-192.png` y `url` `/`) tras el insert, best-effort. `GET /api/notifications/unread` y `POST /api/notifications/mark-read` con sesión, delegando en `NotificationsRepo`. Confirmar `cargo test --test notifications` y `cargo check` en verde.
+- [x] 5.2 GREEN — implementar `src/routes/notifications.rs`: `POST /api/notifications` con validación y normalización (trim, longitudes `message ≤ 4096`, `origin ≤ 64`, `author ≤ 128`, lista blanca de `level`, `metadata` objeto ≤ 8192 bytes serializado, defaults `origin`/`author` desde el nombre de la clave), límite de cuerpo 64 KiB (`413` si lo excede) y `201` con el id tras el `INSERT`; despacho del WebPush en segundo plano (payload con título `[<origin>] <author>`, cuerpo el mensaje, `tag` `notification-<id>`, icono `/icon-192.png` y `url` `/`) tras el insert, best-effort. `GET /api/notifications/unread` y `POST /api/notifications/mark-read` con sesión, delegando en `NotificationsRepo`. Confirmar `cargo test --test notifications` y `cargo check` en verde.
 
 ## 6. Rutas de gestión de claves
 
