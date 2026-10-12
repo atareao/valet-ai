@@ -53,11 +53,13 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 - [x] 5.3 En el frontend, `npx vitest run`, `npx tsc --noEmit`, `npm run lint` y `npm run build` en verde.
 - [x] 5.4 Regenerar el `static/` versionado con el nuevo build (`rm -rf static && cp -r frontend/dist static`) y comprobar que el backend sirve `/sw.js` como estático.
 - [x] 5.5 Construir la imagen Docker sobre **musl** (`alpine`) y comprobar que enlaza sin OpenSSL (sin `libssl.so.3`/`libcrypto.so.3`).
-- [ ] 5.6 Verificación de punta a punta en un **navegador real**: activar las notificaciones, crear un recordatorio vencido de verdad y comprobar que llega el aviso (y que no se repite en el ciclo siguiente).
+- [x] 5.6 Verificación de punta a punta en un **navegador real**: activar las notificaciones, crear un recordatorio vencido de verdad y comprobar que llega el aviso (y que no se repite en el ciclo siguiente).
 
 ## Notas
 
 - La migración `20261012000001_webpush_notifications.sql` es **aditiva e idempotente** y **no reconstruye ninguna tabla** —se remarca porque es lo primero que se revisa tras el incidente de la migración del timeline.
 - La clave privada VAPID **nunca** se registra en un log, en un `Debug` ni en una respuesta HTTP; va en `SENSITIVE_KEYS`.
 - La verificación de punta a punta se hace con un recordatorio vencido real: **no hay endpoint de prueba** `POST /api/push/test`.
-- La 5.6 queda pendiente porque exige un navegador real concediendo el permiso y un recordatorio vencido de verdad, y no se marca lo que no se ha comprobado.
+- La 5.6 **se verificó en producción el 2026-10-12** con dos dispositivos suscritos (Android 10 móvil y X11 Linux x86_64 / Brave) y el recordatorio `Ir a correr` con `datetime = 2026-10-12T10:48:00+02:00` (offset local, no `Z`).
+  El ciclo de las 08:48:26 UTC registró `reminder_push: ciclo completado delivered=1 skipped_old=0 pruned=0`; `notified_at` quedó fijado a `2026-10-12 08:48:26` y no cambió en los ciclos siguientes, sin nuevas entregas → **no se repitió**.
+  `pruned=0` con las 2 suscripciones intactas confirma que el push service aceptó (ningún 404/410) y el usuario confirmó la recepción en ambos dispositivos; las pruebas fallidas previas en Brave se debían a su ajuste *«Use Google services for push messaging»* (desactivado por defecto), no a nuestro código.
