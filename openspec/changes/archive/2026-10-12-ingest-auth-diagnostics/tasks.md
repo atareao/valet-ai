@@ -21,4 +21,4 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 - [x] 3.1 REFACTOR — `cargo fmt`, `cargo clippy -- -D warnings` y `cargo test` (suite completa) en verde. Confirmar que los tests de `tests/api/auth.rs` de sesión OIDC siguen pasando sin cambios.
 - [x] 3.2 Frontend sin cambios: no aplica `vitest` ni `tsc`; dejar constancia de que no se toca el frontend.
 - [x] 3.3 `openspec validate --all` en verde.
-- [ ] 3.4 PR a `development` con merge commit, revisado por `rust-reviewer`. Archive del change en PR aparte tras el merge.
+- [x] 3.4 PR a `development` con merge commit, revisado por `rust-reviewer`. Archive del change en PR aparte tras el merge.
