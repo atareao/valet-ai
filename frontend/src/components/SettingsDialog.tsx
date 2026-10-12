@@ -11,6 +11,7 @@ import {
   Space,
   Spin,
   Alert,
+  Divider,
 } from "antd";
 import { useSettings } from "../hooks/useSettings";
 import { useSkills } from "../hooks/useSkills";
@@ -20,6 +21,7 @@ import { RouterControl } from "./RouterControl";
 import { SkillsTab } from "./SkillsTab";
 import { StravaIntegration } from "./StravaIntegration";
 import { NotificationsTab } from "./NotificationsTab";
+import { IngestKeysSection } from "./IngestKeysSection";
 
 const { TextArea } = Input;
 
@@ -629,15 +631,16 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             children: settingsLoading ? (
               renderSettingsLoading()
             ) : (
-              <Form
-                form={settingsForm}
-                layout="vertical"
-                onFinish={handleSettingsSubmit}
-              >
-                <Form.Item
-                  label="OpenWeatherMap API Key"
-                  name="openweather_api_key"
+              <section aria-label="Claves de API">
+                <Form
+                  form={settingsForm}
+                  layout="vertical"
+                  onFinish={handleSettingsSubmit}
                 >
+                  <Form.Item
+                    label="OpenWeatherMap API Key"
+                    name="openweather_api_key"
+                  >
                   <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
                 </Form.Item>
                 <Form.Item
@@ -680,6 +683,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                   Guardar
                 </Button>
               </Form>
+                <Divider />
+                <IngestKeysSection />
+              </section>
             ),
           },
           {

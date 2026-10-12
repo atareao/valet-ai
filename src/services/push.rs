@@ -16,7 +16,7 @@ use thiserror::Error;
 use web_push_native::jwt_simple::algorithms::{ECDSAP256PublicKeyLike, ES256KeyPair};
 use web_push_native::{p256::PublicKey, Auth, WebPushBuilder};
 
-use crate::db::repos::push::PushSubscription;
+use crate::db::repos::push::{PushRepo, PushSubscription};
 use crate::db::repos::settings::SettingsRepo;
 
 /// Re-exportado para que el resto del proyecto construya claves y suscriptores
@@ -95,6 +95,108 @@ pub fn classify_status(status: u16) -> DeliveryOutcome {
         404 | 410 => DeliveryOutcome::Gone,
         _ => DeliveryOutcome::Failed,
     }
+}
+
+/// Marcador que sustituye a un endpoint ilegible en los registros.
+const UNPARSEABLE_ENDPOINT: &str = "(endpoint no parseable)";
+
+/// Extrae el **host** de un endpoint de suscripción para los registros.
+///
+/// Un endpoint WebPush es una **URL de capacidad**: quien la posee puede enviar
+/// avisos a ese dispositivo. Para diagnosticar basta con el host («falló en
+/// `fcm.googleapis.com`»), mientras que registrar la URL completa filtraría un
+/// secreto. Por eso esta función devuelve **solo** el host, o un marcador fijo
+/// si el valor no rinde uno reconocible: **nunca** la cadena original.
+///
+/// Es un ayudante **puro** compartido con el worker de recordatorios, que lo usa
+/// desde aquí en vez de mantener su propia copia.
+pub fn endpoint_host(endpoint: &str) -> String {
+    url::Url::parse(endpoint)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_else(|| UNPARSEABLE_ENDPOINT.to_string())
+}
+
+/// Resultado del envío masivo a todas las suscripciones.
+///
+/// Los contadores son por **suscripción**: `attempted` cuenta cada envío
+/// intentado (una vez por suscripción), `accepted` los que el servicio aceptó,
+/// `failed` los rechazados o con error de transporte y `pruned` los que se
+/// eliminaron por estar caducados (`Gone`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BroadcastOutcome {
+    /// Envíos intentados, uno por suscripción.
+    pub attempted: usize,
+    /// Envíos que el push service aceptó (`Delivered`).
+    pub accepted: usize,
+    /// Envíos fallidos: rechazos (`Failed`) y errores de transporte.
+    pub failed: usize,
+    /// Suscripciones caducadas (`Gone`) eliminadas de la base de datos.
+    pub pruned: usize,
+}
+
+/// Envía `payload` a **todas** las suscripciones registradas.
+///
+/// Lee las suscripciones con [`PushRepo::list_all`] e intenta el envío con cada
+/// una, contabilizando por suscripción: un `Delivered` cuenta como `accepted`;
+/// un `Gone` (404/410) cuenta como intentado y como `pruned`, elimina la
+/// suscripción con [`PushRepo::delete_by_endpoint`] y **nunca** como fallo; un
+/// `Failed` y cualquier [`Err(PushError)`] cuentan como intentado y fallido. El
+/// fallo de una suscripción **no** corta el resto del envío.
+///
+/// Cero suscripciones **no** es un error: devuelve todos los contadores a cero.
+///
+/// Los registros de fallo incluyen **solo** el `id` de la suscripción y el host
+/// del endpoint (nunca la URL completa), porque un endpoint WebPush es una URL
+/// de capacidad.
+pub async fn send_to_all(
+    pool: &SqlitePool,
+    sender: &dyn PushSender,
+    payload: &PushPayload,
+) -> Result<BroadcastOutcome, PushError> {
+    let mut outcome = BroadcastOutcome::default();
+
+    for sub in PushRepo::list_all(pool).await? {
+        // Todo envío cuenta como intentado, una vez por suscripción y sea cual
+        // sea su desenlace.
+        outcome.attempted += 1;
+
+        match sender.send(&sub, payload).await {
+            Ok(DeliveryOutcome::Delivered) => {
+                outcome.accepted += 1;
+            }
+            Ok(DeliveryOutcome::Gone) => {
+                outcome.pruned += 1;
+                tracing::warn!(
+                    sub_id = %sub.id,
+                    endpoint_host = %endpoint_host(&sub.endpoint),
+                    "push: suscripción caducada; se elimina"
+                );
+                PushRepo::delete_by_endpoint(pool, &sub.endpoint).await?;
+            }
+            Ok(DeliveryOutcome::Failed) => {
+                outcome.failed += 1;
+                tracing::warn!(
+                    sub_id = %sub.id,
+                    endpoint_host = %endpoint_host(&sub.endpoint),
+                    "push: fallo de envío; la suscripción se conserva"
+                );
+            }
+            Err(error) => {
+                // Un fallo de transporte no llegó: cuenta como fallido y no
+                // cortocircuita el resto de la lista.
+                outcome.failed += 1;
+                tracing::warn!(
+                    sub_id = %sub.id,
+                    endpoint_host = %endpoint_host(&sub.endpoint),
+                    error = %error,
+                    "push: error al enviar; la suscripción se conserva"
+                );
+            }
+        }
+    }
+
+    Ok(outcome)
 }
 
 /// Motor base64url sin padding compartido por toda la generación y lectura.
@@ -791,5 +893,208 @@ mod tests {
             !shown.contains(&keys.private_key),
             "private key leaked in error: {shown}"
         );
+    }
+
+    // --- Envío masivo (fase 3) -------------------------------------------
+
+    /// Estado del `PushSender` falso: llamadas registradas, resultado por
+    /// endpoint (`Delivered` por defecto) y conmutador de error de transporte.
+    #[derive(Default)]
+    struct FakeState {
+        calls: Vec<String>,
+        outcomes: std::collections::HashMap<String, DeliveryOutcome>,
+        error: bool,
+    }
+
+    /// `PushSender` de prueba para el envío masivo, equivalente al que vive en
+    /// el módulo de tests del worker.
+    struct FakeSender {
+        state: std::sync::Mutex<FakeState>,
+    }
+
+    impl FakeSender {
+        fn new() -> Self {
+            Self {
+                state: std::sync::Mutex::new(FakeState::default()),
+            }
+        }
+
+        fn with_outcome(endpoint: &str, outcome: DeliveryOutcome) -> Self {
+            let sender = Self::new();
+            sender
+                .state
+                .lock()
+                .expect("lock")
+                .outcomes
+                .insert(endpoint.to_string(), outcome);
+            sender
+        }
+
+        fn failing() -> Self {
+            let sender = Self::new();
+            sender.state.lock().expect("lock").error = true;
+            sender
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.state.lock().expect("lock").calls.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PushSender for FakeSender {
+        async fn send(
+            &self,
+            sub: &PushSubscription,
+            _payload: &PushPayload,
+        ) -> Result<DeliveryOutcome, PushError> {
+            let mut state = self.state.lock().expect("lock");
+            state.calls.push(sub.endpoint.clone());
+            if state.error {
+                return Err(PushError::InvalidEndpoint);
+            }
+            Ok(*state
+                .outcomes
+                .get(&sub.endpoint)
+                .unwrap_or(&DeliveryOutcome::Delivered))
+        }
+    }
+
+    fn sample_payload() -> PushPayload {
+        PushPayload {
+            title: "Aviso".to_string(),
+            body: "texto".to_string(),
+            icon: None,
+            url: Some("/".to_string()),
+            tag: Some("tag".to_string()),
+        }
+    }
+
+    async fn add_subscription(pool: &SqlitePool, endpoint: &str) {
+        PushRepo::upsert(pool, endpoint, "p256dh", "auth", None)
+            .await
+            .expect("upsert subscription");
+    }
+
+    /// Scenario: una mezcla de resultados cuenta cada suscripción por separado.
+    #[tokio::test]
+    async fn broadcast_counts_each_subscription_result() {
+        let pool = setup().await;
+        add_subscription(&pool, "https://example.invalid/push/ok").await;
+        add_subscription(&pool, "https://example.invalid/push/gone").await;
+        add_subscription(&pool, "https://example.invalid/push/failed").await;
+
+        let sender = FakeSender::new();
+        {
+            let mut state = sender.state.lock().expect("lock");
+            state.outcomes.insert(
+                "https://example.invalid/push/gone".to_string(),
+                DeliveryOutcome::Gone,
+            );
+            state.outcomes.insert(
+                "https://example.invalid/push/failed".to_string(),
+                DeliveryOutcome::Failed,
+            );
+        }
+
+        let outcome = send_to_all(&pool, &sender, &sample_payload())
+            .await
+            .expect("broadcast");
+
+        assert_eq!(outcome.attempted, 3, "three subscriptions attempted");
+        assert_eq!(outcome.accepted, 1, "one accepted");
+        assert_eq!(outcome.pruned, 1, "one pruned");
+        assert_eq!(outcome.failed, 1, "one failed");
+        assert_eq!(sender.calls().len(), 3, "every subscription is attempted");
+    }
+
+    /// Scenario: una suscripción caducada se elimina y no cuenta como fallo.
+    #[tokio::test]
+    async fn broadcast_gone_prunes_and_does_not_count_as_failure() {
+        let pool = setup().await;
+        add_subscription(&pool, "https://example.invalid/push/gone").await;
+
+        let sender =
+            FakeSender::with_outcome("https://example.invalid/push/gone", DeliveryOutcome::Gone);
+        let outcome = send_to_all(&pool, &sender, &sample_payload())
+            .await
+            .expect("broadcast");
+
+        assert_eq!(outcome.attempted, 1);
+        assert_eq!(outcome.pruned, 1);
+        assert_eq!(outcome.failed, 0, "a Gone must never count as failed");
+        assert!(
+            PushRepo::list_all(&pool).await.expect("list").is_empty(),
+            "the Gone subscription must be deleted from the database"
+        );
+    }
+
+    /// Scenario: sin suscripciones no es un error.
+    #[tokio::test]
+    async fn broadcast_without_subscriptions_is_not_an_error() {
+        let pool = setup().await;
+
+        let sender = FakeSender::new();
+        let outcome = send_to_all(&pool, &sender, &sample_payload())
+            .await
+            .expect("broadcast without subscriptions must not fail");
+
+        assert_eq!(
+            outcome,
+            BroadcastOutcome::default(),
+            "all counters are zero"
+        );
+        assert!(sender.calls().is_empty());
+    }
+
+    /// Scenario: un error de transporte cuenta como intentado y fallido y no
+    /// cortocircuita el resto de la lista.
+    #[tokio::test]
+    async fn broadcast_transport_error_counts_as_failed_and_keeps_going() {
+        let pool = setup().await;
+        add_subscription(&pool, "https://example.invalid/push/a").await;
+        add_subscription(&pool, "https://example.invalid/push/b").await;
+
+        let sender = FakeSender::failing();
+        let outcome = send_to_all(&pool, &sender, &sample_payload())
+            .await
+            .expect("broadcast");
+
+        assert_eq!(outcome.attempted, 2);
+        assert_eq!(outcome.failed, 2);
+        assert_eq!(outcome.accepted, 0);
+        assert_eq!(outcome.pruned, 0);
+        assert_eq!(
+            sender.calls().len(),
+            2,
+            "the second subscription is still attempted"
+        );
+    }
+
+    /// Scenario: el ayudante devuelve el host de una URL normal.
+    #[test]
+    fn endpoint_host_returns_host_of_a_normal_url() {
+        assert_eq!(
+            endpoint_host("https://fcm.googleapis.com/fcm/send/abc"),
+            "fcm.googleapis.com",
+            "the host, not the whole URL, must be extracted"
+        );
+    }
+
+    /// Scenario: el ayudante marca lo que no puede interpretar y **nunca**
+    /// devuelve la cadena original.
+    #[test]
+    fn endpoint_host_marks_unparseable_values() {
+        for value in ["", "no-es-una-url", "https://", "//sin-esquema"] {
+            let host = endpoint_host(value);
+            assert_eq!(
+                host, "(endpoint no parseable)",
+                "an endpoint without a recognizable host must yield the marker: {value:?}"
+            );
+            assert_ne!(
+                host, value,
+                "the marker must never be the original string: {value:?}"
+            );
+        }
     }
 }

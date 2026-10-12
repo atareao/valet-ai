@@ -49,7 +49,7 @@ pub struct AppState {
     pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
 }
 
-/// Build the production tool registry with all 28 built-in tools.
+/// Build the production tool registry with all 29 built-in tools.
 ///
 /// Exposed so the evaluation harness (`valet-route-eval`) can resolve the same
 /// advertised tool set the running application uses.
@@ -130,6 +130,9 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     registry.register(Box::new(crate::tools::rss::RssMarkReadTool::new(
         pool.clone(),
     )));
+    registry.register(Box::new(
+        crate::tools::notifications::NotificationsTool::new(pool.clone()),
+    ));
     registry
 }
 
@@ -521,6 +524,10 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::strava::routes())
         // WebPush (VAPID public key, subscribe, unsubscribe)
         .merge(routes::push::routes())
+        // Notifications inbox: ingest (ingest-token authenticated) + session reads
+        .merge(routes::notifications::routes(state.clone()))
+        // Ingest keys management (session OIDC: create, list, revoke)
+        .merge(routes::ingest_keys::routes())
         // Session middleware: enforces a valid session on `/api/*` when auth
         // is enabled; a no-op when it is disabled (dev mode).
         .layer(axum::middleware::from_fn_with_state(

@@ -30,6 +30,7 @@ jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 cookie = "0.18"
 rand = "0.10"
+sha2 = "0.10"
 http = "1"
 web-push-native = "0.5"
 
@@ -177,5 +178,21 @@ name = "webpush-migration"
 path = "tests/db/webpush_migration.rs"
 
 [[test]]
+name = "notification_ingest_migration"
+path = "tests/db/notification_ingest_migration.rs"
+
+[[test]]
+name = "pendientes_prompt_migration"
+path = "tests/db/pendientes_prompt_migration.rs"
+
+[[test]]
 name = "push-api"
 path = "tests/api/push.rs"
+
+[[test]]
+name = "notifications"
+path = "tests/api/notifications.rs"
+
+[[test]]
+name = "ingest_keys"
+path = "tests/api/ingest_keys.rs"
