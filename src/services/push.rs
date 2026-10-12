@@ -154,11 +154,12 @@ async fn read_setting(
 
 /// Escribe las dos claves, pero **solo** si faltan o están vacías.
 ///
-/// El `ON CONFLICT ... DO UPDATE ... WHERE value = '' OR value IS NULL` es el
-/// mismo idioma de la migración: rellena una siembra vacía sin pisar jamás un
-/// valor personalizado. Es equivalente a un `DO NOTHING` para un valor ya
-/// presente, que es lo que hace converger a dos llamadas concurrentes en el
-/// par del primero que escribe.
+/// El `ON CONFLICT ... DO UPDATE ... WHERE value IS NULL OR trim(value) = ''`
+/// es el mismo idioma de la migración: rellena una siembra vacía —también la
+/// que solo tiene espacios, porque el resto del código compara tras `trim`— sin
+/// pisar jamás un valor personalizado. Es equivalente a un `DO NOTHING` para un
+/// valor ya presente, que es lo que hace converger a dos llamadas concurrentes
+/// en el par del primero que escribe.
 async fn upsert_pair(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     keys: &VapidKeys,
@@ -170,7 +171,7 @@ async fn upsert_pair(
         sqlx::query(
             "INSERT INTO settings (key, value, updated_at) VALUES (?1, ?2, datetime('now'))
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-             WHERE settings.value = '' OR settings.value IS NULL",
+             WHERE settings.value IS NULL OR trim(settings.value) = ''",
         )
         .bind(key)
         .bind(value)

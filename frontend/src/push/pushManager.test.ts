@@ -36,12 +36,24 @@ function fakeSubscription(endpoint: string): PushSubscription {
 function installServiceWorker(registration: ServiceWorkerRegistration): void {
   Object.defineProperty(navigator, "serviceWorker", {
     configurable: true,
-    value: { ready: Promise.resolve(registration) },
+    value: {
+      ready: Promise.resolve(registration),
+      getRegistration: () => Promise.resolve(registration),
+    },
   });
 }
 
+/** Retira el soporte de push del navegador (caso `unsupported`). */
+function uninstallPushSupport(): void {
+  Reflect.deleteProperty(navigator, "serviceWorker");
+  Reflect.deleteProperty(window, "PushManager");
+}
+
 /** Registra soporte de `PushManager` y `Notification` en `window`. */
-function installNotification(requestPermission: () => Promise<NotificationPermission>): void {
+function installNotification(
+  requestPermission: () => Promise<NotificationPermission>,
+  permission: NotificationPermission = "default",
+): void {
   Object.defineProperty(window, "PushManager", {
     configurable: true,
     writable: true,
@@ -50,7 +62,7 @@ function installNotification(requestPermission: () => Promise<NotificationPermis
   Object.defineProperty(window, "Notification", {
     configurable: true,
     writable: true,
-    value: { permission: "default", requestPermission: vi.fn(requestPermission) },
+    value: { permission, requestPermission: vi.fn(requestPermission) },
   });
 }
 
@@ -111,6 +123,20 @@ describe("enablePushNotifications", () => {
     expect(subscribe).not.toHaveBeenCalled();
     expect(mockedSubscribePush).not.toHaveBeenCalled();
   });
+
+  it("si el POST al backend falla, deshace la suscripción del navegador", async () => {
+    const subscription = fakeSubscription("https://push.test/abc");
+    const subscribe = vi.fn().mockResolvedValue(subscription);
+    installServiceWorker({
+      pushManager: { getSubscription: vi.fn(), subscribe },
+    } as unknown as ServiceWorkerRegistration);
+    installNotification(() => Promise.resolve("granted"));
+    mockedSubscribePush.mockRejectedValueOnce(new Error("backend caído"));
+
+    await expect(enablePushNotifications()).rejects.toThrow("backend caído");
+
+    expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("disablePushNotifications", () => {
@@ -135,11 +161,66 @@ describe("disablePushNotifications", () => {
     expect(subscription.unsubscribe).toHaveBeenCalledTimes(1);
     expect(mockedUnsubscribePush).toHaveBeenCalledWith("https://push.test/abc");
   });
+
+  it("si el DELETE al backend falla, no desuscribe el navegador", async () => {
+    const subscription = fakeSubscription("https://push.test/abc");
+    installServiceWorker({
+      pushManager: { getSubscription: vi.fn().mockResolvedValue(subscription), subscribe: vi.fn() },
+    } as unknown as ServiceWorkerRegistration);
+    installNotification(() => Promise.resolve("granted"));
+    mockedUnsubscribePush.mockRejectedValueOnce(new Error("backend caído"));
+
+    await expect(disablePushNotifications()).rejects.toThrow("backend caído");
+
+    expect(subscription.unsubscribe).not.toHaveBeenCalled();
+  });
 });
 
 describe("getPushStatus", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("devuelve `unsupported` sin soporte del navegador", async () => {
+    uninstallPushSupport();
+
+    await expect(getPushStatus()).resolves.toBe("unsupported");
+  });
+
+  it("devuelve `not-requested` cuando el permiso aún no se ha pedido", async () => {
+    installServiceWorker({
+      pushManager: {
+        getSubscription: vi.fn().mockResolvedValue(null),
+        subscribe: vi.fn(),
+      },
+    } as unknown as ServiceWorkerRegistration);
+    installNotification(() => Promise.resolve("default"), "default");
+
+    await expect(getPushStatus()).resolves.toBe("not-requested");
+  });
+
+  it("devuelve `denied` cuando el permiso está denegado", async () => {
+    installServiceWorker({
+      pushManager: {
+        getSubscription: vi.fn().mockResolvedValue(null),
+        subscribe: vi.fn(),
+      },
+    } as unknown as ServiceWorkerRegistration);
+    installNotification(() => Promise.resolve("denied"), "denied");
+
+    await expect(getPushStatus()).resolves.toBe("denied");
+  });
+
+  it("devuelve `granted-unsubscribed` con permiso concedido y sin suscripción", async () => {
+    installServiceWorker({
+      pushManager: {
+        getSubscription: vi.fn().mockResolvedValue(null),
+        subscribe: vi.fn(),
+      },
+    } as unknown as ServiceWorkerRegistration);
+    installNotification(() => Promise.resolve("granted"), "granted");
+
+    await expect(getPushStatus()).resolves.toBe("granted-unsubscribed");
   });
 
   it("devuelve `subscribed` cuando ya existe una suscripción", async () => {
@@ -149,7 +230,7 @@ describe("getPushStatus", () => {
         subscribe: vi.fn(),
       },
     } as unknown as ServiceWorkerRegistration);
-    installNotification(() => Promise.resolve("granted"));
+    installNotification(() => Promise.resolve("granted"), "granted");
 
     await expect(getPushStatus()).resolves.toBe("subscribed");
   });

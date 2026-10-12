@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { App as AntdApp, Space, Spin, Switch, Typography } from "antd";
+import { ApiError } from "../api/client";
 import {
   disablePushNotifications,
   enablePushNotifications,
@@ -9,6 +10,24 @@ import {
 } from "../push/pushManager";
 
 const { Text, Title } = Typography;
+
+/**
+ * Traduce un error de la acción a un texto humano. Los códigos técnicos del
+ * backend (p. ej. `push_unavailable`) no se muestran al usuario; quedan, si
+ * acaso, en consola.
+ */
+function humanizeError(error: unknown): string {
+  if (error instanceof ApiError) {
+    if (error.message === "push_unavailable") {
+      return "Las notificaciones no están disponibles en el servidor ahora mismo.";
+    }
+    console.error("Fallo al cambiar el estado de las notificaciones", error);
+    return "No se pudo cambiar el estado de las notificaciones";
+  }
+  if (error instanceof Error) return error.message;
+  return "No se pudo cambiar el estado de las notificaciones";
+}
+
 
 /**
  * Pestaña «Notificaciones» del diálogo de ajustes. Se extrae a un componente
@@ -70,11 +89,7 @@ export function NotificationsTab() {
         message.success("Notificaciones desactivadas");
       }
     } catch (error) {
-      message.error(
-        error instanceof Error
-          ? error.message
-          : "No se pudo cambiar el estado de las notificaciones",
-      );
+      message.error(humanizeError(error));
     } finally {
       if (mountedRef.current) setBusy(false);
       // Relectura del estado real tras la acción (acierte o falle).
@@ -107,6 +122,13 @@ export function NotificationsTab() {
             del navegador.
           </Text>
         );
+      case "not-requested":
+        return (
+          <Text type="secondary">
+            Todavía no has dado permiso; activa el interruptor y el navegador te
+            lo pedirá.
+          </Text>
+        );
       case "granted-unsubscribed":
         return (
           <Text type="secondary">
@@ -127,7 +149,7 @@ export function NotificationsTab() {
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
         <Space align="center">
           <Switch
-            aria-label="Notificaciones"
+            aria-label="Activar o desactivar las notificaciones"
             checked={checked}
             disabled={disabled}
             loading={busy}

@@ -1,9 +1,11 @@
 //! Migration tests for WebPush notifications:
 //! `migrations/20261012000001_webpush_notifications.sql`. The migration is
-//! additive and idempotent: it creates `push_subscriptions`, adds the nullable
-//! `reminders.notified_at` column and seeds the three WebPush settings with the
-//! same "only overwrite empty/NULL" idiom as `20261010000007_rss_skill.sql`.
-//! It never rebuilds a table.
+//! additive: it creates `push_subscriptions`, adds the nullable
+//! `reminders.notified_at` column, seeds the three WebPush settings with the
+//! same "only overwrite empty/NULL" idiom as `20261010000007_rss_skill.sql` and
+//! creates the `(status, notified_at)` index the worker filters on. It never
+//! rebuilds a table. It is re-runnable except for the trailing `ALTER TABLE`,
+//! which SQLite cannot re-run; in production the `Migrator` runs it once.
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -28,6 +30,19 @@ fn webpush_migration_sql() -> String {
         .join("migrations/20261012000001_webpush_notifications.sql");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// The re-runnable prefix of the migration: everything before the trailing
+/// `ALTER TABLE ... ADD COLUMN`, which SQLite cannot re-run. Re-executing only
+/// this prefix is honest — it succeeds — while the full body fails on the
+/// `ALTER` (see `test_webpush_migration_respects_user_values`).
+fn webpush_migration_sql_without_alter() -> String {
+    let full = webpush_migration_sql();
+    let marker = "ALTER TABLE reminders ADD COLUMN notified_at TEXT;";
+    let (prefix, _) = full
+        .split_once(marker)
+        .unwrap_or_else(|| panic!("the migration must contain the ALTER marker: {marker}"));
+    prefix.to_string()
 }
 
 /// Read a settings value, returning `None` when the key is absent.
@@ -249,7 +264,7 @@ async fn test_webpush_settings_seeded() {
 }
 
 /// Scenario: una segunda ejecución no sobrescribe un valor personalizado (y
-/// rellena un valor vacío con el default).
+/// rellena un valor vacío o solo-espacios con el default).
 #[tokio::test]
 async fn test_webpush_migration_respects_user_values() {
     let pool = setup().await;
@@ -267,13 +282,21 @@ async fn test_webpush_migration_respects_user_values() {
             .unwrap();
     }
 
-    // Re-run the migration body. The `ALTER TABLE ... ADD COLUMN` at the end is
-    // not re-runnable on SQLite, so its duplicate-column error is tolerated; the
-    // seeding statements before it have already committed.
+    // Re-run the migration body. The seeding statements before the trailing
+    // `ALTER TABLE ... ADD COLUMN` run again; the `ALTER` itself is the one
+    // statement SQLite cannot re-run (no `ADD COLUMN IF NOT EXISTS`), so the
+    // body fails on a duplicate-column error. That is the documented
+    // limitation, and we assert it rather than swallowing it: in production the
+    // `Migrator` applies this file exactly once.
     let sql = webpush_migration_sql();
-    let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+    let err = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
         .execute(&pool)
-        .await;
+        .await
+        .expect_err("re-running the body must fail on the trailing ALTER");
+    assert!(
+        err.to_string().to_lowercase().contains("duplicate column"),
+        "the re-run must fail because of the ALTER, got: {err}"
+    );
 
     assert_eq!(
         setting_value(&pool, "push_vapid_public_key").await,
@@ -291,18 +314,55 @@ async fn test_webpush_migration_respects_user_values() {
         "a non-empty custom grace window must be preserved"
     );
 
-    // An empty value is backfilled with the default.
+    // An empty value is backfilled with the default. Re-run only the
+    // re-runnable prefix (without the ALTER) so no error is swallowed.
+    let prefix = webpush_migration_sql_without_alter();
     sqlx::query("UPDATE settings SET value = '' WHERE key = 'push_reminder_grace_hours'")
         .execute(&pool)
         .await
         .unwrap();
-    let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+    sqlx::raw_sql(sqlx::AssertSqlSafe(prefix.as_str()))
         .execute(&pool)
-        .await;
+        .await
+        .expect("the re-runnable prefix must succeed");
     assert_eq!(
         setting_value(&pool, "push_reminder_grace_hours").await,
         "24",
         "an empty grace window must be backfilled with the default"
+    );
+
+    // A whitespace-only value also counts as empty (the rest of the code trims
+    // before deciding), so it too is backfilled instead of staying broken.
+    sqlx::query("UPDATE settings SET value = '   ' WHERE key = 'push_reminder_grace_hours'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(prefix.as_str()))
+        .execute(&pool)
+        .await
+        .expect("the re-runnable prefix must succeed");
+    assert_eq!(
+        setting_value(&pool, "push_reminder_grace_hours").await,
+        "24",
+        "a whitespace-only grace window must be treated as empty and backfilled"
+    );
+}
+
+/// Scenario: la migración crea el índice que la consulta del worker necesita.
+#[tokio::test]
+async fn test_reminders_status_notified_at_index_exists() {
+    let pool = setup().await;
+
+    let exists: bool = sqlx::query_scalar(
+        "SELECT COUNT(*) > 0 FROM sqlite_master
+         WHERE type = 'index' AND name = 'idx_reminders_status_notified_at'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        exists,
+        "the worker's (status, notified_at) index must exist after migration"
     );
 }
 

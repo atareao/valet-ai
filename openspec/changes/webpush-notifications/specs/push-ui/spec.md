@@ -66,10 +66,14 @@ aplicación.
 `SettingsDialog` SHALL exponer un tab «Notificaciones» con un `Switch`. Activarlo SHALL pedir permiso
 con `Notification.requestPermission()`, suscribir el navegador con la clave pública de
 `GET /api/push/vapid-key` como `applicationServerKey` (desde base64url) y publicar la suscripción en
-`POST /api/push/subscriptions`. Desactivarlo SHALL cancelar la suscripción del navegador con
-`subscription.unsubscribe()` y llamar a `DELETE /api/push/subscriptions` con el `endpoint`. El estado
-mostrado SHALL distinguir: sin soporte, permiso denegado, permiso concedido sin suscripción, y
-suscrito.
+`POST /api/push/subscriptions`. Desactivarlo SHALL llamar primero a `DELETE /api/push/subscriptions`
+con el `endpoint` y después cancelar la suscripción del navegador con `subscription.unsubscribe()`
+—en este orden, para que un fallo parcial deje el estado consistente «el backend no tiene fila»—.
+Si el `POST` de alta falla tras suscribir el navegador, SHALL deshacer la suscripción del navegador
+antes de propagar el error. El estado mostrado SHALL distinguir cinco casos: sin soporte, permiso
+aún no solicitado (`Notification.permission === "default"`), permiso denegado, permiso concedido
+sin suscripción, y suscrito. La consulta de estado SHALL NO esperar a `navigator.serviceWorker.ready`
+(usa `getRegistration()`), para no colgar cuando el registro del worker ha fallado.
 
 #### Scenario: Activar pide permiso, suscribe y publica
 
@@ -79,6 +83,20 @@ suscrito.
 - **And** se concede el permiso
 - **And** se crea la suscripción del navegador
 - **And** se envía un `POST /api/push/subscriptions`
+
+#### Scenario: Un permiso aún no solicitado se muestra como tal
+
+- **Given** un navegador con `Notification.permission === "default"` y sin suscripción
+- **When** se abre el tab «Notificaciones»
+- **Then** el estado mostrado es «aún no has dado permiso», no «permiso concedido»
+- **And** el `Switch` aparece apagado
+
+#### Scenario: Un fallo del POST deshace la suscripción del navegador
+
+- **Given** un permiso concedido y una suscripción del navegador recién creada
+- **When** el `POST /api/push/subscriptions` se rechaza
+- **Then** se cancela la suscripción del navegador con `subscription.unsubscribe()`
+- **And** se propaga el error a la UI
 
 #### Scenario: Un permiso denegado muestra un mensaje y no publica nada
 
@@ -91,8 +109,15 @@ suscrito.
 
 - **Given** un navegador suscrito
 - **When** el usuario desactiva el `Switch`
-- **Then** se llama a `subscription.unsubscribe()`
-- **And** se envía un `DELETE /api/push/subscriptions` con el `endpoint`
+- **Then** se envía un `DELETE /api/push/subscriptions` con el `endpoint`
+- **And** después se llama a `subscription.unsubscribe()`
+
+#### Scenario: Un fallo del DELETE no desuscribe el navegador
+
+- **Given** un navegador suscrito
+- **When** el `DELETE /api/push/subscriptions` se rechaza
+- **Then** NO se cancela la suscripción del navegador
+- **And** se propaga el error a la UI
 
 #### Scenario: Un navegador sin PushManager muestra el switch deshabilitado
 

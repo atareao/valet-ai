@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::{Row, SqlitePool};
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -76,15 +76,14 @@ pub async fn deliver_due_reminders(
         let text: String = row.get("text");
         let datetime: String = row.get("datetime");
 
-        let due = match DateTime::parse_from_rfc3339(&datetime) {
-            Ok(parsed) => parsed.with_timezone(&Utc),
-            Err(error) => {
+        let due = match parse_reminder_datetime(&datetime) {
+            Some(parsed) => parsed,
+            None => {
                 // No se marca: un `datetime` corrupto no debe consumir el aviso.
                 outcome.unparseable += 1;
                 tracing::warn!(
                     reminder_id = %id,
                     datetime = %datetime,
-                    error = %error,
                     "reminder_push: datetime no parseable; se omite sin marcar"
                 );
                 continue;
@@ -238,12 +237,55 @@ impl ReminderPushWorker {
     }
 }
 
+/// Interpreta el `datetime` de un recordatorio como un instante UTC.
+///
+/// Acepta primero **RFC 3339** (`2026-10-12T11:00:00Z`, y los snoozeados con
+/// `+00:00` y fracción). Si eso falla, acepta la forma **ingenua** sin offset
+/// (`2026-10-12T11:00:00`, con o sin fracción) y **asume UTC**: es la forma que
+/// puede emitir un LLM a partir de la descripción «ISO 8601» de `set_reminder`.
+/// Solo si ambas fallan devuelve `None` (no parseable).
+fn parse_reminder_datetime(raw: &str) -> Option<DateTime<Utc>> {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(raw) {
+        return Some(parsed.with_timezone(&Utc));
+    }
+
+    // Forma ingenua: se asume UTC. Se prueban con y sin fracción de segundo.
+    for format in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S"] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(raw, format) {
+            return Some(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc));
+        }
+    }
+
+    None
+}
+
 /// Lee `push_reminder_grace_hours` de `settings`; por defecto
-/// [`DEFAULT_GRACE_HOURS`] si falta, está vacío o no parsea.
+/// [`DEFAULT_GRACE_HOURS`] si falta, está vacío, no parsea o se sale del rango
+/// sensato `0..=8760` (un año).
+///
+/// El acotado es defensivo: un valor disparatado (p. ej. `i64::MAX`) haría
+/// entrar en pánico a `chrono::Duration::hours`, matando la tarea del worker,
+/// que **no se reinicia**; un valor negativo marcaría todo lo vencido sin
+/// enviar. Ambos caen al defecto registrando un aviso.
 async fn read_grace_hours(pool: &SqlitePool) -> i64 {
-    match SettingsRepo::get(pool, GRACE_HOURS_SETTING).await {
-        Ok(Some(value)) => value.trim().parse::<i64>().unwrap_or(DEFAULT_GRACE_HOURS),
-        _ => DEFAULT_GRACE_HOURS,
+    /// Máximo aceptado: un año en horas.
+    const MAX_GRACE_HOURS: i64 = 8760;
+
+    let Ok(Some(raw)) = SettingsRepo::get(pool, GRACE_HOURS_SETTING).await else {
+        return DEFAULT_GRACE_HOURS;
+    };
+
+    match raw.trim().parse::<i64>() {
+        Ok(value) if (0..=MAX_GRACE_HOURS).contains(&value) => value,
+        _ => {
+            tracing::warn!(
+                setting = GRACE_HOURS_SETTING,
+                value = %raw.trim(),
+                fallback = DEFAULT_GRACE_HOURS,
+                "reminder_push: ventana de gracia inválida; se usa el defecto"
+            );
+            DEFAULT_GRACE_HOURS
+        }
     }
 }
 
@@ -628,5 +670,58 @@ mod tests {
         assert_eq!(outcome.delivered, 0);
         assert!(sender.calls().is_empty());
         assert!(notified_at(&pool, "broken").await.is_none());
+    }
+
+    /// Scenario: un `datetime` **sin zona horaria** (forma ingenua, la que puede
+    /// emitir el modelo desde `set_reminder`) se interpreta como UTC y se entrega
+    /// igual que uno con `Z`.
+    #[tokio::test]
+    async fn naive_datetime_without_offset_is_assumed_utc() {
+        let pool = setup().await;
+        add_subscription(&pool, "https://example.invalid/push/1").await;
+        // Overdue, RFC 3339 without an offset: `parse_from_rfc3339` rejects it.
+        add_reminder(&pool, "naive", "Sin zona", "2026-10-12T11:00:00").await;
+
+        let sender = FakeSender::new();
+        let outcome = deliver_due_reminders(&pool, &sender, now(), 24)
+            .await
+            .expect("tick");
+
+        assert_eq!(
+            outcome.delivered, 1,
+            "a naive datetime must be delivered as if it were UTC"
+        );
+        assert_eq!(outcome.unparseable, 0, "a naive datetime IS parseable");
+        assert!(notified_at(&pool, "naive").await.is_some());
+    }
+
+    /// Scenario: la ventana de gracia se acota; los valores absurdos o negativos
+    /// caen al defecto en vez de reventar el worker.
+    ///
+    /// - `"999999999999"` (fuera de `0..=8760`) → defecto (no entra en pánico).
+    /// - `"-5"` → defecto; un valor negativo no debe marcar todo lo vencido.
+    /// - `"8760"` (un año) → se respeta, es el borde válido.
+    /// - `"8761"` → defecto.
+    /// - `"0"` → se respeta (todo queda fuera de ventana).
+    #[tokio::test]
+    async fn grace_hours_setting_is_clamped() {
+        let pool = setup().await;
+
+        for (raw, expected) in [
+            ("999999999999", DEFAULT_GRACE_HOURS),
+            ("-5", DEFAULT_GRACE_HOURS),
+            ("8760", 8760),
+            ("8761", DEFAULT_GRACE_HOURS),
+            ("0", 0),
+        ] {
+            SettingsRepo::set(&pool, GRACE_HOURS_SETTING, raw)
+                .await
+                .expect("set grace hours");
+            assert_eq!(
+                read_grace_hours(&pool).await,
+                expected,
+                "grace_hours setting {raw:?} must resolve to {expected}"
+            );
+        }
     }
 }

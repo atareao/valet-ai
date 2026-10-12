@@ -25,7 +25,7 @@ vi.mock("../push/pushManager", async () => {
   return { ...actual, isPushSupported: vi.fn(() => true) };
 });
 
-import { request } from "../api/client";
+import { ApiError, request } from "../api/client";
 import { isPushSupported } from "../push/pushManager";
 import { NotificationsTab } from "./NotificationsTab";
 import type { PushSubscriptionPayload } from "../types";
@@ -63,15 +63,17 @@ function installBrowser(options: BrowserOptions = {}): void {
     options.getSubscription ?? (() => Promise.resolve(null));
   const subscribe =
     options.subscribe ?? (() => Promise.resolve(fakeSubscription("https://push.test/new")));
+  const registration = {
+    pushManager: {
+      getSubscription: vi.fn(getSubscription),
+      subscribe: vi.fn(subscribe),
+    },
+  } as unknown as ServiceWorkerRegistration;
   Object.defineProperty(navigator, "serviceWorker", {
     configurable: true,
     value: {
-      ready: Promise.resolve({
-        pushManager: {
-          getSubscription: vi.fn(getSubscription),
-          subscribe: vi.fn(subscribe),
-        },
-      }),
+      ready: Promise.resolve(registration),
+      getRegistration: () => Promise.resolve(registration),
     },
   });
   Object.defineProperty(window, "PushManager", {
@@ -79,15 +81,22 @@ function installBrowser(options: BrowserOptions = {}): void {
     writable: true,
     value: class FakePushManager {},
   });
+  const notification = {
+    permission: options.permission ?? "default",
+    requestPermission: vi.fn(() => {
+      const result = options.requestPermission
+        ? options.requestPermission()
+        : Promise.resolve("granted" as const);
+      return result.then((decision) => {
+        notification.permission = decision;
+        return decision;
+      });
+    }),
+  };
   Object.defineProperty(window, "Notification", {
     configurable: true,
     writable: true,
-    value: {
-      permission: options.permission ?? "default",
-      requestPermission: vi.fn(
-        options.requestPermission ?? (() => Promise.resolve("granted" as const)),
-      ),
-    },
+    value: notification,
   });
 }
 
@@ -219,5 +228,59 @@ describe("NotificationsTab", () => {
     expect(
       screen.getByText(/no soporta notificaciones push/i),
     ).toBeInTheDocument();
+  });
+
+  it("con el permiso aún no solicitado lo dice y deja el switch apagado", async () => {
+    installBrowser({ permission: "default", getSubscription: () => Promise.resolve(null) });
+
+    renderTab();
+
+    const switchEl = await screen.findByRole("switch");
+    await waitFor(() => expect(switchEl).not.toBeChecked());
+    expect(
+      await screen.findByText(/todavía no has dado permiso/i),
+    ).toBeInTheDocument();
+  });
+
+  it("con el permiso denegado en la carga muestra el aviso correspondiente", async () => {
+    installBrowser({ permission: "denied", getSubscription: () => Promise.resolve(null) });
+
+    renderTab();
+
+    const switchEl = await screen.findByRole("switch");
+    await waitFor(() => expect(switchEl).not.toBeChecked());
+    expect(await screen.findByText(/denegado/i)).toBeInTheDocument();
+  });
+
+  it("con permiso concedido sin suscripción invita a activar el interruptor", async () => {
+    installBrowser({ permission: "granted", getSubscription: () => Promise.resolve(null) });
+
+    renderTab();
+
+    const switchEl = await screen.findByRole("switch");
+    await waitFor(() => expect(switchEl).not.toBeChecked());
+    expect(await screen.findByText(/permiso concedido/i)).toBeInTheDocument();
+  });
+
+  it("traduce el 503 `push_unavailable` a un mensaje humano", async () => {
+    const user = userEvent.setup();
+    installBrowser({
+      permission: "default",
+      requestPermission: () => Promise.resolve("granted"),
+      getSubscription: () => Promise.resolve(null),
+    });
+    mockRequest
+      .mockResolvedValueOnce({ public_key: "AQID" } as never)
+      .mockRejectedValueOnce(new ApiError("push_unavailable", 503));
+
+    renderTab();
+
+    const switchEl = await screen.findByRole("switch");
+    await user.click(switchEl);
+
+    expect(
+      await screen.findByText(/no están disponibles en el servidor/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/push_unavailable/)).not.toBeInTheDocument();
   });
 });
