@@ -9,15 +9,15 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 - [x] 0.3 GREEN — implementar `migrations/20261012000001_webpush_notifications.sql` con el idioma idempotente de `20261010000007_rss_skill.sql` (`INSERT ... ON CONFLICT(key) DO UPDATE ... WHERE settings.value = '' OR settings.value IS NULL`), sin reconstruir ninguna tabla. Confirmar `cargo test --test webpush-migration` en verde.
 - [x] 0.4 RED — test que falla de `PushRepo` (`src/db/repos/push.rs`): el *upsert* por `endpoint` conserva el `id` original y actualiza `p256dh`, `auth`, `user_agent` y `updated_at`; el borrado por `endpoint` es idempotente (exista o no la fila); el listado devuelve todas las suscripciones. Verificar en rojo con `cargo test push_repo`.
 - [x] 0.5 GREEN — implementar `PushRepo` como mínimo para satisfacer los tests. Confirmar `cargo test push_repo` y `cargo check` en verde.
-- [ ] 0.6 RED — test que falla de `RemindersRepo`: marcar `notified_at` de un recordatorio por su `id`. Verificar en rojo con `cargo test reminders`.
-- [ ] 0.7 GREEN — implementar el marcado de `notified_at` en `src/db/repos/reminders.rs` y añadir `push_vapid_private_key` a `SENSITIVE_KEYS` en `src/db/repos/settings.rs`. Confirmar `cargo test reminders` en verde.
+- [x] 0.6 RED — test que falla de `RemindersRepo`: marcar `notified_at` de un recordatorio por su `id`. Verificar en rojo con `cargo test reminders`.
+- [x] 0.7 GREEN — implementar el marcado de `notified_at` en `src/db/repos/reminders.rs` y añadir `push_vapid_private_key` a `SENSITIVE_KEYS` en `src/db/repos/settings.rs`. Confirmar `cargo test reminders` en verde.
 
 ## 1. Servicio de push y claves VAPID
 
-- [ ] 1.1 RED — tests que fallan de la generación y persistencia de VAPID: con las claves ausentes o vacías se generan y se persisten; con las claves presentes se reutiliza el par (misma clave pública); dos generaciones concurrentes convergen en un único par. Verificar en rojo con `cargo test vapid`.
-- [ ] 1.2 GREEN — implementar la generación y persistencia transaccional (`INSERT ... ON CONFLICT DO NOTHING` + `SELECT`) en `src/services/push.rs`. Confirmar `cargo test vapid` en verde.
-- [ ] 1.3 RED — test de contrato que falla del formato de la petición (sin red): método `POST` al `endpoint`; cuerpo con `salt` (16 B), `rs` (4 B big-endian), `idlen` (1 B = 65) y clave efímera (65 B, primer byte `0x04`); cabeceras `TTL`, `Content-Encoding: aes128gcm`, `Content-Length` y `Authorization` empezando por `vapid t=`. Verificar en rojo con `cargo test push_request`.
-- [ ] 1.4 GREEN — construir la petición con `web-push-native` y enviarla con el `reqwest::Client` existente. Comprobar con `cargo tree | grep -Ei 'openssl|native-tls|isahc'` que **no** se ha introducido un segundo stack TLS. Confirmar `cargo test push_request` y `cargo check` en verde.
+- [x] 1.1 RED — tests que fallan de la generación y persistencia de VAPID: con las claves ausentes o vacías se generan y se persisten; con las claves presentes se reutiliza el par (misma clave pública); dos generaciones concurrentes convergen en un único par. Verificar en rojo con `cargo test vapid`.
+- [x] 1.2 GREEN — implementar la generación y persistencia transaccional (`INSERT ... ON CONFLICT DO NOTHING` + `SELECT`) en `src/services/push.rs`. Confirmar `cargo test vapid` en verde.
+- [x] 1.3 RED — test de contrato que falla del formato de la petición (sin red): método `POST` al `endpoint`; cuerpo con `salt` (16 B), `rs` (4 B big-endian), `idlen` (1 B = 65) y clave efímera (65 B, primer byte `0x04`); cabeceras `TTL`, `Content-Encoding: aes128gcm`, `Content-Length` y `Authorization` empezando por `vapid t=`. Verificar en rojo con `cargo test push_request`.
+- [x] 1.4 GREEN — construir la petición con `web-push-native` y enviarla con el `reqwest::Client` existente. Comprobar con `cargo tree | grep -Ei 'openssl|native-tls|isahc'` que **no** se ha introducido un segundo stack TLS. Confirmar `cargo test push_request` y `cargo check` en verde.
 
 ## 2. Rutas y validación
 
@@ -60,3 +60,4 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 - La migración `20261012000001_webpush_notifications.sql` es **aditiva e idempotente** y **no reconstruye ninguna tabla** —se remarca porque es lo primero que se revisa tras el incidente de la migración del timeline.
 - La clave privada VAPID **nunca** se registra en un log, en un `Debug` ni en una respuesta HTTP; va en `SENSITIVE_KEYS`.
 - La verificación de punta a punta se hace con un recordatorio vencido real: **no hay endpoint de prueba** `POST /api/push/test`.
+- La 5.6 queda pendiente porque exige un navegador real concediendo el permiso y un recordatorio vencido de verdad, y no se marca lo que no se ha comprobado.
