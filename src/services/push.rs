@@ -16,7 +16,7 @@ use thiserror::Error;
 use web_push_native::jwt_simple::algorithms::{ECDSAP256PublicKeyLike, ES256KeyPair};
 use web_push_native::{p256::PublicKey, Auth, WebPushBuilder};
 
-use crate::db::repos::push::PushSubscription;
+use crate::db::repos::push::{PushRepo, PushSubscription};
 use crate::db::repos::settings::SettingsRepo;
 
 /// Re-exportado para que el resto del proyecto construya claves y suscriptores
@@ -95,6 +95,108 @@ pub fn classify_status(status: u16) -> DeliveryOutcome {
         404 | 410 => DeliveryOutcome::Gone,
         _ => DeliveryOutcome::Failed,
     }
+}
+
+/// Marcador que sustituye a un endpoint ilegible en los registros.
+const UNPARSEABLE_ENDPOINT: &str = "(endpoint no parseable)";
+
+/// Extrae el **host** de un endpoint de suscripción para los registros.
+///
+/// Un endpoint WebPush es una **URL de capacidad**: quien la posee puede enviar
+/// avisos a ese dispositivo. Para diagnosticar basta con el host («falló en
+/// `fcm.googleapis.com`»), mientras que registrar la URL completa filtraría un
+/// secreto. Por eso esta función devuelve **solo** el host, o un marcador fijo
+/// si el valor no rinde uno reconocible: **nunca** la cadena original.
+///
+/// Es un ayudante **puro** compartido con el worker de recordatorios, que lo usa
+/// desde aquí en vez de mantener su propia copia.
+pub fn endpoint_host(endpoint: &str) -> String {
+    url::Url::parse(endpoint)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_else(|| UNPARSEABLE_ENDPOINT.to_string())
+}
+
+/// Resultado del envío masivo a todas las suscripciones.
+///
+/// Los contadores son por **suscripción**: `attempted` cuenta cada envío
+/// intentado (una vez por suscripción), `accepted` los que el servicio aceptó,
+/// `failed` los rechazados o con error de transporte y `pruned` los que se
+/// eliminaron por estar caducados (`Gone`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BroadcastOutcome {
+    /// Envíos intentados, uno por suscripción.
+    pub attempted: usize,
+    /// Envíos que el push service aceptó (`Delivered`).
+    pub accepted: usize,
+    /// Envíos fallidos: rechazos (`Failed`) y errores de transporte.
+    pub failed: usize,
+    /// Suscripciones caducadas (`Gone`) eliminadas de la base de datos.
+    pub pruned: usize,
+}
+
+/// Envía `payload` a **todas** las suscripciones registradas.
+///
+/// Lee las suscripciones con [`PushRepo::list_all`] e intenta el envío con cada
+/// una, contabilizando por suscripción: un `Delivered` cuenta como `accepted`;
+/// un `Gone` (404/410) cuenta como intentado y como `pruned`, elimina la
+/// suscripción con [`PushRepo::delete_by_endpoint`] y **nunca** como fallo; un
+/// `Failed` y cualquier [`Err(PushError)`] cuentan como intentado y fallido. El
+/// fallo de una suscripción **no** corta el resto del envío.
+///
+/// Cero suscripciones **no** es un error: devuelve todos los contadores a cero.
+///
+/// Los registros de fallo incluyen **solo** el `id` de la suscripción y el host
+/// del endpoint (nunca la URL completa), porque un endpoint WebPush es una URL
+/// de capacidad.
+pub async fn send_to_all(
+    pool: &SqlitePool,
+    sender: &dyn PushSender,
+    payload: &PushPayload,
+) -> Result<BroadcastOutcome, PushError> {
+    let mut outcome = BroadcastOutcome::default();
+
+    for sub in PushRepo::list_all(pool).await? {
+        // Todo envío cuenta como intentado, una vez por suscripción y sea cual
+        // sea su desenlace.
+        outcome.attempted += 1;
+
+        match sender.send(&sub, payload).await {
+            Ok(DeliveryOutcome::Delivered) => {
+                outcome.accepted += 1;
+            }
+            Ok(DeliveryOutcome::Gone) => {
+                outcome.pruned += 1;
+                tracing::warn!(
+                    sub_id = %sub.id,
+                    endpoint_host = %endpoint_host(&sub.endpoint),
+                    "push: suscripción caducada; se elimina"
+                );
+                PushRepo::delete_by_endpoint(pool, &sub.endpoint).await?;
+            }
+            Ok(DeliveryOutcome::Failed) => {
+                outcome.failed += 1;
+                tracing::warn!(
+                    sub_id = %sub.id,
+                    endpoint_host = %endpoint_host(&sub.endpoint),
+                    "push: fallo de envío; la suscripción se conserva"
+                );
+            }
+            Err(error) => {
+                // Un fallo de transporte no llegó: cuenta como fallido y no
+                // cortocircuita el resto de la lista.
+                outcome.failed += 1;
+                tracing::warn!(
+                    sub_id = %sub.id,
+                    endpoint_host = %endpoint_host(&sub.endpoint),
+                    error = %error,
+                    "push: error al enviar; la suscripción se conserva"
+                );
+            }
+        }
+    }
+
+    Ok(outcome)
 }
 
 /// Motor base64url sin padding compartido por toda la generación y lectura.
@@ -937,7 +1039,11 @@ mod tests {
             .await
             .expect("broadcast without subscriptions must not fail");
 
-        assert_eq!(outcome, BroadcastOutcome::default(), "all counters are zero");
+        assert_eq!(
+            outcome,
+            BroadcastOutcome::default(),
+            "all counters are zero"
+        );
         assert!(sender.calls().is_empty());
     }
 

@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 use crate::db::repos::push::PushRepo;
 use crate::db::repos::reminders::RemindersRepo;
 use crate::db::repos::settings::SettingsRepo;
-use crate::services::push::{self, DeliveryOutcome, PushPayload, PushSender};
+use crate::services::push::{self, endpoint_host, DeliveryOutcome, PushPayload, PushSender};
 
 /// Clave de `settings` con la ventana de gracia, en horas.
 pub const GRACE_HOURS_SETTING: &str = "push_reminder_grace_hours";
@@ -66,23 +66,6 @@ impl TickOutcome {
             || self.accepted != 0
             || self.failed != 0
     }
-}
-
-/// Marcador que sustituye a un endpoint ilegible en los registros.
-const UNPARSEABLE_ENDPOINT: &str = "(endpoint no parseable)";
-
-/// Extrae el **host** de un endpoint de suscripción para los registros.
-///
-/// Un endpoint WebPush es una **URL de capacidad**: quien la posee puede enviar
-/// avisos a ese dispositivo. Para diagnosticar basta con el host («falló en
-/// `fcm.googleapis.com`»), mientras que registrar la URL completa filtraría un
-/// secreto. Por eso esta función devuelve **solo** el host, o un marcador fijo
-/// si el valor no rinde uno reconocible: **nunca** la cadena original.
-fn endpoint_host(endpoint: &str) -> String {
-    url::Url::parse(endpoint)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_string))
-        .unwrap_or_else(|| UNPARSEABLE_ENDPOINT.to_string())
 }
 
 /// Entrega los recordatorios vencidos que corresponden a este ciclo.
@@ -943,7 +926,7 @@ mod tests {
     #[test]
     fn endpoint_host_returns_host_of_a_normal_url() {
         assert_eq!(
-            endpoint_host("https://fcm.googleapis.com/fcm/send/abc"),
+            crate::services::push::endpoint_host("https://fcm.googleapis.com/fcm/send/abc"),
             "fcm.googleapis.com",
             "the host, not the whole URL, must be extracted"
         );
@@ -956,7 +939,7 @@ mod tests {
     #[test]
     fn endpoint_host_marks_unparseable_values() {
         for value in ["", "no-es-una-url", "https://", "//sin-esquema"] {
-            let host = endpoint_host(value);
+            let host = crate::services::push::endpoint_host(value);
             assert_eq!(
                 host, "(endpoint no parseable)",
                 "an endpoint without a recognizable host must yield the marker: {value:?}"
