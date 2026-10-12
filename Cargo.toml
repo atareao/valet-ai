@@ -188,3 +188,7 @@ path = "tests/db/pendientes_prompt_migration.rs"
 [[test]]
 name = "push-api"
 path = "tests/api/push.rs"
+
+[[test]]
+name = "notifications"
+path = "tests/api/notifications.rs"

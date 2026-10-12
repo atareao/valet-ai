@@ -9,6 +9,7 @@ use axum::http::{Request, StatusCode};
 use serde_json::Value;
 use tower::ServiceExt;
 use valet::auth::{AuthConfig, Claims, SESSION_COOKIE_NAME};
+use valet::db::repos::ingest_keys::{generate_token, IngestRepo};
 
 fn enabled_config(issuer: &str) -> AuthConfig {
     AuthConfig {
@@ -48,6 +49,24 @@ async fn app_with(config: AuthConfig) -> axum::Router {
     let mut state = valet::AppState::new_in_memory_empty().await;
     state.auth_config = Some(config);
     valet::app_with_state(state)
+}
+
+/// Like [`app_with`] but also returns the database pool, so tests can seed an
+/// ingest key before exercising the exempted `POST /api/notifications` route.
+async fn app_with_db(config: AuthConfig) -> (axum::Router, sqlx::SqlitePool) {
+    let mut state = valet::AppState::new_in_memory_empty().await;
+    state.auth_config = Some(config);
+    let db = state.db.clone();
+    (valet::app_with_state(state), db)
+}
+
+fn post_json(uri: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 async fn oidc_server() -> wiremock::MockServer {
@@ -554,5 +573,104 @@ async fn logout_returns_end_session_url_with_id_token_hint() {
     assert!(
         url.contains(&format!("{}/end-session", server.uri())),
         "the end-session URL must point at the provider endpoint: {url}"
+    );
+}
+
+// ── Exención de sesión por par (método, ruta) ──────────────────────────────
+
+/// Scenario: la ingesta sin sesión pero con token válido alcanza el handler.
+///
+/// `POST /api/notifications` queda exento del middleware de sesión (lo protege
+/// el token de ingesta). Con `AUTH_ENABLED=true`, sin cookie pero con un token
+/// de ingesta válido, la petición no es rechazada por el middleware de sesión y
+/// llega al handler, que responde `201`.
+#[tokio::test]
+async fn ingest_without_session_but_with_valid_token_reaches_handler() {
+    let (app, db) = app_with_db(enabled_config("http://localhost:9")).await;
+    let token = generate_token();
+    IngestRepo::create(&db, "monitor", &token)
+        .await
+        .expect("seed ingest key");
+
+    let mut req = post_json("/api/notifications", serde_json::json!({ "message": "hola" }));
+    req.headers_mut().insert(
+        "authorization",
+        format!("Bearer {token}").parse().expect("header value"),
+    );
+
+    let resp = app.oneshot(req).await.unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "the ingest route must be exempt from the session middleware and reach the handler"
+    );
+}
+
+/// Scenario: la ingesta sin token responde 401 y no ejecuta el handler.
+///
+/// La exención de sesión no basta: sin un token de ingesta válido el middleware
+/// de ingesta responde `401`.
+#[tokio::test]
+async fn ingest_without_token_returns_401() {
+    let app = app_with(enabled_config("http://localhost:9")).await;
+
+    let resp = app
+        .oneshot(post_json(
+            "/api/notifications",
+            serde_json::json!({ "message": "hola" }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// Scenario: las lecturas de notificaciones exigen sesión aunque haya token de
+/// ingesta. `GET /api/notifications/unread` NO está exento.
+#[tokio::test]
+async fn notification_reads_require_session_even_with_ingest_token() {
+    let (app, db) = app_with_db(enabled_config("http://localhost:9")).await;
+    let token = generate_token();
+    IngestRepo::create(&db, "monitor", &token)
+        .await
+        .expect("seed ingest key");
+
+    let mut req = Request::builder()
+        .method("GET")
+        .uri("/api/notifications/unread")
+        .body(Body::empty())
+        .unwrap();
+    req.headers_mut().insert(
+        "authorization",
+        format!("Bearer {token}").parse().expect("header value"),
+    );
+
+    let resp = app.oneshot(req).await.unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "the unread listing must keep requiring a session"
+    );
+}
+
+/// Scenario: `POST /api/notifications/mark-read` sin sesión responde 401.
+#[tokio::test]
+async fn mark_read_requires_session() {
+    let app = app_with(enabled_config("http://localhost:9")).await;
+
+    let resp = app
+        .oneshot(post_json(
+            "/api/notifications/mark-read",
+            serde_json::json!({ "ids": ["some-id"] }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "mark-read must keep requiring a session"
     );
 }
