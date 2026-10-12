@@ -150,9 +150,10 @@ export const api = {
     request<Task>(`/tasks/${id}`, { method: "DELETE" }),
 
   getStatsSummary: () => request<StatsSummary>("/stats/llm/summary"),
-  getStatsByModel: () => request<ModelStats[]>("/stats/llm/by-model"),
-  getStatsBackground: () =>
-    request<BackgroundStats[]>("/stats/llm/background"),
+  getStatsByModel: (days = 30) =>
+    request<ModelStats[]>(`/stats/llm/by-model?days=${days}`),
+  getStatsBackground: (days = 30) =>
+    request<BackgroundStats[]>(`/stats/llm/background?days=${days}`),
   getStatsByDay: (days = 30) => request<DayStats[]>(`/stats/llm/by-day?days=${days}`),
   getStatsTools: () => request<ToolStats[]>("/stats/llm/tools"),
   getDbSizes: () => request<TableSize[]>("/stats/db/sizes"),

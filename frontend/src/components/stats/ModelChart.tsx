@@ -22,7 +22,7 @@ interface ModelChartProps {
 export const ModelChart: React.FC<ModelChartProps> = ({ data, loading }) => {
   if (loading) {
     return (
-      <Card title="Cost by Model" style={{ marginBottom: 16 }}>
+      <Card title="Cost by Model (all origins)" style={{ marginBottom: 16 }}>
         <Skeleton active paragraph={{ rows: 6 }} />
       </Card>
     );
@@ -30,7 +30,7 @@ export const ModelChart: React.FC<ModelChartProps> = ({ data, loading }) => {
 
   if (!data || data.length === 0) {
     return (
-      <Card title="Cost by Model" style={{ marginBottom: 16 }}>
+      <Card title="Cost by Model (all origins)" style={{ marginBottom: 16 }}>
         <div style={{ textAlign: "center", padding: "24px 0", color: "rgba(255,255,255,0.45)" }}>
           No data yet
         </div>
@@ -93,7 +93,7 @@ export const ModelChart: React.FC<ModelChartProps> = ({ data, loading }) => {
   ];
 
   return (
-    <Card title="Cost by Model" style={{ marginBottom: 16 }}>
+    <Card title="Cost by Model (all origins)" style={{ marginBottom: 16 }}>
       <div style={{ maxHeight: 300, marginBottom: 16 }}>
         <Bar data={chartData} options={options} />
       </div>

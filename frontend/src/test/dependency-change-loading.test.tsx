@@ -185,8 +185,9 @@ describe("recarga al cambiar dependencias", () => {
     // El nuevo rango queda pendiente: las tarjetas deben mostrar su skeleton.
     vi.mocked(api.getStatsByDay).mockReturnValue(pending());
 
+    // El dashboard parte de 7 días, así que el cambio real es a 30d.
     fireEvent.click(screen.getByText("🤖 Modelos"));
-    fireEvent.click(await screen.findByRole("button", { name: "7d" }));
+    fireEvent.click(await screen.findByRole("button", { name: "30d" }));
 
     await waitFor(() => {
       expect(document.querySelector(".ant-skeleton")).not.toBeNull();
