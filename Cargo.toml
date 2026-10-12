@@ -30,6 +30,8 @@ jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 cookie = "0.18"
 rand = "0.10"
+http = "1"
+web-push-native = "0.5"
 
 # sqlite-vec provides the `vec0` virtual table. It must be registered on the
 # *same* libsqlite3-sys instance that sqlx opens connections with, otherwise the
@@ -169,3 +171,7 @@ path = "tests/db/email_migration.rs"
 [[test]]
 name = "rss-migration"
 path = "tests/db/rss_migration.rs"
+
+[[test]]
+name = "webpush-migration"
+path = "tests/db/webpush_migration.rs"
