@@ -94,14 +94,20 @@ pub async fn require_ingest_key(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let token = request
+    let authorization = request
         .headers()
         .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
+        .and_then(|value| value.to_str().ok());
 
-    let Some(token) = token else {
-        return StatusCode::UNAUTHORIZED.into_response();
+    let Some(authorization) = authorization else {
+        return unauthorized("missing_authorization");
+    };
+
+    let Some(token) = authorization
+        .strip_prefix("Bearer ")
+        .filter(|token| !token.is_empty())
+    else {
+        return unauthorized("malformed_authorization");
     };
 
     match IngestRepo::find_by_hash(&state.db, token).await {
@@ -117,10 +123,23 @@ pub async fn require_ingest_key(
             });
             next.run(request).await
         }
-        Ok(None) => StatusCode::UNAUTHORIZED.into_response(),
+        Ok(None) => unauthorized("unknown_or_revoked_key"),
         Err(error) => {
             tracing::error!(error = %error, "ingest: no se pudo buscar la clave");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+/// Builds the `401` response shared by every ingest rejection path.
+///
+/// Logs only the `reason`, never the token nor any prefix of it, and answers
+/// with a constant JSON body so the rejection gives away nothing.
+fn unauthorized(reason: &str) -> Response {
+    tracing::warn!(reason, "ingest: token de ingesta denegado");
+    (
+        StatusCode::UNAUTHORIZED,
+        axum::Json(serde_json::json!({ "error": "unauthorized" })),
+    )
+        .into_response()
 }

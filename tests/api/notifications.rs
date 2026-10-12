@@ -64,6 +64,18 @@ async fn ingest_without_authorization_returns_401_and_no_row() {
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "the 401 must carry a JSON content type"
+    );
+    assert_eq!(
+        resp.text().await,
+        r#"{"error":"unauthorized"}"#,
+        "the 401 body must be the unauthorized error"
+    );
+    assert_eq!(
         count_notifications(&app).await,
         0,
         "no row must be inserted"
@@ -92,6 +104,18 @@ async fn ingest_with_malformed_authorization_returns_401() {
             StatusCode::UNAUTHORIZED,
             "a malformed Authorization header must be rejected: {header:?}"
         );
+        assert_eq!(
+            resp.headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+            "the 401 must carry a JSON content type: {header:?}"
+        );
+        assert_eq!(
+            resp.text().await,
+            r#"{"error":"unauthorized"}"#,
+            "the 401 body must be the unauthorized error: {header:?}"
+        );
     }
 
     assert_eq!(
@@ -115,6 +139,18 @@ async fn ingest_with_unknown_token_returns_401() {
         .await;
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "the 401 must carry a JSON content type"
+    );
+    assert_eq!(
+        resp.text().await,
+        r#"{"error":"unauthorized"}"#,
+        "the 401 body must be the unauthorized error"
+    );
     assert_eq!(
         count_notifications(&app).await,
         0,
@@ -141,9 +177,82 @@ async fn ingest_with_revoked_key_returns_401() {
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/json"),
+        "the 401 must carry a JSON content type"
+    );
+    assert_eq!(
+        resp.text().await,
+        r#"{"error":"unauthorized"}"#,
+        "the 401 body must be the unauthorized error"
+    );
+    assert_eq!(
         count_notifications(&app).await,
         0,
         "no row must be inserted"
+    );
+}
+
+/// Scenario: una clave revocada y un token desconocido son indistinguibles.
+///
+/// El cliente no debe poder deducir, por la respuesta, si un token existió y
+/// fue revocado o si nunca existió: ambas respuestas deben coincidir en estado
+/// y en cuerpo.
+#[tokio::test]
+async fn ingest_revoked_and_unknown_token_are_indistinguishable_401() {
+    let app = TestApp::new_empty().await;
+    let revoked_token = generate_token();
+    let key = IngestRepo::create(&app.db, "monitor", &revoked_token)
+        .await
+        .expect("seed ingest key");
+    IngestRepo::revoke(&app.db, &key.id).await.expect("revoke");
+
+    let unknown_token = generate_token();
+
+    let revoked = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {revoked_token}"))
+        .json(&json!({ "message": "hola" }))
+        .send()
+        .await;
+    let unknown = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {unknown_token}"))
+        .json(&json!({ "message": "hola" }))
+        .send()
+        .await;
+
+    assert_eq!(
+        revoked.status(),
+        StatusCode::UNAUTHORIZED,
+        "a revoked key must be rejected"
+    );
+    assert_eq!(
+        unknown.status(),
+        StatusCode::UNAUTHORIZED,
+        "an unknown token must be rejected"
+    );
+    assert_eq!(
+        revoked.status(),
+        unknown.status(),
+        "revoked and unknown tokens must yield the same status"
+    );
+
+    let revoked_body = revoked.text().await;
+    let unknown_body = unknown.text().await;
+    assert_eq!(
+        revoked_body, r#"{"error":"unauthorized"}"#,
+        "the revoked-key 401 body must be the unauthorized error"
+    );
+    assert_eq!(
+        unknown_body, r#"{"error":"unauthorized"}"#,
+        "the unknown-token 401 body must be the unauthorized error"
+    );
+    assert_eq!(
+        revoked_body, unknown_body,
+        "revoked and unknown tokens must yield the same body"
     );
 }
 
