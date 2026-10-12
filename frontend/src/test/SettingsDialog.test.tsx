@@ -1147,12 +1147,12 @@ describe("SettingsDialog", () => {
   // RED phase tests — change `settings-memory-tabs`: pestañas superiores
   // ════════════════════════════════════════════════════════════════
 
-  it("shows exactly nine top-level tabs and no Herramientas tab", () => {
+  it("shows exactly ten top-level tabs and no Herramientas tab", () => {
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     const topTabs = screen.getAllByRole("tab");
 
-    expect(topTabs).toHaveLength(9);
+    expect(topTabs).toHaveLength(10);
     for (const name of [
       "Perfil",
       "Interfaz",
@@ -1163,6 +1163,7 @@ describe("SettingsDialog", () => {
       "Skills",
       "Enrutador de skills",
       "Integraciones",
+      "Notificaciones",
     ]) {
       expect(screen.getByRole("tab", { name })).toBeInTheDocument();
     }

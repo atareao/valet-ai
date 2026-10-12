@@ -43,8 +43,8 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 - [x] 4.4 GREEN — implementar el registro tolerante en `main.tsx`. Confirmar en verde.
 - [x] 4.5 RED — test que falla de la conversión base64url→`Uint8Array` en `frontend/src/push/pushManager.ts`: cadena url-safe sin padding → bytes correctos; longitud múltiplo de 4 → sin padding añadido; cadena vacía → array vacío.
 - [x] 4.6 GREEN — implementar `frontend/src/push/pushManager.ts` y `frontend/src/api/push.ts`. Confirmar en verde.
-- [ ] 4.7 RED — test que falla del tab «Notificaciones» en `frontend/src/components/SettingsDialog.tsx`: activar pide permiso, suscribe y publica (`POST`); permiso denegado muestra mensaje y no publica; desactivar cancela (`unsubscribe`) y borra (`DELETE`); sin `PushManager` el switch aparece deshabilitado con explicación; la carga inicial refleja la suscripción existente.
-- [ ] 4.8 GREEN — implementar el tab «Notificaciones» en `SettingsDialog.tsx`. Confirmar `npx vitest run` y `npx tsc --noEmit` en verde.
+- [x] 4.7 RED — test que falla del tab «Notificaciones» en `frontend/src/components/SettingsDialog.tsx`: activar pide permiso, suscribe y publica (`POST`); permiso denegado muestra mensaje y no publica; desactivar cancela (`unsubscribe`) y borra (`DELETE`); sin `PushManager` el switch aparece deshabilitado con explicación; la carga inicial refleja la suscripción existente.
+- [x] 4.8 GREEN — implementar el tab «Notificaciones» en `SettingsDialog.tsx`. Confirmar `npx vitest run` y `npx tsc --noEmit` en verde.
 
 ## 5. Verificación
 
