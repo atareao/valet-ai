@@ -130,6 +130,9 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     registry.register(Box::new(crate::tools::rss::RssMarkReadTool::new(
         pool.clone(),
     )));
+    registry.register(Box::new(crate::tools::notifications::NotificationsTool::new(
+        pool.clone(),
+    )));
     registry
 }
 

@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_twenty_eight_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_twenty_nine_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -666,8 +666,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            28,
-            "el core más las diez skills deben cubrir las veintiocho herramientas: {covered:?}"
+            29,
+            "el core más las diez skills deben cubrir las veintinueve herramientas: {covered:?}"
         );
         for spec in catalog() {
             assert!(
