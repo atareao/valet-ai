@@ -595,20 +595,41 @@ citado. El `source_message_id` SHALL ser siempre el `id` de ese mensaje.
 ### Requirement: La extracción de hechos cronológicos SHALL ser best-effort y SHALL NOT abortar la pasada
 
 Un extractor que devuelva contenido vacío, truncado o sin JSON válido SHALL NOT abortar la pasada: la
-ficha episódica, el estado persistente y la marca de `is_indexed` SHALL escribirse igual, SHALL
-registrarse el diagnóstico del contenido y la estadística de la llamada SHALL quedar con
-`status = 'error'` y `kind = 'timeline'`. La validación de cada hecho SHALL descartar sin fallar lo
-inservible: una `category` fuera del conjunto cerrado SHALL normalizarse a `lifestyle` sin perder el
-hecho; un `fact` vacío o en blanco SHALL descartar ese hecho; un `fact` de más de 280 caracteres SHALL
-descartarse por no ser atómico; un `source` ausente o fuera del lote SHALL descartar ese hecho —un hecho
-que no se puede fechar ni atribuir no se persiste—; y un `source` que señale una línea cuyo rol no sea
-`user` SHALL descartarse: los mensajes del asistente son contexto, nunca origen de un hecho. Un
-`location` vacío o en blanco SHALL quedar a `NULL`, y uno de más de 120 caracteres SHALL descartarse. Los
-hechos repetidos dentro de un mismo lote SHALL deduplicarse, y un hecho que ya exista en la tabla para
-ese mismo día SHALL ignorarse sin fallar: la inserción SHALL ser `INSERT OR IGNORE`.
+ficha episódica, el estado persistente y la marca de `is_indexed` SHALL escribirse igual y SHALL
+registrarse el diagnóstico del contenido. Antes de darse por vencida, la extracción SHALL reintentarse
+al menos una vez cuando el contenido no sea un objeto JSON interpretable o no contenga la clave
+`events`; los intentos intermedios SHALL registrarse como cualquier otra llamada, y solo tras agotar
+los reintentos SHALL la pasada continuar sin hechos y registrar el fallo con `kind = 'timeline'`. Un
+contenido que sea un **array JSON vacío** SHALL interpretarse como **cero hechos** y NO SHALL
+registrarse como error: la estadística SHALL quedar con `status = 'success'` y `kind = 'timeline'`. La
+validación de cada hecho SHALL descartar sin fallar lo inservible: una `category` fuera del conjunto
+cerrado SHALL normalizarse a `lifestyle` sin perder el hecho; un `fact` vacío o en blanco SHALL
+descartar ese hecho; un `fact` de más de 280 caracteres SHALL descartarse por no ser atómico; un
+`source` ausente o fuera del lote SHALL descartar ese hecho —un hecho que no se puede fechar ni
+atribuir no se persiste—; y un `source` que señale una línea cuyo rol no sea `user` SHALL descartarse:
+los mensajes del asistente son contexto, nunca origen de un hecho. Un `location` vacío o en blanco
+SHALL quedar a `NULL`, y uno de más de 120 caracteres SHALL descartarse. Los hechos repetidos dentro de
+un mismo lote SHALL deduplicarse, y un hecho que ya exista en la tabla para ese mismo día SHALL
+ignorarse sin fallar: la inserción SHALL ser `INSERT OR IGNORE`.
+
+#### Scenario: Un array vacío es cero hechos, no un error
+
+- **Given** un lote que cumple las condiciones de procesamiento y un extractor que responde `[]`
+- **When** el worker procesa la pasada
+- **Then** no se inserta ninguna fila en `timeline_events`
+- **And** la estadística de la llamada queda con `kind = 'timeline'` y `status = 'success'`
+- **And** la pasada no falla
+
+#### Scenario: Un fallo de forma se reintenta antes de rendirse
+
+- **Given** un extractor que no devuelve el envoltorio `{"events": [...]}` en el primer intento y sí lo devuelve, con hechos válidos, en el siguiente
+- **When** el worker procesa la pasada
+- **Then** los hechos del intento que sí traía el envoltorio se persisten
+- **And** la pasada no falla
 
 #### Scenario: Un extractor inservible no pierde el lote
-- **Given** un lote que cumple las condiciones de procesamiento y un extractor que responde vacío o sin JSON válido
+
+- **Given** un lote que cumple las condiciones de procesamiento y un extractor que responde vacío o sin JSON válido **en todos los intentos**
 - **When** el worker procesa la pasada
 - **Then** la ficha episódica se escribe
 - **And** el estado persistente se escribe

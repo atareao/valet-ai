@@ -25,4 +25,4 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 
 - [x] 4.1 REFACTOR — `cargo fmt`, `cargo clippy --all-targets -- -D warnings` y `cargo test` (suite completa) en verde.
 - [x] 4.2 `openspec validate --all` en verde.
-- [ ] 4.3 PR a `development` con merge commit, revisado por `rust-reviewer`. Archive del change en PR aparte tras el merge.
+- [x] 4.3 PR a `development` con merge commit, revisado por `rust-reviewer`. Archive del change en PR aparte tras el merge.
