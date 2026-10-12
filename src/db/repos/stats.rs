@@ -6,6 +6,27 @@ use crate::models::stats::{
     ToolStats,
 };
 
+/// Canary threshold for a suspiciously empty successful call.
+///
+/// A call recorded as `status = 'success'` whose completion produced at most
+/// this many tokens is treated as a likely empty response (`content = null`)
+/// masquerading as a success. The measured failure returns exactly 1 token, so
+/// the threshold is 1: `<= 1` catches it without flagging legitimately short
+/// structured outputs (a valid extractor JSON never drops to a single token).
+const SUSPICIOUS_MAX_COMPLETION_TOKENS: i64 = 1;
+
+/// Canonical non-chat origins, in the order the API presents them.
+///
+/// The order is deliberate, not alphabetical; it is fixed here in Rust because
+/// the database cannot know it.
+const CANONICAL_BACKGROUND_KINDS: [&str; 5] = [
+    "router",
+    "archivist",
+    "consolidator",
+    "collapse",
+    "timeline",
+];
+
 /// Repository for LLM usage statistics and administrative operations.
 pub struct StatsRepo;
 
@@ -45,7 +66,18 @@ impl StatsRepo {
     }
 
     /// Per-model breakdown, ordered by total cost descending.
-    pub async fn by_model(pool: &SqlitePool) -> Result<Vec<ModelStats>, sqlx::Error> {
+    ///
+    /// Aggregates **every origin** — chat and background roles alike — so a
+    /// model that only serves background work (e.g. the semantic model used by
+    /// the consolidator) is not invisible. The `days` window filters
+    /// `created_at >= datetime('now', '-N days')`.
+    ///
+    /// A window smaller than one day is clamped to one day (`days.max(1)`), so
+    /// `days = 0` means "at least the last 24 hours" instead of collapsing to
+    /// `created_at >= now` and silently discarding everything. The clamp lives
+    /// here, at the repository boundary, so every caller is protected.
+    pub async fn by_model(pool: &SqlitePool, days: u32) -> Result<Vec<ModelStats>, sqlx::Error> {
+        let days = days.max(1);
         let rows = sqlx::query(
             r#"
             SELECT
@@ -57,11 +89,12 @@ impl StatsRepo {
                 SUM(cached_tokens)              AS total_cached_tokens,
                 SUM(reasoning_tokens)           AS total_reasoning_tokens
             FROM llm_requests
-            WHERE kind = 'chat'
+            WHERE created_at >= datetime('now', '-' || ?1 || ' days')
             GROUP BY model
             ORDER BY total_cost DESC
             "#,
         )
+        .bind(days as i64)
         .fetch_all(pool)
         .await?;
 
@@ -321,67 +354,104 @@ impl StatsRepo {
         Ok(())
     }
 
-    /// Aggregate LLM usage per non-chat origin (router, archivist,
-    /// consolidator, collapse, timeline).
+    /// Aggregate LLM usage per (non-chat origin, model) pair.
     ///
-    /// Returns one [`BackgroundStats`] per background origin, with the counters
-    /// at zero for origins that have no rows.
+    /// Returns one [`BackgroundStats`] per pair of a canonical background
+    /// origin (`router`, `archivist`, `consolidator`, `collapse`, `timeline`)
+    /// and the model that served it. A canonical origin with no rows is still
+    /// reported — counters at zero, `model: None` — so a role that never runs
+    /// stays visible. Rows are ordered by canonical origin and, within an
+    /// origin, by total cost descending. The `days` window filters
+    /// `created_at >= datetime('now', '-N days')`.
+    ///
+    /// A window smaller than one day is clamped to one day (`days.max(1)`), so
+    /// `days = 0` means "at least the last 24 hours" instead of collapsing to
+    /// `created_at >= now` and silently discarding everything. The clamp lives
+    /// here, at the repository boundary, so every caller is protected.
     pub async fn background_summary(
         pool: &SqlitePool,
+        days: u32,
     ) -> Result<Vec<BackgroundStats>, sqlx::Error> {
+        let days = days.max(1);
         let rows = sqlx::query(
             r#"
             SELECT
                 kind,
+                model,
                 COUNT(*)                                        AS calls,
                 COALESCE(SUM(prompt_tokens), 0)                 AS input_tokens,
                 COALESCE(SUM(completion_tokens), 0)             AS output_tokens,
                 COALESCE(SUM(total_tokens), 0)                  AS total_tokens,
                 COALESCE(SUM(cost), 0.0)                        AS total_cost,
                 COALESCE(SUM(CASE WHEN status != 'success' THEN 1 ELSE 0 END), 0) AS total_errors,
-                AVG(duration_ms)                                AS avg_duration_ms
+                COALESCE(SUM(CASE WHEN status = 'success' AND completion_tokens <= ?2 THEN 1 ELSE 0 END), 0) AS suspicious_calls,
+                AVG(duration_ms)                                AS avg_duration_ms,
+                MAX(created_at)                                 AS last_call_at
             FROM llm_requests
             WHERE kind != 'chat'
-            GROUP BY kind
+              AND created_at >= datetime('now', '-' || ?1 || ' days')
+            GROUP BY kind, model
             "#,
         )
+        .bind(days as i64)
+        .bind(SUSPICIOUS_MAX_COMPLETION_TOKENS)
         .fetch_all(pool)
         .await?;
 
-        // One entry per background origin, in the canonical order, so origins
-        // with no rows still appear at zero.
-        let mut stats: Vec<BackgroundStats> = [
-            "router",
-            "archivist",
-            "consolidator",
-            "collapse",
-            "timeline",
-        ]
-        .iter()
-        .map(|kind| BackgroundStats {
-            kind: (*kind).to_string(),
-            calls: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            total_cost: 0.0,
-            total_errors: 0,
-            avg_duration_ms: None,
-        })
-        .collect();
+        // Group the real pairs by canonical origin, discarding any origin that
+        // is not canonical, then emit them in canonical order — filling an
+        // origin with no rows with a single zeroed, model-less entry.
+        let mut by_kind: Vec<Vec<BackgroundStats>> = CANONICAL_BACKGROUND_KINDS
+            .iter()
+            .map(|_| Vec::new())
+            .collect();
 
         for row in &rows {
             let kind: String = row.get(0);
-            let Some(entry) = stats.iter_mut().find(|s| s.kind == kind) else {
+            let Some(idx) = CANONICAL_BACKGROUND_KINDS.iter().position(|k| *k == kind) else {
                 continue;
             };
-            entry.calls = row.get::<i64, _>(1) as u64;
-            entry.input_tokens = row.get::<i64, _>(2) as u64;
-            entry.output_tokens = row.get::<i64, _>(3) as u64;
-            entry.total_tokens = row.get::<i64, _>(4) as u64;
-            entry.total_cost = row.get::<f64, _>(5);
-            entry.total_errors = row.get::<i64, _>(6) as u64;
-            entry.avg_duration_ms = row.get::<Option<f64>, _>(7);
+            by_kind[idx].push(BackgroundStats {
+                kind,
+                model: row.get::<Option<String>, _>(1),
+                calls: row.get::<i64, _>(2) as u64,
+                input_tokens: row.get::<i64, _>(3) as u64,
+                output_tokens: row.get::<i64, _>(4) as u64,
+                total_tokens: row.get::<i64, _>(5) as u64,
+                total_cost: row.get::<f64, _>(6),
+                total_errors: row.get::<i64, _>(7) as u64,
+                suspicious_calls: row.get::<i64, _>(8) as u64,
+                avg_duration_ms: row.get::<Option<f64>, _>(9),
+                last_call_at: row.get::<Option<String>, _>(10),
+            });
+        }
+
+        let mut stats = Vec::with_capacity(CANONICAL_BACKGROUND_KINDS.len());
+        for (idx, kind) in CANONICAL_BACKGROUND_KINDS.iter().enumerate() {
+            let mut pairs = std::mem::take(&mut by_kind[idx]);
+            if pairs.is_empty() {
+                // The origin never ran: keep it visible at zero.
+                stats.push(BackgroundStats {
+                    kind: (*kind).to_string(),
+                    model: None,
+                    calls: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    total_tokens: 0,
+                    total_cost: 0.0,
+                    total_errors: 0,
+                    suspicious_calls: 0,
+                    avg_duration_ms: None,
+                    last_call_at: None,
+                });
+            } else {
+                pairs.sort_by(|a, b| {
+                    b.total_cost
+                        .partial_cmp(&a.total_cost)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                stats.append(&mut pairs);
+            }
         }
 
         Ok(stats)
@@ -988,7 +1058,7 @@ mod tests {
         )
         .await;
 
-        let models = StatsRepo::by_model(&pool).await.unwrap();
+        let models = StatsRepo::by_model(&pool, 30).await.unwrap();
 
         assert_eq!(models.len(), 2);
         // Ordered by total_cost DESC → claude-3 first (0.04) then gpt-4o (0.03)
@@ -1475,11 +1545,20 @@ mod tests {
             "summary must not count archivist cost"
         );
 
-        // by_model ignores the archivist model
-        let models = StatsRepo::by_model(&pool).await.unwrap();
-        assert_eq!(models.len(), 1, "by_model must exclude non-chat models");
-        assert_eq!(models[0].model, "gpt-4o");
-        assert_eq!(models[0].calls, 1);
+        // by_model now aggregates every origin, so both models are present.
+        let models = StatsRepo::by_model(&pool, 30).await.unwrap();
+        assert_eq!(
+            models.len(),
+            2,
+            "by_model aggregates chat and background models"
+        );
+        let gpt = models.iter().find(|m| m.model == "gpt-4o").unwrap();
+        assert_eq!(gpt.calls, 1);
+        let mistral = models
+            .iter()
+            .find(|m| m.model == "mistralai/mistral-small-24b-instruct-2501")
+            .expect("the archivist model must now appear in by_model");
+        assert_eq!(mistral.calls, 1);
 
         // by_day ignores the archivist row
         let days = StatsRepo::by_day(&pool, 30).await.unwrap();
@@ -1569,7 +1648,7 @@ mod tests {
         )
         .await;
 
-        let bg = StatsRepo::background_summary(&pool).await.unwrap();
+        let bg = StatsRepo::background_summary(&pool, 30).await.unwrap();
         assert_eq!(bg.len(), 5, "one entry per non-chat origin");
 
         let find = |kind: &str| {
@@ -1627,7 +1706,7 @@ mod tests {
         )
         .await;
 
-        let bg = StatsRepo::background_summary(&pool).await.unwrap();
+        let bg = StatsRepo::background_summary(&pool, 30).await.unwrap();
         assert_eq!(bg.len(), 5, "one entry per non-chat origin");
 
         for kind in [
@@ -1686,7 +1765,7 @@ mod tests {
         )
         .await;
 
-        let bg = StatsRepo::background_summary(&pool).await.unwrap();
+        let bg = StatsRepo::background_summary(&pool, 30).await.unwrap();
 
         let timeline = bg
             .iter()
@@ -1737,6 +1816,595 @@ mod tests {
         assert_eq!(
             row[kind_idx], "archivist",
             "each CSV line must carry its kind value"
+        );
+    }
+
+    // ── 16. background_summary: eje de modelo ──────────────────────────────
+
+    /// Two models inside the same origin produce two rows, one per
+    /// (origin, model) pair, ordered by cost descending within the origin.
+    #[tokio::test]
+    async fn test_background_summary_two_models_same_kind_two_rows() {
+        let pool = setup().await;
+
+        // 2 consolidator calls to deepseek, cost 0.01 each.
+        for i in 0..2 {
+            insert_request_with_kind(
+                &pool,
+                &format!("c-ds-{i}"),
+                "consolidator",
+                "deepseek/deepseek-v4.1-flash",
+                100,
+                1,
+                101,
+                0.01,
+                Some(100),
+                "success",
+                None,
+                None,
+            )
+            .await;
+        }
+        // 3 consolidator calls to qwen, cost 0.02 each.
+        for i in 0..3 {
+            insert_request_with_kind(
+                &pool,
+                &format!("c-qw-{i}"),
+                "consolidator",
+                "qwen/qwen3-235b-a22b-2507",
+                200,
+                654,
+                854,
+                0.02,
+                Some(200),
+                "success",
+                None,
+                None,
+            )
+            .await;
+        }
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+
+        let consolidator: Vec<_> = bg.iter().filter(|b| b.kind == "consolidator").collect();
+        assert_eq!(
+            consolidator.len(),
+            2,
+            "two models in one origin must yield two rows"
+        );
+        // qwen cost = 0.06 > deepseek cost = 0.02 → qwen first.
+        assert_eq!(
+            consolidator[0].model.as_deref(),
+            Some("qwen/qwen3-235b-a22b-2507")
+        );
+        assert_eq!(consolidator[0].calls, 3);
+        assert_eq!(
+            consolidator[1].model.as_deref(),
+            Some("deepseek/deepseek-v4.1-flash")
+        );
+        assert_eq!(consolidator[1].calls, 2);
+    }
+
+    /// The five canonical origins are always present. Those with no rows keep
+    /// zeroed counters, `model: None` and `last_call_at: None`.
+    #[tokio::test]
+    async fn test_background_summary_zero_fill_and_model_none() {
+        let pool = setup().await;
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+        assert_eq!(bg.len(), 5, "one zero-filled entry per canonical origin");
+
+        let kinds: Vec<&str> = bg.iter().map(|b| b.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "router",
+                "archivist",
+                "consolidator",
+                "collapse",
+                "timeline"
+            ]
+        );
+
+        for entry in &bg {
+            assert!(entry.model.is_none(), "{} must have no model", entry.kind);
+            assert_eq!(entry.calls, 0);
+            assert_eq!(entry.suspicious_calls, 0);
+            assert!(entry.last_call_at.is_none());
+        }
+    }
+
+    /// The final ordering is by canonical origin, not alphabetically.
+    #[tokio::test]
+    async fn test_background_summary_canonical_order() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool, "ord-tl", "timeline", "m", 1, 5, 6, 0.1, None, "success", None, None,
+        )
+        .await;
+        insert_request_with_kind(
+            &pool, "ord-ro", "router", "m", 1, 5, 6, 0.2, None, "success", None, None,
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+        let kinds: Vec<&str> = bg.iter().map(|b| b.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "router",
+                "archivist",
+                "consolidator",
+                "collapse",
+                "timeline"
+            ]
+        );
+    }
+
+    /// Successful calls with `completion_tokens <= 1` count as suspicious;
+    /// normal successful calls do not.
+    #[tokio::test]
+    async fn test_background_summary_suspicious_calls() {
+        let pool = setup().await;
+
+        for i in 0..4 {
+            insert_request_with_kind(
+                &pool,
+                &format!("sus-{i}"),
+                "consolidator",
+                "deepseek/deepseek-v4.1-flash",
+                100,
+                1,
+                101,
+                0.01,
+                Some(10),
+                "success",
+                None,
+                None,
+            )
+            .await;
+        }
+        for i in 0..2 {
+            insert_request_with_kind(
+                &pool,
+                &format!("normal-{i}"),
+                "consolidator",
+                "deepseek/deepseek-v4.1-flash",
+                200,
+                654,
+                854,
+                0.02,
+                Some(20),
+                "success",
+                None,
+                None,
+            )
+            .await;
+        }
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+        let consolidator = bg.iter().find(|b| b.kind == "consolidator").unwrap();
+        assert_eq!(consolidator.suspicious_calls, 4);
+        assert_eq!(
+            consolidator.total_errors, 0,
+            "the empty success is invisible"
+        );
+    }
+
+    /// An error with one token counts as an error but never as suspicious.
+    #[tokio::test]
+    async fn test_background_summary_error_with_one_token_not_suspicious() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "err-1",
+            "consolidator",
+            "m",
+            100,
+            1,
+            101,
+            0.01,
+            None,
+            "error",
+            None,
+            None,
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+        let consolidator = bg.iter().find(|b| b.kind == "consolidator").unwrap();
+        assert_eq!(consolidator.total_errors, 1);
+        assert_eq!(consolidator.suspicious_calls, 0);
+    }
+
+    /// A normal successful call is never suspicious.
+    #[tokio::test]
+    async fn test_background_summary_success_normal_not_suspicious() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "ok-1",
+            "consolidator",
+            "m",
+            100,
+            100,
+            200,
+            0.01,
+            None,
+            "success",
+            None,
+            None,
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+        let consolidator = bg.iter().find(|b| b.kind == "consolidator").unwrap();
+        assert_eq!(consolidator.suspicious_calls, 0);
+    }
+
+    /// Chat rows never appear in the background summary, so a one-token chat
+    /// success can never be flagged as suspicious.
+    #[tokio::test]
+    async fn test_background_summary_chat_never_suspicious() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "chat-tiny",
+            "chat",
+            "m",
+            10,
+            1,
+            11,
+            0.0,
+            None,
+            "success",
+            None,
+            None,
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+        assert!(bg.iter().all(|b| b.kind != "chat"));
+        assert!(bg.iter().all(|b| b.suspicious_calls == 0));
+    }
+
+    /// `last_call_at` is the maximum `created_at` of the pair, and `None` for
+    /// an origin with no rows.
+    #[tokio::test]
+    async fn test_background_summary_last_call_at() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "lc-a",
+            "router",
+            "A",
+            1,
+            1,
+            2,
+            0.01,
+            None,
+            "success",
+            None,
+            Some("2026-10-01T10:00:00"),
+        )
+        .await;
+        insert_request_with_kind(
+            &pool,
+            "lc-b",
+            "router",
+            "A",
+            1,
+            1,
+            2,
+            0.01,
+            None,
+            "success",
+            None,
+            Some("2026-10-05T10:00:00"),
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool, 30).await.unwrap();
+        let router = bg.iter().find(|b| b.kind == "router").unwrap();
+        assert_eq!(router.last_call_at.as_deref(), Some("2026-10-05T10:00:00"));
+
+        let archivist = bg.iter().find(|b| b.kind == "archivist").unwrap();
+        assert!(archivist.last_call_at.is_none());
+    }
+
+    /// The `days` window discards rows older than the cutoff.
+    #[tokio::test]
+    async fn test_background_summary_days_window() {
+        let pool = setup().await;
+
+        // Recent (default `now`).
+        insert_request_with_kind(
+            &pool, "w-now", "router", "A", 1, 1, 2, 0.01, None, "success", None, None,
+        )
+        .await;
+        // Old (60 days ago).
+        insert_request_with_kind(
+            &pool,
+            "w-old",
+            "router",
+            "A",
+            1,
+            1,
+            2,
+            0.01,
+            None,
+            "success",
+            None,
+            Some("2026-08-01T00:00:00"),
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+        let router = bg.iter().find(|b| b.kind == "router").unwrap();
+        assert_eq!(router.calls, 1, "rows outside the window must be discarded");
+    }
+
+    // ── 17. by_model: agregación por modelo sobre todos los orígenes ───────
+
+    /// A model that only works in a background origin must appear.
+    #[tokio::test]
+    async fn test_by_model_includes_background_only_model() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "bg-qwen-1",
+            "consolidator",
+            "qwen/qwen3-235b-a22b-2507",
+            100,
+            100,
+            200,
+            0.05,
+            None,
+            "success",
+            None,
+            None,
+        )
+        .await;
+
+        let models = StatsRepo::by_model(&pool, 7).await.unwrap();
+        let qwen = models
+            .iter()
+            .find(|m| m.model == "qwen/qwen3-235b-a22b-2507")
+            .expect("a background-only model must appear in by_model");
+        assert_eq!(qwen.calls, 1);
+        assert_eq!(qwen.total_cost, 0.05);
+    }
+
+    /// Chat and background calls of the same model are aggregated together.
+    #[tokio::test]
+    async fn test_by_model_aggregates_chat_and_background() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool,
+            "agg-chat",
+            "chat",
+            "mistralai/mistral-small-24b-instruct-2501",
+            100,
+            50,
+            150,
+            0.01,
+            None,
+            "success",
+            None,
+            None,
+        )
+        .await;
+        insert_request_with_kind(
+            &pool,
+            "agg-arch",
+            "archivist",
+            "mistralai/mistral-small-24b-instruct-2501",
+            100,
+            50,
+            150,
+            0.02,
+            None,
+            "success",
+            None,
+            None,
+        )
+        .await;
+
+        let models = StatsRepo::by_model(&pool, 7).await.unwrap();
+        let merged: Vec<_> = models
+            .iter()
+            .filter(|m| m.model == "mistralai/mistral-small-24b-instruct-2501")
+            .collect();
+        assert_eq!(merged.len(), 1, "the same model must be one single row");
+        assert_eq!(merged[0].calls, 2);
+        assert!((merged[0].total_cost - 0.03).abs() < f64::EPSILON);
+    }
+
+    /// `by_model` honors the `days` window.
+    #[tokio::test]
+    async fn test_by_model_days_window() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool, "bm-n1", "chat", "gpt-4o", 100, 50, 150, 0.01, None, "success", None, None,
+        )
+        .await;
+        insert_request_with_kind(
+            &pool, "bm-n2", "chat", "gpt-4o", 100, 50, 150, 0.01, None, "success", None, None,
+        )
+        .await;
+        insert_request_with_kind(
+            &pool,
+            "bm-old",
+            "chat",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            0.01,
+            None,
+            "success",
+            None,
+            Some("2026-08-01T00:00:00"),
+        )
+        .await;
+
+        let models = StatsRepo::by_model(&pool, 7).await.unwrap();
+        let gpt = models.iter().find(|m| m.model == "gpt-4o").unwrap();
+        assert_eq!(gpt.calls, 2, "the old row must be outside the window");
+    }
+
+    // ── 18. days = 0 se trata como una ventana de un día ───────────────────
+
+    /// A window smaller than one day is clamped to one day at the repository
+    /// boundary, so `days = 0` means "the last 24 hours", not "nothing". A row
+    /// 12 hours old is inside the window; a row 3 days old is outside. The
+    /// clamp protects both `background_summary` and `by_model`.
+    #[tokio::test]
+    async fn test_days_zero_behaves_as_one_day() {
+        let pool = setup().await;
+
+        // 12 hours old → inside a one-day window.
+        sqlx::query(
+            "INSERT INTO llm_requests
+                 (id, model, profile_id, prompt_tokens, completion_tokens, total_tokens, cost, status, kind, created_at)
+             VALUES ('z-recent', 'role-model', 'profile-1', 10, 10, 20, 0.01, 'success', 'router', datetime('now', '-12 hours'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 3 days old → outside a one-day window but inside the default 30.
+        sqlx::query(
+            "INSERT INTO llm_requests
+                 (id, model, profile_id, prompt_tokens, completion_tokens, total_tokens, cost, status, kind, created_at)
+             VALUES ('z-old', 'role-model', 'profile-1', 10, 10, 20, 0.99, 'success', 'router', datetime('now', '-3 days'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Sanity: the 3-day-old row is really in the table.
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(total, 2);
+
+        // background_summary with days = 0 (clamped to 1) keeps only the recent row.
+        let bg = StatsRepo::background_summary(&pool, 0).await.unwrap();
+        let router = bg.iter().find(|b| b.kind == "router").unwrap();
+        assert_eq!(
+            router.calls, 1,
+            "days = 0 must behave as one day, not as an empty window"
+        );
+        assert!(
+            (router.total_cost - 0.01).abs() < f64::EPSILON,
+            "only the recent row's cost must be counted"
+        );
+
+        // by_model is clamped the same way.
+        let models = StatsRepo::by_model(&pool, 0).await.unwrap();
+        let model = models
+            .iter()
+            .find(|m| m.model == "role-model")
+            .expect("the recent row's model must survive a days = 0 window");
+        assert_eq!(
+            model.calls, 1,
+            "days = 0 must behave as one day in by_model"
+        );
+    }
+
+    // ── 19. background_summary descarta kinds no canónicos ─────────────────
+
+    /// A row whose `kind` is not in the canonical list is silently discarded: it
+    /// never appears in the output and it neither shifts nor corrupts the five
+    /// canonical entries. The table's CHECK would reject `'weird'`, so
+    /// check-constraint enforcement is disabled for the two inserts that
+    /// deliberately plant the out-of-band row.
+    #[tokio::test]
+    async fn test_background_summary_discards_non_canonical_kind() {
+        let pool = setup().await;
+
+        // One canonical row...
+        insert_request_with_kind(
+            &pool,
+            "canon-1",
+            "router",
+            "gpt-4o-mini",
+            10,
+            5,
+            15,
+            0.001,
+            Some(50),
+            "success",
+            None,
+            None,
+        )
+        .await;
+
+        // ...and one row whose kind is not canonical. `PRAGMA
+        // ignore_check_constraints` lets it past the column CHECK; it is
+        // re-enabled right after so the rest of the test (and suite) is
+        // unaffected.
+        sqlx::query("PRAGMA ignore_check_constraints = ON")
+            .execute(&pool)
+            .await
+            .unwrap();
+        insert_request_with_kind(
+            &pool,
+            "weird-1",
+            "weird",
+            "gpt-4o",
+            100,
+            50,
+            150,
+            9.99,
+            Some(10),
+            "success",
+            None,
+            None,
+        )
+        .await;
+        sqlx::query("PRAGMA ignore_check_constraints = OFF")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+
+        assert_eq!(bg.len(), 5, "a non-canonical kind must not add an entry");
+        assert!(
+            bg.iter().all(|b| b.kind != "weird"),
+            "the non-canonical kind must be discarded"
+        );
+        let kinds: Vec<&str> = bg.iter().map(|b| b.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "router",
+                "archivist",
+                "consolidator",
+                "collapse",
+                "timeline"
+            ],
+            "the five canonical entries must be intact and in order"
+        );
+
+        // The discarded row must not have leaked into the canonical router entry.
+        let router = bg.iter().find(|b| b.kind == "router").unwrap();
+        assert_eq!(router.calls, 1, "the discarded row must not add calls");
+        assert_eq!(router.total_tokens, 15);
+        assert!(
+            (router.total_cost - 0.001).abs() < f64::EPSILON,
+            "the discarded row's cost must not leak into any canonical entry"
         );
     }
 }
