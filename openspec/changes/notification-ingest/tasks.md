@@ -139,12 +139,12 @@ Fichero nuevo: `src/routes/ingest_keys.rs`, con sesión OIDC, registrado en `src
 
 ## 9. Verificación
 
-- [ ] 9.1 Suite de Rust completa en verde: `cargo test --no-fail-fast` (0 fallos), con el recuento de tests anotado **antes** y **después** del change.
-- [ ] 9.2 `cargo clippy --all-targets -- -D warnings` limpio (0 warnings).
-- [ ] 9.3 `cargo fmt --check` limpio.
-- [ ] 9.4 Frontend: `npx vitest run` en verde, `npx tsc --noEmit` sin errores y `npm run lint` limpio.
-- [ ] 9.5 `openspec validate --all` sin fallos.
-- [ ] 9.6 Comprobación explícita de que **ninguna línea de log registra el token de ingesta ni la URL completa de un endpoint**: revisar (grep) los `tracing::*` de `src/middleware/` (ingesta), `src/routes/notifications.rs`, `src/routes/ingest_keys.rs`, `src/services/push.rs` y `src/workers/reminder_push.rs`, y confirmar que solo aparecen el `id`/`name` de la clave y el `host` del endpoint (o el marcador `(endpoint no parseable)`).
+- [x] 9.1 Suite de Rust completa en verde: `cargo test --no-fail-fast` (0 fallos), con el recuento de tests anotado **antes** y **después** del change.
+- [x] 9.2 `cargo clippy --all-targets -- -D warnings` limpio (0 warnings).
+- [x] 9.3 `cargo fmt --check` limpio.
+- [x] 9.4 Frontend: `npx vitest run` en verde, `npx tsc --noEmit` sin errores y `npm run lint` limpio.
+- [x] 9.5 `openspec validate --all` sin fallos.
+- [x] 9.6 Comprobación explícita de que **ninguna línea de log registra el token de ingesta ni la URL completa de un endpoint**: revisar (grep) los `tracing::*` de `src/middleware/` (ingesta), `src/routes/notifications.rs`, `src/routes/ingest_keys.rs`, `src/services/push.rs` y `src/workers/reminder_push.rs`, y confirmar que solo aparecen el `id`/`name` de la clave y el `host` del endpoint (o el marcador `(endpoint no parseable)`).
 
 ## Notas
 
@@ -157,3 +157,16 @@ Fichero nuevo: `src/routes/ingest_keys.rs`, con sesión OIDC, registrado en `src
 - **Contradicción con el enunciado detectada durante la redacción:** el enunciado pide «actualizar el recuento de herramientas que fijen los tests (28 → 29) — revisar `grep -rn "28" src/orchestrator/skills.rs src/bin/route-eval.rs`». La revisión real del repo muestra que **`src/bin/route-eval.rs` no contiene ningún `28`** (consume `build_tool_registry` y no fija un recuento literal); el único `28` está en `src/orchestrator/skills.rs:669` (`catalog_plus_core_covers_all_twenty_eight_tools_without_orphans`) y, además, en el docstring de `build_tool_registry` (`src/lib.rs`: «all 28 built-in tools»). La tarea 7.2 fija esos dos sitios; el enunciado de `route-eval.rs` se ignora por no corresponderse con el repo.
 - **Detalle añadido por mí (no estaba en el enunciado):** el registro de los dos módulos nuevos en `src/db/repos/mod.rs` (tarea 2.2.3) y de la tool en `src/tools/mod.rs` (tarea 7.2); el test de idempotencia del migrador (tarea 1.3); la creación del fichero de test de migración como `tests/db/notification_ingest_migration.rs`; y la verificación de que `POST /api/notifications/mark-read` sin sesión responde `401` (tarea 4.2.1), implícita en la spec de `oidc-auth` pero no listada como escenario propio.
 - **Cierre de la fase 7 (tarea 7.3), añadido tras la revisión del director:** la 7.1 y la 7.2 dejaron la herramienta **registrada y catalogada pero muda**. Dos huecos no previstos en el plan la dejaban sin ruta y sin guía: (a) las `criteria` del router de la skill `pendientes` no mencionaban los avisos entrantes, así que un mensaje como «¿ha llegado algún aviso del formulario de contacto?» podía no activar la skill y el agente nunca vería la tool; (b) el fragmento `SKILL_PENDIENTES_PROMPT`, sembrado por migración, hablaba solo de `tasks`/`reminders`/`calendar`, de modo que el agente desconocía cuándo usar `notifications`. Ambos son necesarios y de bajo riesgo: el router solo gana cobertura y el fragmento una línea más, sin cambiar el número de skills ni el de herramientas.
+
+## Registro de la verificación (fase 9)
+
+- **9.1** Suite de Rust completa: **1382 passed / 0 failed / 1 ignored** (baseline del repo antes de este change: **1314**; este change añade **+68** tests). Comando: `cargo test --no-fail-fast`.
+- **9.2** `cargo clippy --all-targets -- -D warnings` → 0 warnings.
+- **9.3** `cargo fmt --check` → limpio.
+- **9.4** Frontend: `npx vitest run` → **54 ficheros / 384 tests** (baseline 380, **+4**); `npx tsc --noEmit` sin errores; `npm run lint` limpio.
+- **9.5** `openspec validate --all` → **51 passed / 0 failed**.
+- **9.6** Revisión por `grep` de los `tracing::*` de `src/middleware/`, `src/routes/notifications.rs`, `src/routes/ingest_keys.rs`, `src/services/push.rs` y `src/workers/reminder_push.rs`: **ninguna** línea registra el token de ingesta ni la URL completa de un endpoint (solo el `id`/`name` de la clave y el host del endpoint, o el marcador `(endpoint no parseable)`).
+
+### La regresión que cazó la suite completa (y por qué)
+
+La fase 7 (herramienta del agente) rompió **6 tests** de `orchestrator::skill_router` (`*_fails_open_with_all_enabled`): la constante de tests `ALL_TOOLS` fijaba las **28** herramientas del registry y el fallo abierto ya exponía legítimamente **29**. Los filtros dirigidos de esa fase (`--lib skills`, `--lib notifications`) no cubrían ese módulo, así que no se vio hasta la suite completa —que es exactamente para lo que está la tarea 9.1—. Arreglado en `b9e110b` (una línea: `"notifications"` en su sitio alfabético y el docstring a «veintinueve»). El código de producción era correcto: lo desactualizado era la expectativa.
