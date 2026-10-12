@@ -77,7 +77,7 @@ static CATALOG: [SkillSpec; 10] = [
         criteria_true: "El mensaje se refiere a tareas, pendientes, cosas por hacer, prioridades, recordatorios, alarmas o avisos a una hora. Cuenta también un saludo de apertura del día, que abre un repaso de lo que hay pendiente.",
         criteria_false: "El mensaje no se refiere a pendientes ni a ningún aviso.",
         threshold: 0.10,
-        tools: &["tasks", "reminders"],
+        tools: &["tasks", "reminders", "notifications"],
         prompt_key: "SKILL_PENDIENTES_PROMPT",
         prompt_heading: "# SKILL ACTIVA: PENDIENTES",
     },

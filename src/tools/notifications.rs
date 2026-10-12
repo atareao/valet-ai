@@ -29,6 +29,58 @@ impl NotificationsTool {
     pub fn new(db: SqlitePool) -> Self {
         Self { db }
     }
+
+    /// Lista las notificaciones no leídas, más recientes primero.
+    ///
+    /// Delega en [`NotificationsRepo::list_unread`], la misma consulta que sirve
+    /// a `GET /api/notifications/unread`: solo las que tienen `read_at` NULL.
+    async fn list_unread(&self, args: Value) -> Result<ToolResult, ToolError> {
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(DEFAULT_LIMIT)
+            .clamp(1, MAX_LIMIT);
+
+        let (items, total) = NotificationsRepo::list_unread(&self.db, limit, 0).await?;
+
+        Ok(ToolResult {
+            success: true,
+            data: json!({ "notifications": items, "total": total }),
+            message: Some(format!("Hay {total} notificaciones sin leer")),
+        })
+    }
+
+    /// Marca como leídas las notificaciones indicadas en `ids`.
+    ///
+    /// Comparte la semántica idempotente de `POST /api/notifications/mark-read`:
+    /// solo marca las que estaban sin leer, los ids inexistentes se ignoran y
+    /// repetir la llamada devuelve `0`. Exige al menos un `id`.
+    async fn mark_read(&self, args: Value) -> Result<ToolResult, ToolError> {
+        let ids: Vec<String> = args
+            .get("ids")
+            .and_then(|v| v.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if ids.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "se requiere al menos un `id` en `ids`".into(),
+            ));
+        }
+
+        let marked = NotificationsRepo::mark_read(&self.db, &ids).await?;
+
+        Ok(ToolResult {
+            success: true,
+            data: json!({ "marked": marked }),
+            message: Some(format!("{marked} notificaciones marcadas como leídas")),
+        })
+    }
 }
 
 #[async_trait]
@@ -65,10 +117,16 @@ impl Tool for NotificationsTool {
         Permission::NoConfirm
     }
 
-    async fn execute(&self, _args: Value) -> Result<ToolResult, ToolError> {
-        Err(ToolError::ExecutionError(
-            "la herramienta `notifications` aún no está implementada".into(),
-        ))
+    async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
+        let operation = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
+
+        match operation {
+            "list_unread" => self.list_unread(args).await,
+            "mark_read" => self.mark_read(args).await,
+            _ => Err(ToolError::InvalidArguments(format!(
+                "operación desconocida: {operation}"
+            ))),
+        }
     }
 }
 
@@ -120,7 +178,10 @@ mod tests {
     async fn notifications_permission_is_noconfirm() {
         let pool = setup_db().await;
         let tool = NotificationsTool::new(pool);
-        assert_eq!(tool.permission(&serde_json::json!({})), Permission::NoConfirm);
+        assert_eq!(
+            tool.permission(&serde_json::json!({})),
+            Permission::NoConfirm
+        );
     }
 
     /// Scenario: `list_unread` coincide con el endpoint — devuelve las mismas
@@ -182,7 +243,10 @@ mod tests {
             .execute(serde_json::json!({ "operation": "mark_read", "ids": [a, b] }))
             .await
             .unwrap();
-        assert_eq!(first.data["marked"], 2, "both unread are marked the first time");
+        assert_eq!(
+            first.data["marked"], 2,
+            "both unread are marked the first time"
+        );
 
         let again = tool
             .execute(serde_json::json!({ "operation": "mark_read", "ids": [a, b] }))
