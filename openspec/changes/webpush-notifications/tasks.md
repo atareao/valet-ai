@@ -48,10 +48,10 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 
 ## 5. Verificación
 
-- [ ] 5.1 Anotar el recuento de tests antes y después y dejar la suite de Rust completa en verde con `cargo test --no-fail-fast` (0 fallos).
-- [ ] 5.2 `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios (0 warnings).
-- [ ] 5.3 En el frontend, `npx vitest run`, `npx tsc --noEmit`, `npm run lint` y `npm run build` en verde.
-- [ ] 5.4 Regenerar el `static/` versionado con el nuevo build (`rm -rf static && cp -r frontend/dist static`) y comprobar que el backend sirve `/sw.js` como estático.
+- [x] 5.1 Anotar el recuento de tests antes y después y dejar la suite de Rust completa en verde con `cargo test --no-fail-fast` (0 fallos).
+- [x] 5.2 `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios (0 warnings).
+- [x] 5.3 En el frontend, `npx vitest run`, `npx tsc --noEmit`, `npm run lint` y `npm run build` en verde.
+- [x] 5.4 Regenerar el `static/` versionado con el nuevo build (`rm -rf static && cp -r frontend/dist static`) y comprobar que el backend sirve `/sw.js` como estático.
 - [ ] 5.5 Construir la imagen Docker sobre **musl** (`alpine`) y comprobar que enlaza sin OpenSSL (sin `libssl.so.3`/`libcrypto.so.3`).
 - [ ] 5.6 Verificación de punta a punta en un **navegador real**: activar las notificaciones, crear un recordatorio vencido de verdad y comprobar que llega el aviso (y que no se repite en el ciclo siguiente).
 
