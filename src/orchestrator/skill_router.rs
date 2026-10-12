@@ -735,7 +735,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// Las veintiocho herramientas del registry de producción: lo que expone
+    /// Las veintinueve herramientas del registry de producción: lo que expone
     /// el fallo abierto con todas las skills habilitadas.
     const ALL_TOOLS: &[&str] = &[
         "calendar",
@@ -747,6 +747,7 @@ mod tests {
         "get_current_location",
         "get_current_time",
         "notes",
+        "notifications",
         "reminders",
         "render_widget",
         "reverse_geocode",
