@@ -63,6 +63,33 @@ pub enum PushError {
     /// El payload no se pudo cifrar ni firmar con VAPID.
     #[error("no se pudo construir la petición WebPush")]
     Build(#[source] web_push_native::Error),
+    /// Fallo de transporte (red o construcción del cliente) al enviar.
+    #[error("no se pudo enviar la notificación")]
+    Transport(#[source] reqwest::Error),
+}
+
+/// Resultado de un envío WebPush según el código de estado del servicio.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryOutcome {
+    /// 2xx: la notificación se aceptó.
+    Delivered,
+    /// 404 o 410: la suscripción ya no existe; debe borrarse.
+    Gone,
+    /// Cualquier otro estado: fallo transitorio o permanente no clasificado.
+    Failed,
+}
+
+/// Clasifica el código de estado de la respuesta del servicio de push.
+///
+/// Función pura: 2xx → [`DeliveryOutcome::Delivered`], 404 y 410 →
+/// [`DeliveryOutcome::Gone`] (suscripción caducada) y cualquier otro →
+/// [`DeliveryOutcome::Failed`].
+pub fn classify_status(status: u16) -> DeliveryOutcome {
+    match status {
+        200..=299 => DeliveryOutcome::Delivered,
+        404 | 410 => DeliveryOutcome::Gone,
+        _ => DeliveryOutcome::Failed,
+    }
 }
 
 /// Motor base64url sin padding compartido por toda la generación y lectura.
@@ -228,6 +255,51 @@ pub fn build_request(
         .with_vapid(&key_pair, VAPID_CONTACT)
         .build(payload.as_bytes())
         .map_err(PushError::Build)
+}
+
+/// User-Agent propio del cliente de push.
+const USER_AGENT: &str = "valet/1.0";
+
+/// Timeout de cada envío.
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// Construye el [`reqwest::Client`] con `user_agent` propio y timeout.
+pub fn client() -> Result<reqwest::Client, PushError> {
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()
+        .map_err(PushError::Transport)
+}
+
+/// Envía una notificación WebPush real y clasifica la respuesta.
+///
+/// Construye la petición con [`build_request`], la envía con `client` y
+/// devuelve el [`DeliveryOutcome`] resultante. La clave privada VAPID nunca
+/// aparece en el mensaje de un [`PushError`]: el error de transporte solo
+/// envuelve el [`reqwest::Error`], que no contiene las claves.
+pub async fn send(
+    client: &reqwest::Client,
+    keys: &VapidKeys,
+    endpoint: &str,
+    p256dh: &str,
+    auth: &str,
+    payload: &str,
+) -> Result<DeliveryOutcome, PushError> {
+    let request = build_request(keys, endpoint, p256dh, auth, payload)?;
+    let (parts, body) = request.into_parts();
+
+    // `web-push-native` y `reqwest` comparten `http 1.x`, así que el
+    // `HeaderMap` del `http::Request` se reutiliza tal cual.
+    let response = client
+        .post(parts.uri.to_string())
+        .headers(parts.headers)
+        .body(body)
+        .send()
+        .await
+        .map_err(PushError::Transport)?;
+
+    Ok(classify_status(response.status().as_u16()))
 }
 
 #[cfg(test)]
@@ -456,6 +528,68 @@ mod tests {
         let shown = format!("{error} {error:?}");
         assert!(
             !shown.contains("CANARY-PRIVATE-KEY"),
+            "private key leaked in error: {shown}"
+        );
+    }
+
+    /// Scenario: un 2xx es entrega correcta.
+    #[test]
+    fn classify_status_maps_2xx_to_delivered() {
+        for status in [200, 201, 202, 204] {
+            assert_eq!(
+                classify_status(status),
+                DeliveryOutcome::Delivered,
+                "{status} must be Delivered"
+            );
+        }
+    }
+
+    /// Scenario: 404 y 410 son suscripciones caducadas que hay que borrar.
+    #[test]
+    fn classify_status_maps_404_and_410_to_gone() {
+        for status in [404, 410] {
+            assert_eq!(
+                classify_status(status),
+                DeliveryOutcome::Gone,
+                "{status} must be Gone"
+            );
+        }
+    }
+
+    /// Scenario: cualquier otro estado es un fallo sin más.
+    #[test]
+    fn classify_status_maps_the_rest_to_failed() {
+        for status in [400, 401, 429, 500, 503] {
+            assert_eq!(
+                classify_status(status),
+                DeliveryOutcome::Failed,
+                "{status} must be Failed"
+            );
+        }
+    }
+
+    /// Scenario: un fallo de envío nunca refleja la clave privada VAPID en el
+    /// mensaje de error. Se fuerza con un endpoint no enrutable (`[::1]:1`), sin
+    /// depender de resolución DNS externa.
+    #[tokio::test]
+    async fn send_failure_never_leaks_vapid_private_key() {
+        let keys = generate_vapid_pair();
+        let client = client().expect("the client must build");
+
+        let error = send(
+            &client,
+            &keys,
+            "http://[::1]:1/push",
+            CONTRACT_P256DH,
+            CONTRACT_AUTH,
+            r#"{"title":"t","body":"b"}"#,
+        )
+        .await
+        .expect_err("connecting to port 1 must fail");
+
+        let shown = format!("{error} {error:?}");
+        assert!(
+            !shown.contains(&keys.private_key),
             "private key leaked in error: {shown}"
         );
     }
