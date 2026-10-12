@@ -63,7 +63,11 @@ async fn ingest_without_authorization_returns_401_and_no_row() {
         .await;
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(count_notifications(&app).await, 0, "no row must be inserted");
+    assert_eq!(
+        count_notifications(&app).await,
+        0,
+        "no row must be inserted"
+    );
 }
 
 /// Scenario: un token malformado no ingesta (falta el esquema `Bearer` o el
@@ -72,7 +76,11 @@ async fn ingest_without_authorization_returns_401_and_no_row() {
 async fn ingest_with_malformed_authorization_returns_401() {
     let (app, token) = app_with_key("monitor").await;
 
-    for header in [token.clone(), format!("Basic {token}"), "Bearer".to_string()] {
+    for header in [
+        token.clone(),
+        format!("Basic {token}"),
+        "Bearer".to_string(),
+    ] {
         let resp = app
             .post(NOTIFICATIONS)
             .header("authorization", &header)
@@ -86,7 +94,11 @@ async fn ingest_with_malformed_authorization_returns_401() {
         );
     }
 
-    assert_eq!(count_notifications(&app).await, 0, "no row must be inserted");
+    assert_eq!(
+        count_notifications(&app).await,
+        0,
+        "no row must be inserted"
+    );
 }
 
 /// Scenario: un token desconocido no ingesta.
@@ -103,7 +115,11 @@ async fn ingest_with_unknown_token_returns_401() {
         .await;
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(count_notifications(&app).await, 0, "no row must be inserted");
+    assert_eq!(
+        count_notifications(&app).await,
+        0,
+        "no row must be inserted"
+    );
 }
 
 /// Scenario: una clave revocada no ingesta.
@@ -124,7 +140,11 @@ async fn ingest_with_revoked_key_returns_401() {
         .await;
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    assert_eq!(count_notifications(&app).await, 0, "no row must be inserted");
+    assert_eq!(
+        count_notifications(&app).await,
+        0,
+        "no row must be inserted"
+    );
 }
 
 /// Scenario: un token válido actualiza `last_used_at` y pasa.
@@ -153,7 +173,13 @@ async fn ingest_with_valid_token_reaches_handler_and_updates_last_used() {
     );
 
     // El repo no guarda el token: ninguna columna de la clave lo contiene.
-    for value in [&key.id, &key.name, &key.key_hash, &key.prefix, &key.created_at] {
+    for value in [
+        &key.id,
+        &key.name,
+        &key.key_hash,
+        &key.prefix,
+        &key.created_at,
+    ] {
         assert!(!value.contains(&token), "a column leaked the token");
     }
 }
@@ -427,10 +453,16 @@ async fn unread_lists_only_unread_newest_first() {
         .expect("mark read");
 
     // Una notificación con metadata objeto.
-    let with_meta =
-        NotificationsRepo::insert(&app.db, "monitor", "cron", "con meta", "info", Some(r#"{"k":"v"}"#))
-            .await
-            .expect("insert");
+    let with_meta = NotificationsRepo::insert(
+        &app.db,
+        "monitor",
+        "cron",
+        "con meta",
+        "info",
+        Some(r#"{"k":"v"}"#),
+    )
+    .await
+    .expect("insert");
     sqlx::query("UPDATE notifications SET created_at = '2020-01-01 00:00:04' WHERE id = ?1")
         .bind(&with_meta)
         .execute(&app.db)
@@ -498,7 +530,11 @@ async fn unread_limit_defaults_and_rejects_invalid() {
         assert!(body["error"].is_string(), "the body must carry an error");
     }
 
-    let body = app.get(&format!("{UNREAD}?limit=1")).await.json::<Value>().await;
+    let body = app
+        .get(&format!("{UNREAD}?limit=1"))
+        .await
+        .json::<Value>()
+        .await;
     assert_eq!(body["data"].as_array().expect("data").len(), 1);
 }
 

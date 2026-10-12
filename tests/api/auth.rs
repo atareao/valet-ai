@@ -592,7 +592,10 @@ async fn ingest_without_session_but_with_valid_token_reaches_handler() {
         .await
         .expect("seed ingest key");
 
-    let mut req = post_json("/api/notifications", serde_json::json!({ "message": "hola" }));
+    let mut req = post_json(
+        "/api/notifications",
+        serde_json::json!({ "message": "hola" }),
+    );
     req.headers_mut().insert(
         "authorization",
         format!("Bearer {token}").parse().expect("header value"),
