@@ -306,22 +306,24 @@ async fn test_notification_ingest_migration_is_idempotent_through_migrator() {
     valet::db::schema::run_migrations(&pool).await.unwrap();
 
     for table in ["notifications", "ingest_keys"] {
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1")
-                .bind(table)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = ?1",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(count, 1, "table '{table}' must exist exactly once");
     }
 
     for index in ["idx_notifications_unread", "idx_notifications_origin"] {
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = ?1")
-                .bind(index)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name = ?1",
+        )
+        .bind(index)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(count, 1, "index '{index}' must exist exactly once");
     }
 

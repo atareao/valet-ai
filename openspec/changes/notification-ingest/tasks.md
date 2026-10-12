@@ -12,7 +12,7 @@ Este change está **sin aprobar**: ninguna casilla está marcada, ni siquiera la
 
 Fichero nuevo: `migrations/20261012000002_notification_ingest.sql`. Aditiva e idempotente: `CREATE TABLE IF NOT EXISTS` para `notifications` e `ingest_keys` y `CREATE INDEX IF NOT EXISTS` para sus índices. No reconstruye ninguna tabla.
 
-- [ ] 1.1 RED — test de migración en `tests/db/notification_ingest_migration.rs`, con el mismo patrón que `tests/db/webpush_migration.rs` (pool `:memory:` con `valet::db::schema::run_migrations`, helper `columns()` sobre `pragma_table_info` y helper de lectura de SQL desde disco). Debe fallar porque la migración todavía no existe. Aserciones:
+- [x] 1.1 RED — test de migración en `tests/db/notification_ingest_migration.rs`, con el mismo patrón que `tests/db/webpush_migration.rs` (pool `:memory:` con `valet::db::schema::run_migrations`, helper `columns()` sobre `pragma_table_info` y helper de lectura de SQL desde disco). Debe fallar porque la migración todavía no existe. Aserciones:
   - la tabla `notifications` existe y tiene exactamente las columnas `id` (`TEXT`, PK), `origin` (`TEXT` NOT NULL), `author` (`TEXT` NOT NULL), `message` (`TEXT` NOT NULL), `level` (`TEXT` NOT NULL, default `'info'`), `metadata` (`TEXT` nullable), `read_at` (`TEXT` nullable) y `created_at` (`TEXT` NOT NULL, default con `datetime`);
   - la tabla `ingest_keys` existe y tiene exactamente las columnas `id` (`TEXT`, PK), `name` (`TEXT` NOT NULL, UNIQUE), `key_hash` (`TEXT` NOT NULL, UNIQUE), `prefix` (`TEXT` NOT NULL), `created_at` (`TEXT` NOT NULL, default con `datetime`), `last_used_at` (`TEXT` nullable) y `revoked_at` (`TEXT` nullable);
   - existe el índice parcial `idx_notifications_unread` (`sqlite_master.type = 'index'`), declarado `ON notifications(created_at) WHERE read_at IS NULL`;
@@ -20,8 +20,8 @@ Fichero nuevo: `migrations/20261012000002_notification_ingest.sql`. Aditiva e id
   - la violación de `UNIQUE` en `ingest_keys.name` y en `ingest_keys.key_hash` es rechazada (segundo `INSERT` con el mismo valor devuelve error de `UNIQUE`);
   - tras migrar, `SELECT COUNT(*) FROM notifications` y `SELECT COUNT(*) FROM ingest_keys` son ambos `0`: las dos tablas nacen vacías.
   - Comando en rojo: `cargo test --test notification_ingest_migration`. **Pegar la salida en rojo en el informe.**
-- [ ] 1.2 GREEN — escribir `migrations/20261012000002_notification_ingest.sql` con las dos tablas y los dos índices (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`), con las columnas, defaults, `NOT NULL` y `UNIQUE` de la tarea 1.1. Confirmar el test en verde con `cargo test --test notification_ingest_migration` y `cargo check` sin errores.
-- [ ] 1.3 GREEN — test de idempotencia a través del migrador (patrón `test_webpush_migration_is_idempotent_through_migrator`): ejecutar `run_migrations` dos veces sobre el mismo pool y aseverar que `notifications` e `ingest_keys` existen exactamente una vez y que los índices no se duplican. Comando: `cargo test --test notification_ingest_migration`.
+- [x] 1.2 GREEN — escribir `migrations/20261012000002_notification_ingest.sql` con las dos tablas y los dos índices (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`), con las columnas, defaults, `NOT NULL` y `UNIQUE` de la tarea 1.1. Confirmar el test en verde con `cargo test --test notification_ingest_migration` y `cargo check` sin errores.
+- [x] 1.3 GREEN — test de idempotencia a través del migrador (patrón `test_webpush_migration_is_idempotent_through_migrator`): ejecutar `run_migrations` dos veces sobre el mismo pool y aseverar que `notifications` e `ingest_keys` existen exactamente una vez y que los índices no se duplican. Comando: `cargo test --test notification_ingest_migration`.
 
 ## 2. Repositorios de dominio
 
