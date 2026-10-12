@@ -526,6 +526,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::push::routes())
         // Notifications inbox: ingest (ingest-token authenticated) + session reads
         .merge(routes::notifications::routes(state.clone()))
+        // Ingest keys management (session OIDC: create, list, revoke)
+        .merge(routes::ingest_keys::routes())
         // Session middleware: enforces a valid session on `/api/*` when auth
         // is enabled; a no-op when it is disabled (dev mode).
         .layer(axum::middleware::from_fn_with_state(

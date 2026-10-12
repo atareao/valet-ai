@@ -184,7 +184,9 @@ async fn list_includes_active_and_revoked_without_token() {
     let revoked = IngestRepo::create(&app.db, "revocada", &revoked_token)
         .await
         .expect("seed revoked key");
-    IngestRepo::revoke(&app.db, &revoked.id).await.expect("revoke");
+    IngestRepo::revoke(&app.db, &revoked.id)
+        .await
+        .expect("revoke");
 
     let resp = app.get(INGEST_KEYS).await;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -227,7 +229,10 @@ async fn list_includes_active_and_revoked_without_token() {
         .iter()
         .find(|k| k["id"] == active.id)
         .expect("the active key must be listed");
-    assert!(listed["revoked_at"].is_null(), "the active key is not revoked");
+    assert!(
+        listed["revoked_at"].is_null(),
+        "the active key is not revoked"
+    );
     let listed = data
         .iter()
         .find(|k| k["id"] == revoked.id)

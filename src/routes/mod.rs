@@ -2,6 +2,7 @@ pub mod auth;
 pub mod chat;
 pub mod events;
 pub mod export;
+pub mod ingest_keys;
 pub mod memories;
 pub mod messages;
 pub mod notifications;

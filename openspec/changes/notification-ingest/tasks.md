@@ -113,13 +113,13 @@ Fichero nuevo: `src/routes/notifications.rs`, siguiendo el estilo de `src/routes
 
 Fichero nuevo: `src/routes/ingest_keys.rs`, con sesión OIDC, registrado en `src/routes/mod.rs` y en el `Router` de `app_with_state`.
 
-- [ ] 6.1 RED — tests de integración en `tests/api/ingest_keys.rs` (arnés `TestApp`). Aserciones:
+- [x] 6.1 RED — tests de integración en `tests/api/ingest_keys.rs` (arnés `TestApp`). Aserciones:
   - `POST /api/ingest-keys` con `{"name": "<nuevo>"}` responde `201` e incluye `id`, `name`, `prefix` y `token` (scenario «Crear una clave devuelve su token una vez»); el `token` empieza por `val_` y el resto es base64url sin padding (scenario «El token tiene el prefijo y la forma esperados»); el `prefix` son los 12 primeros caracteres del token (scenario «El prefijo son los 12 primeros caracteres»);
   - `name` ausente o en blanco → `400`; `name` de más de 64 bytes → `400`; `name` duplicado → `409` (scenarios de `POST /api/ingest-keys`);
   - `GET /api/ingest-keys` sin claves → `200` con lista vacía; con una activa y una revocada → `200` con una entrada por clave, cada una con `id`, `name`, `prefix`, `created_at`, `last_used_at` y `revoked_at`, y **ninguna** entrada con token (scenarios de `GET` y «El listado no filtra el token» / «El token no se relee después»);
   - `DELETE /api/ingest-keys/{id}` → `204`, la fila sigue con `revoked_at` distinto de NULL; repetir → `204` y `revoked_at` no cambia; id inexistente → `204` (scenarios de `DELETE`).
   - Comando en rojo: `cargo test --test ingest_keys`. **Pegar la salida en rojo.**
-- [ ] 6.2 GREEN — implementar `src/routes/ingest_keys.rs` y el generador del token (`val_` + 32 bytes aleatorios en base64url sin padding), delegando en `IngestRepo`; comprobar explícitamente que el token **no** aparece en el listado ni en la respuesta del `GET`. Confirmar `cargo test --test ingest_keys` y `cargo check` en verde.
+- [x] 6.2 GREEN — implementar `src/routes/ingest_keys.rs` y el generador del token (`val_` + 32 bytes aleatorios en base64url sin padding), delegando en `IngestRepo`; comprobar explícitamente que el token **no** aparece en el listado ni en la respuesta del `GET`. Confirmar `cargo test --test ingest_keys` y `cargo check` en verde.
 
 ## 7. Herramienta del agente `notifications`
 
