@@ -297,3 +297,22 @@ export interface StravaCheckResult {
   athlete_name: string | null;
   error: string | null;
 }
+
+/** Respuesta de `GET /api/push/vapid-key`: la clave pública VAPID en base64url. */
+export interface VapidKeyResponse {
+  public_key: string;
+}
+
+/** Suscripción WebPush del navegador tal como la espera el backend. */
+export interface PushSubscriptionPayload {
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+}
+
+/** Respuesta de `POST /api/push/subscriptions`. */
+export interface PushSubscriptionResponse {
+  id: string;
+}

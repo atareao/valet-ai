@@ -37,12 +37,12 @@ Todas las casillas empiezan sin marcar. **No se escribe ni una línea de código
 
 ## 4. Frontend: service worker, gestor y tab de Ajustes
 
-- [ ] 4.1 RED — test que falla del contenido de `frontend/public/sw.js`: declara los handlers `push` y `notificationclick` y **no** registra un handler de `fetch`. Verificar en rojo con `npx vitest run`.
-- [ ] 4.2 GREEN — escribir `frontend/public/sw.js` (push sin datos no muestra nada; con payload usa `showNotification`; `notificationclick` cierra y enfoca/abre la pestaña). Confirmar el test en verde.
+- [x] 4.1 RED — test que falla del contenido de `frontend/public/sw.js`: declara los handlers `push` y `notificationclick` y **no** registra un handler de `fetch`. Verificar en rojo con `npx vitest run`.
+- [x] 4.2 GREEN — escribir `frontend/public/sw.js` (push sin datos no muestra nada; con payload usa `showNotification`; `notificationclick` cierra y enfoca/abre la pestaña). Confirmar el test en verde.
 - [ ] 4.3 RED — test que falla del registro tolerante en `frontend/src/main.tsx`: con soporte se llama a `register('/sw.js')`; sin `navigator.serviceWorker` no se llama y no hay error; un `register` que rechaza no desmonta la app.
 - [ ] 4.4 GREEN — implementar el registro tolerante en `main.tsx`. Confirmar en verde.
-- [ ] 4.5 RED — test que falla de la conversión base64url→`Uint8Array` en `frontend/src/push/pushManager.ts`: cadena url-safe sin padding → bytes correctos; longitud múltiplo de 4 → sin padding añadido; cadena vacía → array vacío.
-- [ ] 4.6 GREEN — implementar `frontend/src/push/pushManager.ts` y `frontend/src/api/push.ts`. Confirmar en verde.
+- [x] 4.5 RED — test que falla de la conversión base64url→`Uint8Array` en `frontend/src/push/pushManager.ts`: cadena url-safe sin padding → bytes correctos; longitud múltiplo de 4 → sin padding añadido; cadena vacía → array vacío.
+- [x] 4.6 GREEN — implementar `frontend/src/push/pushManager.ts` y `frontend/src/api/push.ts`. Confirmar en verde.
 - [ ] 4.7 RED — test que falla del tab «Notificaciones» en `frontend/src/components/SettingsDialog.tsx`: activar pide permiso, suscribe y publica (`POST`); permiso denegado muestra mensaje y no publica; desactivar cancela (`unsubscribe`) y borra (`DELETE`); sin `PushManager` el switch aparece deshabilitado con explicación; la carga inicial refleja la suscripción existente.
 - [ ] 4.8 GREEN — implementar el tab «Notificaciones» en `SettingsDialog.tsx`. Confirmar `npx vitest run` y `npx tsc --noEmit` en verde.
 
