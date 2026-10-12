@@ -46,4 +46,4 @@ Comandos de verificación de este repo: `cargo test`, `cargo test --lib timeline
 - [x] 6.4 `cargo fmt --check` en verde.
 - [x] 6.5 `openspec validate episodic-call-integrity` y `openspec validate --all` en verde.
 - [ ] 6.6 Medir en producción tras desplegar: `SELECT status, error_message, completion_tokens FROM llm_requests WHERE kind='consolidator'` (esperado: fuera de los `completion_tokens = 1` con `status='success'`) y `SELECT status, error_message FROM llm_requests WHERE kind='timeline'` (esperado: menos `NotJson`). Dejar constancia del antes y el después.
-- [ ] 6.7 Parar y esperar aprobación del usuario. Aprobar el archive (`openspec archive episodic-call-integrity`) en un PR aparte tras el merge.
+- [x] 6.7 Parar y esperar aprobación del usuario. Aprobar el archive (`openspec archive episodic-call-integrity`) en un PR aparte tras el merge.
