@@ -41,15 +41,15 @@ Operaciones: `insert` (devuelve el `id`), `list_unread` (paginado, más reciente
 
 Operaciones: alta guardando **solo** el SHA-256 y el prefijo, búsqueda por hash (actualizando `last_used_at`), listado sin token y revocación. Struct `IngestKey` con `id`, `name`, `key_hash`, `prefix`, `created_at`, `last_used_at` y `revoked_at`, con un `Debug` que nunca incluya un token (solo hay hash y prefijo, pero se asevera).
 
-- [ ] 2.2.1 RED — tests unitarios en `#[cfg(test)]` dentro de `src/db/repos/ingest_keys.rs`. Aserciones:
+- [x] 2.2.1 RED — tests unitarios en `#[cfg(test)]` dentro de `src/db/repos/ingest_keys.rs`. Aserciones:
   - un alta persiste `key_hash` igual al SHA-256 en hexadecimal del token y `prefix` igual a sus 12 primeros caracteres; **ninguna** columna contiene el token completo (scenario «Una clave nueva persiste hash y prefijo, nunca el token»);
   - la búsqueda por el hash del token encuentra la clave y deja `last_used_at` distinto de NULL (scenario «Un token válido actualiza `last_used_at` y pasa», parte de repo); la búsqueda por un hash desconocido devuelve `None`; la búsqueda de una clave revocada devuelve `None` y no toca `last_used_at`;
   - el listado devuelve todas las claves (activas y revocadas) sin exponer el token (scenarios de `GET /api/ingest-keys` a nivel de repo);
   - la revocación fija `revoked_at` sin borrar la fila; repetirla no altera el `revoked_at` ya fijado; revocar un id inexistente no es error (scenarios de `DELETE /api/ingest-keys/{id}` a nivel de repo);
   - el `Debug` de `IngestKey` no contiene la cadena del token (scenario «La salida de depuración no filtra el token»).
   - Comando en rojo: `cargo test --lib ingest_keys_repo`. **Pegar la salida en rojo.**
-- [ ] 2.2.2 GREEN — implementar el repo: alta con `INSERT` de `id`, `name`, `key_hash` (SHA-256 hex), `prefix`; `find_by_hash` con `SELECT ... WHERE key_hash = ?` y `UPDATE ... SET last_used_at = datetime('now')` cuando la clave no está revocada; `list_all` (sin token); `revoke` con `UPDATE ... SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL`. Confirmar `cargo test --lib ingest_keys_repo` y `cargo check` en verde.
-- [ ] 2.2.3 GREEN — registrar ambos módulos en `src/db/repos/mod.rs` (`pub mod notifications;` y `pub mod ingest_keys;`) y confirmar `cargo check` en verde.
+- [x] 2.2.2 GREEN — implementar el repo: alta con `INSERT` de `id`, `name`, `key_hash` (SHA-256 hex), `prefix`; `find_by_hash` con `SELECT ... WHERE key_hash = ?` y `UPDATE ... SET last_used_at = datetime('now')` cuando la clave no está revocada; `list_all` (sin token); `revoke` con `UPDATE ... SET revoked_at = datetime('now') WHERE id = ? AND revoked_at IS NULL`. Confirmar `cargo test --lib ingest_keys_repo` y `cargo check` en verde.
+- [x] 2.2.3 GREEN — registrar ambos módulos en `src/db/repos/mod.rs` (`pub mod notifications;` y `pub mod ingest_keys;`) y confirmar `cargo check` en verde.
 
 ## 3. Transporte: envío masivo y ayudante de host compartido
 
