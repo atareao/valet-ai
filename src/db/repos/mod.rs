@@ -2,6 +2,7 @@ pub mod events;
 pub mod memories;
 pub mod memory;
 pub mod messages;
+pub mod notifications;
 pub mod notes;
 pub mod persistent_memory;
 pub mod profiles;
