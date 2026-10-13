@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Row, Col, Spin, Alert, Empty, Tabs } from "antd";
 import { api } from "../api/client";
 import type { StatsSummary, ModelStats, DayStats, ToolStats, TableSize, MemoryStats, LastApiCall, BackgroundStats } from "../types";
@@ -22,22 +22,34 @@ export const StatsDashboard: React.FC = () => {
   const [background, setBackground] = useState<BackgroundStats[]>([]);
   const [lastCall, setLastCall] = useState<LastApiCall | null>(null);
   const [loading, setLoading] = useState(true);
-  const [selectedDays, setSelectedDays] = useState(30);
+  // Ventana por defecto: 7 días (design.md D4). Gobierna las tres consultas
+  // temporales —diaria, procesos de fondo y modelos— para que miren el mismo
+  // tramo y respondan a «¿está funcionando ahora?».
+  const [selectedDays, setSelectedDays] = useState(7);
   const [error, setError] = useState<string | null>(null);
+  // Identifica la última petición emitida («ventana vigente»). Al cambiar la
+  // ventana (p. ej. 7d→30d) las consultas se solapan; una respuesta obsoleta
+  // —como la de 7d llegando *después* de la de 30d— NO debe pisar el estado de
+  // la ventana que el usuario tiene seleccionada. Solo se aplica la respuesta
+  // cuya petición sigue siendo la vigente.
+  const requestIdRef = useRef(0);
 
   const fetchData = useCallback((days: number) => {
+    const requestId = ++requestIdRef.current;
+    const isCurrent = () => requestId === requestIdRef.current;
     return Promise.all([
       api.getStatsSummary(),
-      api.getStatsByModel(),
+      api.getStatsByModel(days),
       api.getStatsByDay(days),
       api.getStatsTools(),
       api.getDbSizes(),
       api.getMemoryStats(),
-      api.getStatsBackground(),
+      api.getStatsBackground(days),
       api.getLastApiCall(),
     ])
       .then(
         ([summaryData, modelData, dayData, toolsData, dbData, memoryData, backgroundData, lastCallData]) => {
+          if (!isCurrent()) return;
           setSummary(summaryData);
           setByModel(modelData);
           setByDay(dayData);
@@ -49,9 +61,13 @@ export const StatsDashboard: React.FC = () => {
         },
       )
       .catch((err: unknown) => {
+        if (!isCurrent()) return;
         setError(err instanceof Error ? err.message : "Failed to load stats");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!isCurrent()) return;
+        setLoading(false);
+      });
   }, []);
 
   const loadData = (days: number) => {

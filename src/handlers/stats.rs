@@ -58,10 +58,15 @@ pub async fn summary_handler(
 }
 
 /// Per-model breakdown of LLM usage, ordered by total cost descending.
+///
+/// Aggregates every origin (chat and background roles alike) over the last N
+/// days (default 7).
 pub async fn by_model_handler(
     State(state): State<AppState>,
+    Query(params): Query<DayParams>,
 ) -> Result<Json<Vec<ModelStats>>, AppError> {
-    let stats = StatsRepo::by_model(&state.db).await?;
+    let days = params.days.unwrap_or(7);
+    let stats = StatsRepo::by_model(&state.db, days).await?;
     Ok(Json(stats))
 }
 
@@ -120,12 +125,16 @@ pub async fn memory_handler(State(state): State<AppState>) -> Result<Json<Memory
     Ok(Json(stats))
 }
 
-/// Per-origin aggregate of background LLM usage (router, archivist,
-/// consolidator, collapse), one entry per origin.
+/// Per-(origin, model) aggregate of background LLM usage (router, archivist,
+/// consolidator, collapse, timeline) over the last N days (default 7). One
+/// entry per pair, plus a zeroed, model-less entry per canonical origin that
+/// never ran.
 pub async fn background_handler(
     State(state): State<AppState>,
+    Query(params): Query<DayParams>,
 ) -> Result<Json<Vec<BackgroundStats>>, AppError> {
-    let stats = StatsRepo::background_summary(&state.db).await?;
+    let days = params.days.unwrap_or(7);
+    let stats = StatsRepo::background_summary(&state.db, days).await?;
     Ok(Json(stats))
 }
 
@@ -279,6 +288,29 @@ mod tests {
         assert!((res.0.avg_duration_ms.unwrap() - 250.0).abs() < f64::EPSILON);
     }
 
+    /// Convenience: insert a single LLM request row with an explicit `kind`.
+    async fn insert_request_with_kind(
+        db: &SqlitePool,
+        id: &str,
+        kind: &str,
+        model: &str,
+        created_at: Option<&str>,
+    ) {
+        sqlx::query(
+            "INSERT INTO llm_requests (id, model, provider, profile_id, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens, cost, is_byok, duration_ms, cache_hit, status, error_message, tool_calls, kind, created_at)
+             VALUES (?1, ?2, ?3, ?4, 10, 5, 15, 0, 0, 0.01, 0, 100, 0, 'success', NULL, NULL, ?5, COALESCE(?6, datetime('now')))",
+        )
+        .bind(id)
+        .bind(model)
+        .bind(Option::<String>::None) // provider
+        .bind("prof-hdl")
+        .bind(kind)
+        .bind(created_at)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
     // ── by_model_handler ───────────────────────────────────────────────────
 
     #[tokio::test]
@@ -337,12 +369,83 @@ mod tests {
         )
         .await;
 
-        let res = by_model_handler(State(state)).await.unwrap();
+        let res = by_model_handler(State(state), Query(DayParams { days: None }))
+            .await
+            .unwrap();
         assert_eq!(res.0.len(), 2);
         assert_eq!(res.0[0].model, "claude-3");
         assert_eq!(res.0[0].calls, 1);
         assert_eq!(res.0[1].model, "gpt-4o");
         assert_eq!(res.0[1].calls, 2);
+    }
+
+    /// `by_model_handler` propagates the received `days` window.
+    #[tokio::test]
+    async fn test_by_model_handler_propagates_days() {
+        let state = setup_state().await;
+
+        insert_request_with_kind(&state.db, "bm-now", "consolidator", "qwen/x", None).await;
+        insert_request_with_kind(
+            &state.db,
+            "bm-old",
+            "consolidator",
+            "qwen/x",
+            Some("2026-07-01T00:00:00"),
+        )
+        .await;
+
+        let res = by_model_handler(State(state), Query(DayParams { days: Some(7) }))
+            .await
+            .unwrap();
+        let qwen = res
+            .0
+            .iter()
+            .find(|m| m.model == "qwen/x")
+            .expect("the background-only model must appear");
+        assert_eq!(
+            qwen.calls, 1,
+            "rows outside the 7-day window must be discarded"
+        );
+    }
+
+    // ── background_handler ─────────────────────────────────────────────────
+
+    /// With no query params the handler still returns the five canonical
+    /// origins (the repository default of 7 days applies).
+    #[tokio::test]
+    async fn test_background_handler_lists_canonical_origins() {
+        let state = setup_state().await;
+
+        let res = background_handler(State(state), Query(DayParams { days: None }))
+            .await
+            .unwrap();
+        assert_eq!(res.0.len(), 5);
+        assert!(res.0.iter().all(|b| b.calls == 0));
+    }
+
+    /// `background_handler` propagates the received `days` window.
+    #[tokio::test]
+    async fn test_background_handler_propagates_days() {
+        let state = setup_state().await;
+
+        insert_request_with_kind(&state.db, "bg-now", "consolidator", "qwen/x", None).await;
+        insert_request_with_kind(
+            &state.db,
+            "bg-old",
+            "consolidator",
+            "qwen/x",
+            Some("2026-07-01T00:00:00"),
+        )
+        .await;
+
+        let res = background_handler(State(state), Query(DayParams { days: Some(7) }))
+            .await
+            .unwrap();
+        let consolidator = res.0.iter().find(|b| b.kind == "consolidator").unwrap();
+        assert_eq!(
+            consolidator.calls, 1,
+            "rows outside the 7-day window must be discarded"
+        );
     }
 
     // ── by_day_handler ─────────────────────────────────────────────────────
