@@ -55,5 +55,10 @@ Comandos de verificación de este repo: `cargo test`, `cargo clippy --all-target
 - [x] 6.4 `npx vitest run` en verde.
 - [x] 6.5 `npx tsc --noEmit` en verde.
 - [x] 6.6 `openspec validate --all` en verde.
-- [ ] 6.7 Medir en producción tras desplegar: la fila del consolidador ya no funde los tres modelos (`GROUP BY kind, model`) y la avería de `deepseek` aparece en `suspicious_calls`. Dejar constancia del antes y el después.
-- [ ] 6.8 Parar y esperar aprobación del usuario. Aprobar el archive (`openspec archive stats-role-model-view`) en un PR aparte tras el merge.
+- [x] 6.7 Medir en producción tras desplegar: la fila del consolidador ya no funde los tres modelos (`GROUP BY kind, model`) y la avería de `deepseek` aparece en `suspicious_calls`. Dejar constancia del antes y el después.
+  - **Medido el 2026-10-14** sobre `llm_requests` en producción (`ssh co1`), ventana de 7 días:
+    - **Antes:** una sola fila por origen; la tarjeta mostraba el consolidador como «89 llamadas · 242.522 tokens · 0 errores», fundiendo deepseek, qwen y mistral.
+    - **Después:** tres filas. `consolidator/deepseek` 54 llamadas / **54 tokens** / 0 errores (un token por llamada; última 2026-10-10 08:34); `consolidator/qwen` 44 / 31.303 / 1 (última 2026-10-13 19:14); `consolidator/mistral` 2 / 712 / 0 (última 2026-10-10 08:42).
+    - `suspicious_calls = 54`: exactamente las 54 llamadas `success` con un token del consolidador deepseek, que antes se contaban como «0 errores».
+    - Tráfico nuevo tras el despliegue confirmado: la última llamada `chat` es del 2026-10-14 05:04 UTC.
+- [x] 6.8 Parar y esperar aprobación del usuario. Aprobar el archive (`openspec archive stats-role-model-view`) en un PR aparte tras el merge.
