@@ -78,25 +78,27 @@ impl NotificationsRepo {
     }
 
     /// Lista las notificaciones no leídas, más recientes primero, junto con el
-    /// número total de no leídas (independiente del `limit`).
+    /// cursor de continuación (`None` si no hay más páginas) y el número total
+    /// de no leídas (independiente del `limit`).
     ///
-    /// `created_at` es `datetime('now')` con granularidad de segundo, así que dos
-    /// inserciones del mismo segundo empatan: `rowid DESC` desempata de forma
-    /// determinista cuando los timestamps coinciden.
+    /// El cursor es keyset y codifica `created_at` y `rowid` como
+    /// `"<created_at>|<rowid>"`, de modo que dos filas con el mismo
+    /// `created_at` (la granularidad de la columna es de segundo) no se saltan
+    /// al paginar.
     pub async fn list_unread(
         pool: &SqlitePool,
         limit: i64,
-        offset: i64,
-    ) -> Result<(Vec<Notification>, i64), sqlx::Error> {
+        cursor: Option<&str>,
+    ) -> Result<(Vec<Notification>, Option<String>, i64), sqlx::Error> {
+        let _ = cursor; // RED: paginación por cursor sin implementar
         let rows = sqlx::query(
             "SELECT id, origin, author, message, level, metadata, read_at, created_at
              FROM notifications
              WHERE read_at IS NULL
              ORDER BY created_at DESC, rowid DESC
-             LIMIT ?1 OFFSET ?2",
+             LIMIT ?1",
         )
         .bind(limit)
-        .bind(offset)
         .fetch_all(pool)
         .await?;
 
@@ -119,7 +121,7 @@ impl NotificationsRepo {
                 .fetch_one(pool)
                 .await?;
 
-        Ok((items, total))
+        Ok((items, None, total))
     }
 
     /// Marca como leídas las notificaciones no leídas cuyos `id` figuran en
@@ -149,6 +151,13 @@ impl NotificationsRepo {
 
         let result = builder.build().execute(pool).await?;
         Ok(result.rows_affected())
+    }
+
+    /// Marca como leídas TODAS las notificaciones no leídas y devuelve cuántas
+    /// filas cambiaron. Idempotente: la segunda llamada devuelve 0.
+    pub async fn mark_all_read(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+        let _ = pool; // RED: sin implementar.
+        Ok(0)
     }
 }
 
@@ -275,14 +284,18 @@ mod tests {
             .await
             .unwrap();
 
-        let (items, total) = NotificationsRepo::list_unread(&pool, 10, 0).await.unwrap();
+        let (items, _next_cursor, total) = NotificationsRepo::list_unread(&pool, 10, None)
+            .await
+            .unwrap();
         assert_eq!(total, 2, "total counts unread rows, not returned ones");
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].id, n3, "newest unread comes first");
         assert_eq!(items[1].id, n2);
         assert!(items.iter().all(|n| n.read_at.is_none()));
 
-        let (limited, total) = NotificationsRepo::list_unread(&pool, 1, 0).await.unwrap();
+        let (limited, _next_cursor, total) = NotificationsRepo::list_unread(&pool, 1, None)
+            .await
+            .unwrap();
         assert_eq!(limited.len(), 1, "limit must be respected");
         assert_eq!(limited[0].id, n3);
         assert_eq!(total, 2, "total is independent of the page size");
@@ -343,5 +356,162 @@ mod tests {
         // An empty list is a no-op, not an error.
         let empty = NotificationsRepo::mark_read(&pool, &[]).await.unwrap();
         assert_eq!(empty, 0);
+    }
+
+    /// Scenario: `mark_all_read` marca todas las no leídas y respeta las que ya
+    /// estaban leídas (cuyo `read_at` no debe cambiar).
+    #[tokio::test]
+    async fn notifications_repo_mark_all_read_marks_every_unread_row() {
+        let pool = setup().await;
+
+        // Una fila que ya estaba leída: `mark_all_read` no debe tocarla.
+        let already = NotificationsRepo::insert(&pool, "o", "a", "ya leída", "info", None)
+            .await
+            .unwrap();
+        NotificationsRepo::mark_read(&pool, std::slice::from_ref(&already))
+            .await
+            .unwrap();
+        let already_read_at = NotificationsRepo::get_by_id(&pool, &already)
+            .await
+            .unwrap()
+            .unwrap()
+            .read_at
+            .expect("the pre-marked row must be read");
+
+        // Tres filas no leídas: son las que `mark_all_read` debe marcar.
+        let u1 = NotificationsRepo::insert(&pool, "o", "a", "no leída 1", "info", None)
+            .await
+            .unwrap();
+        let u2 = NotificationsRepo::insert(&pool, "o", "a", "no leída 2", "info", None)
+            .await
+            .unwrap();
+        let u3 = NotificationsRepo::insert(&pool, "o", "a", "no leída 3", "info", None)
+            .await
+            .unwrap();
+
+        let marked = NotificationsRepo::mark_all_read(&pool).await.unwrap();
+        assert_eq!(marked, 3, "the three unread rows must be marked");
+
+        for id in [&u1, &u2, &u3] {
+            let row = NotificationsRepo::get_by_id(&pool, id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(row.read_at.is_some(), "every unread row must now be read");
+        }
+
+        let after = NotificationsRepo::get_by_id(&pool, &already)
+            .await
+            .unwrap()
+            .unwrap()
+            .read_at
+            .expect("the pre-marked row keeps its read_at");
+        assert_eq!(after, already_read_at, "an already-read row must not change");
+    }
+
+    /// Scenario: repetir `mark_all_read` es idempotente (devuelve 0).
+    #[tokio::test]
+    async fn notifications_repo_mark_all_read_is_idempotent() {
+        let pool = setup().await;
+
+        for i in 0..3 {
+            NotificationsRepo::insert(&pool, "o", "a", &format!("n{i}"), "info", None)
+                .await
+                .unwrap();
+        }
+
+        let first = NotificationsRepo::mark_all_read(&pool).await.unwrap();
+        assert_eq!(first, 3, "the first call marks every unread row");
+
+        let second = NotificationsRepo::mark_all_read(&pool).await.unwrap();
+        assert_eq!(second, 0, "repeating mark_all_read must be a no-op");
+    }
+
+    /// Scenario: el cursor keyset no se salta filas que comparten el mismo
+    /// `created_at` (granularidad de segundo): la unión de las dos páginas son
+    /// tres ids distintos, sin repetidos.
+    #[tokio::test]
+    async fn notifications_repo_unread_cursor_does_not_skip_same_second_rows() {
+        let pool = setup().await;
+
+        let mut inserted = Vec::new();
+        for i in 0..3 {
+            let id = NotificationsRepo::insert(&pool, "o", "a", &format!("n{i}"), "info", None)
+                .await
+                .unwrap();
+            // Pin the very same created_at for all three: same-second ties.
+            sqlx::query(
+                "UPDATE notifications SET created_at = '2020-01-01 00:00:00' WHERE id = ?1",
+            )
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            inserted.push(id);
+        }
+
+        let (page1, cursor, total) = NotificationsRepo::list_unread(&pool, 2, None)
+            .await
+            .unwrap();
+        assert_eq!(page1.len(), 2, "first page returns up to the limit");
+        assert_eq!(total, 3);
+        let cursor = cursor.expect("a full page with more rows must yield a cursor");
+
+        let (page2, _cursor2, _total) = NotificationsRepo::list_unread(&pool, 2, Some(cursor.as_str()))
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 1, "second page returns the remaining row");
+
+        let mut seen: Vec<String> = page1
+            .iter()
+            .chain(page2.iter())
+            .map(|n| n.id.clone())
+            .collect();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 3, "the union of both pages must be three distinct ids");
+        assert!(
+            inserted.iter().all(|id| seen.contains(id)),
+            "every inserted row must appear exactly once across the pages"
+        );
+    }
+
+    /// Scenario: el `total` cuenta todas las no leídas, sea cual sea la página.
+    /// (Invariante heredado: ya se cumple en el andamiaje RED.)
+    #[tokio::test]
+    async fn notifications_repo_unread_total_is_independent_of_page() {
+        let pool = setup().await;
+
+        for i in 0..25 {
+            NotificationsRepo::insert(&pool, "o", "a", &format!("n{i}"), "info", None)
+                .await
+                .unwrap();
+        }
+
+        let (items, _cursor, total) = NotificationsRepo::list_unread(&pool, 10, None)
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 10, "the page size must be respected");
+        assert_eq!(total, 25, "total counts every unread row, not the page");
+    }
+
+    /// Scenario: en la última página no hay cursor de continuación.
+    /// (Invariante heredado: ya se cumple en el andamiaje RED.)
+    #[tokio::test]
+    async fn notifications_repo_unread_next_cursor_is_none_on_last_page() {
+        let pool = setup().await;
+
+        for i in 0..3 {
+            NotificationsRepo::insert(&pool, "o", "a", &format!("n{i}"), "info", None)
+                .await
+                .unwrap();
+        }
+
+        let (items, cursor, total) = NotificationsRepo::list_unread(&pool, 10, None)
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(total, 3);
+        assert!(cursor.is_none(), "no more rows means no next cursor");
     }
 }

@@ -41,7 +41,7 @@ impl NotificationsTool {
             .unwrap_or(DEFAULT_LIMIT)
             .clamp(1, MAX_LIMIT);
 
-        let (items, total) = NotificationsRepo::list_unread(&self.db, limit, 0).await?;
+        let (items, _next_cursor, total) = NotificationsRepo::list_unread(&self.db, limit, None).await?;
 
         Ok(ToolResult {
             success: true,

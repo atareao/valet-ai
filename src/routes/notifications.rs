@@ -299,7 +299,7 @@ async fn list_unread(
 ) -> Result<Json<PaginatedResponse<NotificationItem>>, AppError> {
     let limit = parse_limit(query.limit.as_deref())?;
 
-    let (items, total) = NotificationsRepo::list_unread(&state.db, limit, 0).await?;
+    let (items, _next_cursor, total) = NotificationsRepo::list_unread(&state.db, limit, None).await?;
 
     let data = items.into_iter().map(to_item).collect();
 
