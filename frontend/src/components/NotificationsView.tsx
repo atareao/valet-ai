@@ -14,13 +14,15 @@ const LEVEL_COLORS: Record<Notification["level"], string> = {
 };
 
 /**
- * Fecha de creación formateada en la hora local del usuario a partir del crudo
- * UTC de SQLite. Un valor no parseable se muestra como ausencia —`—`—, nunca
- * como «Invalid Date».
+ * Fecha de creación: el crudo UTC de SQLite se interpreta como UTC y el texto
+ * se pinta en la hora local del usuario dentro de un `<time>` cuyo `dateTime`
+ * expone el instante UTC. Un valor no parseable se muestra como ausencia —`—`—,
+ * nunca como «Invalid Date» ni el valor crudo.
  */
-const formatCreatedAt = (value: string): string => {
+const formatCreatedAt = (value: string): React.ReactNode => {
   const dt = parseSqliteTimestamp(value);
-  return dt ? dt.toLocaleString() : "—";
+  if (!dt) return "—";
+  return <time dateTime={dt.toISOString()}>{dt.toLocaleString()}</time>;
 };
 
 const countLabel = (total: number): string =>
@@ -76,6 +78,7 @@ export const NotificationsView: React.FC = () => {
 
         {notifications.length === 0 ? (
           <div
+            role="status"
             style={{
               textAlign: "center",
               padding: "24px 0",
@@ -125,10 +128,10 @@ export const NotificationsView: React.FC = () => {
         )}
 
         <Space>
-          <Button onClick={goPrev} disabled={!hasPrev}>
+          <Button onClick={goPrev} disabled={!hasPrev || loading}>
             Anterior
           </Button>
-          <Button onClick={goNext} disabled={!hasNext}>
+          <Button onClick={goNext} disabled={!hasNext || loading}>
             Siguiente
           </Button>
         </Space>

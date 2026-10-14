@@ -176,6 +176,97 @@ describe("useNotifications", () => {
     });
   });
 
+  it("markAll resets to the first page", async () => {
+    mockApi.listUnreadNotifications
+      .mockResolvedValueOnce(paginated([notification("n1")], "c1", 25))
+      .mockResolvedValueOnce(paginated([notification("n2")], null, 25))
+      .mockResolvedValueOnce(paginated([], null, 0));
+    mockApi.markAllNotificationsRead.mockResolvedValue({ marked: 25 });
+
+    const { result } = renderHook(() => useNotifications());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      result.current.goNext();
+    });
+
+    await waitFor(() => {
+      expect(result.current.page).toBe(2);
+    });
+
+    await act(async () => {
+      await result.current.markAll();
+    });
+
+    await waitFor(() => {
+      expect(result.current.page).toBe(1);
+    });
+
+    // La recarga va sin cursor: vuelve a la primera página.
+    expect(mockApi.listUnreadNotifications).toHaveBeenLastCalledWith({
+      limit: 10,
+    });
+    expect(result.current.hasPrev).toBe(false);
+  });
+
+  it("markRead goes back a page when the last page becomes empty", async () => {
+    mockApi.listUnreadNotifications
+      .mockResolvedValueOnce(paginated([notification("n1")], "c1", 2))
+      .mockResolvedValueOnce(paginated([notification("n2")], null, 2))
+      .mockResolvedValueOnce(paginated([], null, 1))
+      .mockResolvedValueOnce(paginated([notification("n1")], null, 1));
+    mockApi.markNotificationsRead.mockResolvedValue({ marked: 1 });
+
+    const { result } = renderHook(() => useNotifications());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      result.current.goNext();
+    });
+
+    await waitFor(() => {
+      expect(result.current.page).toBe(2);
+    });
+
+    await act(async () => {
+      await result.current.markRead("n2");
+    });
+
+    await waitFor(() => {
+      expect(result.current.page).toBe(1);
+    });
+
+    // Tras vaciarse la página 2, se pide la página 1 sin cursor.
+    expect(mockApi.listUnreadNotifications).toHaveBeenLastCalledWith({
+      limit: 10,
+    });
+  });
+
+  it("markAll exposes the error when the request rejects", async () => {
+    mockApi.listUnreadNotifications.mockResolvedValue(
+      paginated([notification("n1")], null, 1),
+    );
+    mockApi.markAllNotificationsRead.mockRejectedValue(new Error("nope"));
+
+    const { result } = renderHook(() => useNotifications());
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.markAll();
+    });
+
+    expect(result.current.error).toBe("nope");
+  });
+
   it("exposes the error message when the request rejects", async () => {
     mockApi.listUnreadNotifications.mockRejectedValue(new Error("boom"));
 

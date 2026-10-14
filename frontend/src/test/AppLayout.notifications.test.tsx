@@ -99,7 +99,7 @@ describe("AppLayout — avisos", () => {
   it("shows a bell button in the header", () => {
     renderLayout();
 
-    expect(screen.getByRole("button", { name: /bell/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /avisos/i })).toBeInTheDocument();
   });
 
   it("opens the notifications dialog when the bell is clicked", async () => {
@@ -108,10 +108,12 @@ describe("AppLayout — avisos", () => {
 
     expect(screen.queryByText("🔔 Avisos")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /bell/i }));
+    await user.click(screen.getByRole("button", { name: /avisos/i }));
 
     await waitFor(() => {
       expect(screen.getByText("🔔 Avisos")).toBeInTheDocument();
     });
+
+    expect(screen.getByTestId("notifications-view")).toBeInTheDocument();
   });
 });

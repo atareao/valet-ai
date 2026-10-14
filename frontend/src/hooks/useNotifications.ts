@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import type { Notification } from "../types";
+import { useState, useEffect, useCallback, useRef } from "react";
+import type { Notification, PaginatedResponse } from "../types";
 import { api } from "../api/client";
 
 /**
@@ -42,25 +42,40 @@ export function useNotifications(
   const [page, setPage] = useState(1);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [cursors, setCursors] = useState<(string | undefined)[]>([undefined]);
+  // Secuencia monotónica de peticiones: cada `fetchPage` toma un id creciente y
+  // al resolver solo pinta si sigue siendo el último. Sin esto, una respuesta
+  // lenta que llega después de otra más reciente pinta la página equivocada.
+  const seq = useRef(0);
 
   const fetchPage = useCallback(
-    (pageNumber: number, cursor: string | undefined) => {
+    (
+      pageNumber: number,
+      cursor: string | undefined,
+    ): Promise<PaginatedResponse<Notification> | undefined> => {
+      const id = ++seq.current;
       return api
         .listUnreadNotifications({
           limit: pageSize,
           ...(cursor ? { cursor } : {}),
         })
         .then((res) => {
+          if (id !== seq.current) return undefined;
           setNotifications(res.data);
           setTotal(res.total ?? res.data.length);
           setNextCursor(res.next_cursor ?? null);
           setPage(pageNumber);
           setError(null);
+          return res;
         })
         .catch((err: unknown) => {
+          if (id !== seq.current) return undefined;
           setError(err instanceof Error ? err.message : String(err));
+          return undefined;
         })
-        .finally(() => setLoading(false));
+        .finally(() => {
+          if (id !== seq.current) return;
+          setLoading(false);
+        });
     },
     [pageSize],
   );
@@ -71,15 +86,20 @@ export function useNotifications(
     // al recargar vuelva a aparecer el indicador de carga. Programarla en un
     // microtask resuelto deja el estado fuera del cuerpo síncrono del efecto,
     // sin necesidad de suprimir la regla.
-    let cancelled = false;
+    //
+    // La cancelación se resuelve con la misma guarda de secuencia que la
+    // respuesta en vuelo: el desmontaje incrementa `seq`, así que el `id` que
+    // tomará la petición inicial deja de ser el último y ni el microtask ni
+    // `fetchPage` pintan nada. No hace falta un flag aparte.
+    const id = seq.current + 1;
     void Promise.resolve().then(() => {
-      if (cancelled) return;
+      if (id !== seq.current) return;
       setLoading(true);
       setError(null);
     });
     void fetchPage(1, undefined);
     return () => {
-      cancelled = true;
+      seq.current += 1;
     };
   }, [fetchPage]);
 
@@ -109,16 +129,39 @@ export function useNotifications(
 
   const markRead = useCallback(
     async (id: string) => {
-      await api.markNotificationsRead([id]);
-      await fetchPage(page, cursors[page - 1]);
+      try {
+        await api.markNotificationsRead([id]);
+        const res = await fetchPage(page, cursors[page - 1]);
+        // Si al refrescar la página actual esta queda vacía (era la última
+        // fila), retrocede a la anterior para no dejar al usuario en una página
+        // fantasma.
+        if (res && res.data.length === 0 && page > 1) {
+          const target = page - 1;
+          setLoading(true);
+          await fetchPage(target, cursors[target - 1]);
+        }
+      } catch (err: unknown) {
+        // Sin esto la UI se quedaría con datos obsoletos en silencio.
+        setError(err instanceof Error ? err.message : String(err));
+      }
     },
     [page, cursors, fetchPage],
   );
 
   const markAll = useCallback(async () => {
-    await api.markAllNotificationsRead();
-    await fetchPage(page, cursors[page - 1]);
-  }, [page, cursors, fetchPage]);
+    try {
+      await api.markAllNotificationsRead();
+      // Marcar todas vacía el conjunto: se vuelve a la primera página sin
+      // cursor y se descarta la pila de cursores, que ya no describe nada útil.
+      setCursors([undefined]);
+      setPage(1);
+      setLoading(true);
+      await fetchPage(1, undefined);
+    } catch (err: unknown) {
+      // Sin esto la UI se quedaría con datos obsoletos en silencio.
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [fetchPage]);
 
   return {
     notifications,

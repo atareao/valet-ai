@@ -122,6 +122,8 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           <Button
             type="text"
             icon={<BellOutlined />}
+            aria-label="Avisos"
+            title="Avisos"
             onClick={() => setNotificationsVisible(true)}
             style={{ color: "rgba(255,255,255,0.65)" }}
           />

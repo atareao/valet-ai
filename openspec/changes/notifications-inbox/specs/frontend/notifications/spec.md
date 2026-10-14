@@ -113,9 +113,11 @@ pendientes (`total`). Cada fila SHALL mostrar el origen, el autor, el nivel (con
 `warning` o `critical`), el mensaje y `created_at`, y SHALL ofrecer la acción «Marcar como leído».
 La vista SHALL ofrecer además un botón «Marcar todos como leídos» y SHALL mostrar un estado vacío
 cuando no queden pendientes. Las fechas SHALL interpretarse como **UTC** cuando lleguen en el
-formato crudo de SQLite (`"YYYY-MM-DD HH:MM:SS"`: separador de espacio, sin `T` y sin zona horaria)
-y SHALL mostrarse como `—` si no son parseables, sin mostrar nunca el valor crudo ni «Invalid Date»
-(WebKit rechaza el crudo; V8 lo lee como hora local).
+formato crudo de SQLite (`"YYYY-MM-DD HH:MM:SS"`: separador de espacio, sin `T` y sin zona horaria),
+SHALL mostrarse en la hora **local** del navegador dentro de un elemento `<time>` cuyo atributo
+`dateTime` SHALL exponer el instante UTC, y SHALL mostrarse como `—` (sin `<time>`) si no son
+parseables, sin mostrar nunca el valor crudo ni «Invalid Date» (WebKit rechaza el crudo; V8 lo lee
+como hora local).
 
 **Scenarios:**
 
@@ -139,18 +141,19 @@ y SHALL mostrarse como `—` si no son parseables, sin mostrar nunca el valor cr
 - **Then** la lista queda vacía
 - **And** se muestra el estado vacío
 
-#### Scenario: La fecha se muestra en UTC
+#### Scenario: La fecha se interpreta como UTC y se muestra en la hora local
 
 - **Given** un aviso con `created_at` en el formato crudo de SQLite `"2026-10-12 13:55:33"`
 - **When** se renderiza la vista
-- **Then** ese instante se muestra como UTC (`2026-10-12T13:55:33Z`)
-- **And** no depende de la zona horaria del navegador
+- **Then** ese instante SHALL interpretarse como UTC (el instante correcto)
+- **And** el texto SHALL mostrarse en la hora **local** del navegador
+- **And** el elemento `<time>` SHALL exponer el instante UTC en su atributo `dateTime`
 
 #### Scenario: Una fecha no parseable se muestra como ausencia
 
 - **Given** un aviso con `created_at` no parseable
 - **When** se renderiza la vista
-- **Then** se muestra `—`
+- **Then** se muestra `—` (sin `<time>`)
 - **And** nunca se muestra «Invalid Date» ni el valor crudo
 
 #### Scenario: Sin pendientes se muestra el estado vacío

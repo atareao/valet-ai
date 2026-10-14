@@ -79,11 +79,12 @@ describe("NotificationsView", () => {
   });
 
   it("renders created_at as UTC", async () => {
-    // El esperado se calcula igual que el componente debe hacerlo
+    // El texto se calcula igual que el componente debe hacerlo
     // (`Date.UTC` → `toLocaleString()`), de modo que el test vale en cualquier
-    // `TZ` del runner. Si el componente mostrara el crudo o `Invalid Date`,
-    // este test fallaría.
+    // `TZ` del runner. El atributo `dateTime` fija el instante UTC, que sí
+    // detecta un desfase de zona sea cual sea la `TZ` del runner.
     const expected = new Date(Date.UTC(2026, 9, 13, 19, 12, 33)).toLocaleString();
+    const expectedIso = new Date(Date.UTC(2026, 9, 13, 19, 12, 33)).toISOString();
 
     mockApi.listUnreadNotifications.mockResolvedValue(
       paginated([notification("n1", { created_at: "2026-10-13 19:12:33" })], null, 1),
@@ -91,7 +92,9 @@ describe("NotificationsView", () => {
 
     render(<NotificationsView />);
 
-    expect(await screen.findByText(expected)).toBeInTheDocument();
+    const time = await screen.findByText(expected);
+    expect(time.tagName).toBe("TIME");
+    expect(time).toHaveAttribute("dateTime", expectedIso);
     expect(screen.queryByText("Invalid Date")).not.toBeInTheDocument();
     expect(screen.queryByText("2026-10-13 19:12:33")).not.toBeInTheDocument();
   });

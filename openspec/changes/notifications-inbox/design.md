@@ -124,8 +124,10 @@ con la primera; la limpieza tras revisar se hace con la segunda. La ruta soporta
 `notifications.created_at` llega como `datetime('now')` crudo (`"YYYY-MM-DD HH:MM:SS"`, sin `T`,
 sin zona). Renderizarlo con `new Date()` reproduce el defecto conocido (evidencia 4): WebKit lo
 rechaza (`Invalid Date`) y V8 lo lee como hora **local** cuando es **UTC**. El diálogo **SHALL**
-interpretar `created_at` como **UTC** y mostrar `—` cuando no sea parseable, **nunca** el valor
-crudo ni «Invalid Date». Se usa el helper existente `parseSqliteTimestamp` (reescribe el separador
+interpretar `created_at` como **UTC**, mostrarlo en la hora **local** del navegador dentro de un
+`<time dateTime="<ISO UTC>">` (el `dateTime` expone el instante UTC) y mostrar `—` cuando no sea
+parseable, **nunca** el valor crudo ni «Invalid Date». Se usa el helper existente
+`parseSqliteTimestamp` (reescribe el separador
 a `T`, añade `Z`, respeta ISO-8601 con zona y devuelve `null` si no parsea). El diálogo **no** pinta
 `metadata`: no aporta al lector y solo añade ruido.
 
