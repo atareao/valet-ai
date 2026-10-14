@@ -254,4 +254,56 @@ mod tests {
             .unwrap();
         assert_eq!(again.data["marked"], 0, "repeating the mark is a no-op");
     }
+
+    /// Scenario: `mark_read` **sin `ids`** marca todas las no leídas — mismo
+    /// comportamiento que `POST /api/notifications/mark-read` con `{}` — y la
+    /// lista de no leídas queda vacía.
+    #[tokio::test]
+    async fn mark_read_without_ids_marks_all_unread() {
+        let pool = setup_db().await;
+        let tool = NotificationsTool::new(pool.clone());
+
+        for i in 0..3 {
+            NotificationsRepo::insert(&pool, "monitor", "cron", &format!("n{i}"), "info", None)
+                .await
+                .unwrap();
+        }
+
+        let result = tool
+            .execute(serde_json::json!({ "operation": "mark_read" }))
+            .await
+            .expect("an absent `ids` means «all unread» and must succeed");
+        assert!(result.success);
+        assert_eq!(
+            result.data["marked"], 3,
+            "every unread notification must be marked"
+        );
+
+        // Después de marcar todas, no queda ninguna sin leer.
+        let after = tool
+            .execute(serde_json::json!({ "operation": "list_unread" }))
+            .await
+            .unwrap();
+        let remaining = after.data["notifications"]
+            .as_array()
+            .expect("notifications must be an array");
+        assert!(remaining.is_empty(), "no unread notification must remain");
+    }
+
+    /// Scenario: un array `ids` **explícitamente vacío** es un error de
+    /// argumentos (`InvalidArguments`), a diferencia de la ausencia de `ids`.
+    #[tokio::test]
+    async fn mark_read_with_empty_ids_is_invalid_arguments() {
+        let pool = setup_db().await;
+        let tool = NotificationsTool::new(pool.clone());
+
+        let error = tool
+            .execute(serde_json::json!({ "operation": "mark_read", "ids": [] }))
+            .await
+            .expect_err("an explicit empty `ids` must be rejected");
+        assert!(
+            matches!(error, ToolError::InvalidArguments(_)),
+            "an empty `ids` must yield InvalidArguments, got {error:?}"
+        );
+    }
 }
