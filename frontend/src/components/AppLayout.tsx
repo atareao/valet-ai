@@ -5,6 +5,7 @@ import {
   CalendarOutlined,
   CheckSquareOutlined,
   BarChartOutlined,
+  BellOutlined,
   LogoutOutlined,
 } from "@ant-design/icons";
 import { ChatView } from "./ChatView";
@@ -28,6 +29,11 @@ const StatsDashboard = lazy(() =>
 );
 const SettingsDialog = lazy(() =>
   import("./SettingsDialog").then((m) => ({ default: m.SettingsDialog })),
+);
+const NotificationsView = lazy(() =>
+  import("./NotificationsView").then((m) => ({
+    default: m.NotificationsView,
+  })),
 );
 
 // Fallback de carga de las vistas diferidas. antd ya está cargado en este punto
@@ -77,6 +83,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const [tasksVisible, setTasksVisible] = useState(false);
   const [statsVisible, setStatsVisible] = useState(false);
   const [statsOpenKey, setStatsOpenKey] = useState(0);
+  const [notificationsVisible, setNotificationsVisible] = useState(false);
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -110,6 +117,12 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             type="text"
             icon={<BarChartOutlined />}
             onClick={() => setStatsVisible(true)}
+            style={{ color: "rgba(255,255,255,0.65)" }}
+          />
+          <Button
+            type="text"
+            icon={<BellOutlined />}
+            onClick={() => setNotificationsVisible(true)}
             style={{ color: "rgba(255,255,255,0.65)" }}
           />
           <Button
@@ -195,6 +208,17 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
       >
         <Suspense fallback={lazyViewFallback}>
           <StatsDashboard key={statsOpenKey} />
+        </Suspense>
+      </Modal>
+      <Modal
+        title="🔔 Avisos"
+        open={notificationsVisible}
+        onCancel={() => setNotificationsVisible(false)}
+        footer={null}
+        width={1000}
+      >
+        <Suspense fallback={lazyViewFallback}>
+          <NotificationsView />
         </Suspense>
       </Modal>
       {settingsLoaded && (
