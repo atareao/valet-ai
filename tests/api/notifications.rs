@@ -727,7 +727,11 @@ async fn mark_read_missing_ids_marks_all_unread() {
         StatusCode::OK,
         "a missing `ids` means «all unread» and must succeed"
     );
-    assert_eq!(first.json::<Value>().await["marked"], 3, "all three are marked");
+    assert_eq!(
+        first.json::<Value>().await["marked"],
+        3,
+        "all three are marked"
+    );
 
     // Las tres quedan con `read_at` no nulo (consulta directa).
     for id in [&a, &b, &c] {
@@ -746,7 +750,11 @@ async fn mark_read_missing_ids_marks_all_unread() {
     // Repetir es idempotente.
     let again = app.post(MARK_READ).json(&json!({})).send().await;
     assert_eq!(again.status(), StatusCode::OK);
-    assert_eq!(again.json::<Value>().await["marked"], 0, "repeating is a no-op");
+    assert_eq!(
+        again.json::<Value>().await["marked"],
+        0,
+        "repeating is a no-op"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -785,7 +793,10 @@ async fn unread_limit_10_returns_page_with_cursor() {
     let body = resp.json::<Value>().await;
 
     assert_eq!(
-        body["data"].as_array().expect("data must be an array").len(),
+        body["data"]
+            .as_array()
+            .expect("data must be an array")
+            .len(),
         10,
         "the first page honours the limit"
     );
@@ -835,7 +846,11 @@ async fn unread_cursor_does_not_skip_same_second_rows() {
         .as_array()
         .expect("data must be an array")
         .clone();
-    assert_eq!(second_page.len(), 1, "the second page returns the remaining row");
+    assert_eq!(
+        second_page.len(),
+        1,
+        "the second page returns the remaining row"
+    );
     assert!(
         second_body["next_cursor"].is_null(),
         "the last page carries no next cursor"

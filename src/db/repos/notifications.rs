@@ -77,6 +77,25 @@ impl NotificationsRepo {
         }))
     }
 
+    /// Codifica un cursor de paginación: `"<created_at>|<rowid>"`.
+    pub fn encode_cursor(created_at: &str, rowid: i64) -> String {
+        format!("{created_at}|{rowid}")
+    }
+
+    /// Parsea un cursor `"<created_at>|<rowid>"`. `None` si es malformado
+    /// (sin separador, parte vacía, o `rowid` no entero positivo).
+    pub fn parse_cursor(raw: &str) -> Option<(String, i64)> {
+        let (created_at, rowid) = raw.rsplit_once('|')?;
+        if created_at.is_empty() || rowid.is_empty() {
+            return None;
+        }
+        let rowid: i64 = rowid.parse().ok()?;
+        if rowid <= 0 {
+            return None;
+        }
+        Some((created_at.to_string(), rowid))
+    }
+
     /// Lista las notificaciones no leídas, más recientes primero, junto con el
     /// cursor de continuación (`None` si no hay más páginas) y el número total
     /// de no leídas (independiente del `limit`).
@@ -84,25 +103,51 @@ impl NotificationsRepo {
     /// El cursor es keyset y codifica `created_at` y `rowid` como
     /// `"<created_at>|<rowid>"`, de modo que dos filas con el mismo
     /// `created_at` (la granularidad de la columna es de segundo) no se saltan
-    /// al paginar.
+    /// al paginar. Se traen `limit + 1` filas para saber si hay más: si llegan
+    /// más de `limit`, se devuelven las `limit` primeras y un `next_cursor` que
+    /// apunta a la última fila devuelta.
     pub async fn list_unread(
         pool: &SqlitePool,
         limit: i64,
         cursor: Option<&str>,
     ) -> Result<(Vec<Notification>, Option<String>, i64), sqlx::Error> {
-        let _ = cursor; // RED: paginación por cursor sin implementar
-        let rows = sqlx::query(
-            "SELECT id, origin, author, message, level, metadata, read_at, created_at
-             FROM notifications
-             WHERE read_at IS NULL
-             ORDER BY created_at DESC, rowid DESC
-             LIMIT ?1",
-        )
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
+        let cursor = match cursor {
+            Some(raw) => Some(
+                Self::parse_cursor(raw)
+                    .ok_or_else(|| sqlx::Error::Protocol("malformed cursor".into()))?,
+            ),
+            None => None,
+        };
 
-        let items = rows
+        let mut builder = sqlx::QueryBuilder::new(
+            "SELECT rowid, id, origin, author, message, level, metadata, read_at, created_at
+             FROM notifications WHERE read_at IS NULL",
+        );
+        if let Some((created_at, rowid)) = &cursor {
+            builder.push(" AND (created_at < ");
+            builder.push_bind(created_at);
+            builder.push(" OR (created_at = ");
+            builder.push_bind(created_at);
+            builder.push(" AND rowid < ");
+            builder.push_bind(rowid);
+            builder.push("))");
+        }
+        builder.push(" ORDER BY created_at DESC, rowid DESC LIMIT ");
+        builder.push_bind(limit + 1);
+
+        let rows = builder.build().fetch_all(pool).await?;
+
+        let has_more = rows.len() as i64 > limit;
+        let next_cursor = if has_more {
+            let last = &rows[(limit - 1) as usize];
+            let last_created_at: String = last.get("created_at");
+            let last_rowid: i64 = last.get("rowid");
+            Some(Self::encode_cursor(&last_created_at, last_rowid))
+        } else {
+            None
+        };
+
+        let mut items: Vec<Notification> = rows
             .iter()
             .map(|r| Notification {
                 id: r.get("id"),
@@ -115,13 +160,16 @@ impl NotificationsRepo {
                 created_at: r.get("created_at"),
             })
             .collect();
+        if has_more {
+            items.truncate(limit as usize);
+        }
 
         let total: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE read_at IS NULL")
                 .fetch_one(pool)
                 .await?;
 
-        Ok((items, None, total))
+        Ok((items, next_cursor, total))
     }
 
     /// Marca como leídas las notificaciones no leídas cuyos `id` figuran en
@@ -156,8 +204,11 @@ impl NotificationsRepo {
     /// Marca como leídas TODAS las notificaciones no leídas y devuelve cuántas
     /// filas cambiaron. Idempotente: la segunda llamada devuelve 0.
     pub async fn mark_all_read(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
-        let _ = pool; // RED: sin implementar.
-        Ok(0)
+        let result =
+            sqlx::query("UPDATE notifications SET read_at = datetime('now') WHERE read_at IS NULL")
+                .execute(pool)
+                .await?;
+        Ok(result.rows_affected())
     }
 }
 
@@ -406,7 +457,10 @@ mod tests {
             .unwrap()
             .read_at
             .expect("the pre-marked row keeps its read_at");
-        assert_eq!(after, already_read_at, "an already-read row must not change");
+        assert_eq!(
+            after, already_read_at,
+            "an already-read row must not change"
+        );
     }
 
     /// Scenario: repetir `mark_all_read` es idempotente (devuelve 0).
@@ -457,9 +511,10 @@ mod tests {
         assert_eq!(total, 3);
         let cursor = cursor.expect("a full page with more rows must yield a cursor");
 
-        let (page2, _cursor2, _total) = NotificationsRepo::list_unread(&pool, 2, Some(cursor.as_str()))
-            .await
-            .unwrap();
+        let (page2, _cursor2, _total) =
+            NotificationsRepo::list_unread(&pool, 2, Some(cursor.as_str()))
+                .await
+                .unwrap();
         assert_eq!(page2.len(), 1, "second page returns the remaining row");
 
         let mut seen: Vec<String> = page1
@@ -469,7 +524,11 @@ mod tests {
             .collect();
         seen.sort();
         seen.dedup();
-        assert_eq!(seen.len(), 3, "the union of both pages must be three distinct ids");
+        assert_eq!(
+            seen.len(),
+            3,
+            "the union of both pages must be three distinct ids"
+        );
         assert!(
             inserted.iter().all(|id| seen.contains(id)),
             "every inserted row must appear exactly once across the pages"

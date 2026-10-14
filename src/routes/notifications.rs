@@ -273,6 +273,8 @@ struct UnreadQuery {
     /// Límite de resultados como texto, para poder rechazar los no numéricos
     /// con un `400` JSON propio en vez de la respuesta de `Query`.
     limit: Option<String>,
+    /// Cursor opaco de paginación (`"<created_at>|<rowid>"`).
+    cursor: Option<String>,
 }
 
 /// Item de una notificación tal como viaja en el listado.
@@ -290,22 +292,31 @@ struct NotificationItem {
 
 /// `GET /api/notifications/unread` — lista las no leídas, más recientes primero.
 ///
-/// `200` con un [`PaginatedResponse`] (`data`, `next_cursor`, `total`). Sin
-/// cursor: esta vista no pagina más allá del `limit`. Un `limit` no numérico o
-/// fuera de `[1, 200]` responde `400` con `{"error": ...}`.
+/// `200` con un [`PaginatedResponse`] (`data`, `next_cursor`, `total`). La
+/// paginación es por cursor keyset: si hay más filas que `limit`, la respuesta
+/// trae un `next_cursor` no nulo que la siguiente petición pasa en `?cursor=`.
+/// Un `limit` no numérico o fuera de `[1, 200]`, o un `cursor` malformado,
+/// responde `400` con `{"error": ...}`.
 async fn list_unread(
     State(state): State<AppState>,
     Query(query): Query<UnreadQuery>,
 ) -> Result<Json<PaginatedResponse<NotificationItem>>, AppError> {
     let limit = parse_limit(query.limit.as_deref())?;
 
-    let (items, _next_cursor, total) = NotificationsRepo::list_unread(&state.db, limit, None).await?;
+    if let Some(raw) = query.cursor.as_deref() {
+        if NotificationsRepo::parse_cursor(raw).is_none() {
+            return Err(AppError::BadRequest("cursor is malformed".to_string()));
+        }
+    }
+
+    let (items, next_cursor, total) =
+        NotificationsRepo::list_unread(&state.db, limit, query.cursor.as_deref()).await?;
 
     let data = items.into_iter().map(to_item).collect();
 
     Ok(Json(PaginatedResponse {
         data,
-        next_cursor: None,
+        next_cursor,
         total: Some(total),
     }))
 }
@@ -348,25 +359,38 @@ fn to_item(notification: Notification) -> NotificationItem {
 /// Cuerpo de `POST /api/notifications/mark-read`.
 #[derive(Debug, Deserialize)]
 struct MarkReadRequest {
-    /// Ids a marcar. Ausente o vacío se rechaza con `400`.
-    ids: Option<Vec<String>>,
+    /// `None` = campo ausente (marca todas); `Some(None)` = `null` explícito.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    ids: Option<Option<Vec<String>>>,
+}
+
+/// Distingue un campo ausente (`None`) de un `null` explícito (`Some(None)`).
+fn deserialize_some<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
 }
 
 /// `POST /api/notifications/mark-read` — marca como leídas de forma idempotente.
 ///
 /// Responde `200` con `{"marked": <n>}`, el número de filas efectivamente
-/// marcadas. Los ids inexistentes se ignoran; una lista ausente o vacía responde
-/// `400`.
+/// marcadas. Los ids inexistentes se ignoran. Un `ids` **ausente** marca
+/// **todas** las no leídas; un `ids` **nulo (`null`) o explícitamente vacío**
+/// responde `400`, porque es una petición de marcar *nada*.
 async fn mark_read(
     State(state): State<AppState>,
     Json(payload): Json<MarkReadRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let ids = payload
-        .ids
-        .filter(|ids| !ids.is_empty())
-        .ok_or_else(|| AppError::BadRequest("ids is required and must not be empty".to_string()))?;
-
-    let marked = NotificationsRepo::mark_read(&state.db, &ids).await?;
+    let marked = match payload.ids {
+        None => NotificationsRepo::mark_all_read(&state.db).await?,
+        Some(None) => return Err(AppError::BadRequest("ids must not be null".to_string())),
+        Some(Some(ids)) if ids.is_empty() => {
+            return Err(AppError::BadRequest("ids must not be empty".to_string()))
+        }
+        Some(Some(ids)) => NotificationsRepo::mark_read(&state.db, &ids).await?,
+    };
 
     Ok(Json(json!({ "marked": marked })))
 }

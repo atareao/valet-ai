@@ -41,7 +41,8 @@ impl NotificationsTool {
             .unwrap_or(DEFAULT_LIMIT)
             .clamp(1, MAX_LIMIT);
 
-        let (items, _next_cursor, total) = NotificationsRepo::list_unread(&self.db, limit, None).await?;
+        let (items, _next_cursor, total) =
+            NotificationsRepo::list_unread(&self.db, limit, None).await?;
 
         Ok(ToolResult {
             success: true,
@@ -54,32 +55,44 @@ impl NotificationsTool {
     ///
     /// Comparte la semántica idempotente de `POST /api/notifications/mark-read`:
     /// solo marca las que estaban sin leer, los ids inexistentes se ignoran y
-    /// repetir la llamada devuelve `0`. Exige al menos un `id`.
+    /// repetir la llamada devuelve `0`. Si `ids` se omite, marca todas las no
+    /// leídas; un `ids` explícitamente vacío es un error de argumentos.
     async fn mark_read(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let ids: Vec<String> = args
-            .get("ids")
-            .and_then(|v| v.as_array())
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(|value| value.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
+        match args.get("ids") {
+            None => {
+                let marked = NotificationsRepo::mark_all_read(&self.db).await?;
+                Ok(ToolResult {
+                    success: true,
+                    data: json!({ "marked": marked }),
+                    message: Some(format!("{marked} notificaciones marcadas como leídas")),
+                })
+            }
+            Some(value) => {
+                let ids: Vec<String> = value
+                    .as_array()
+                    .map(|values| {
+                        values
+                            .iter()
+                            .filter_map(|value| value.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
 
-        if ids.is_empty() {
-            return Err(ToolError::InvalidArguments(
-                "se requiere al menos un `id` en `ids`".into(),
-            ));
+                if ids.is_empty() {
+                    return Err(ToolError::InvalidArguments(
+                        "se requiere al menos un `id` en `ids`".into(),
+                    ));
+                }
+
+                let marked = NotificationsRepo::mark_read(&self.db, &ids).await?;
+
+                Ok(ToolResult {
+                    success: true,
+                    data: json!({ "marked": marked }),
+                    message: Some(format!("{marked} notificaciones marcadas como leídas")),
+                })
+            }
         }
-
-        let marked = NotificationsRepo::mark_read(&self.db, &ids).await?;
-
-        Ok(ToolResult {
-            success: true,
-            data: json!({ "marked": marked }),
-            message: Some(format!("{marked} notificaciones marcadas como leídas")),
-        })
     }
 }
 
@@ -90,7 +103,7 @@ impl Tool for NotificationsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Notificaciones — avisos entrantes: listar los no leídos y marcarlos como leídos"
+        "Notificaciones — avisos entrantes: listar los no leídos y marcarlos como leídos (indicando `ids`, o todos si se omiten)"
     }
 
     fn parameters(&self) -> Value {
@@ -100,13 +113,13 @@ impl Tool for NotificationsTool {
                 "operation": {
                     "type": "string",
                     "enum": ["list_unread", "mark_read"],
-                    "description": "Acción a realizar. `list_unread` lista los avisos sin leer; `mark_read` exige `ids`."
+                    "description": "Acción a realizar. `list_unread` lista los avisos sin leer; `mark_read` marca las notificaciones indicadas en `ids` y, si se omite `ids`, marca todas las no leídas."
                 },
                 "limit": { "type": "integer", "description": "Número máximo de avisos a devolver (por defecto 50, máximo 200)" },
                 "ids": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "IDs de las notificaciones a marcar como leídas"
+                    "description": "IDs de las notificaciones a marcar como leídas. Si se omite, se marcan todas las no leídas."
                 }
             },
             "required": ["operation"]
