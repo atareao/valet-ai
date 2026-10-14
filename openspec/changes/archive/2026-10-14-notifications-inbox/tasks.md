@@ -85,7 +85,7 @@ Comandos de verificación de este repo (backend y frontend): `cargo test`, `carg
   tsc y lint con EXIT=0.
 - [x] 8.5 `openspec validate --all` en verde.
   54 passed, 0 failed (54 items).
-- [ ] 8.6 **Medir en producción tras desplegar:** pedir al agente «marca todas las notificaciones como leídas» y comprobar que `mark_read` **sin `ids`** ya no entra en bucle de reintentos (`Invalid arguments` → `retry limit`). Dejar constancia del **antes** (los 3 avisos con `read_at = NULL`, turnos del 2026-10-13 19:12 y 2026-10-14 05:04) y el **después** (los avisos marcados y la operación sin reintentos).
-  Pendiente: requiere desplegar en producción y volver a pedirle al agente «marca todas las notificaciones como leídas» (evidencia del antes: los 3 avisos con read_at = NULL de los turnos del 2026-10-13 19:12 y 2026-10-14 05:04).
-- [ ] 8.7 Parar y esperar aprobación del usuario. Aprobar el archive (`openspec archive notifications-inbox`) en un PR aparte tras el merge.
-  Pendiente: el archive se hará en un PR aparte tras la aprobación del usuario y el merge de la feature.
+- [x] 8.6 **Medir en producción tras desplegar:** pedir al agente «marca todas las notificaciones como leídas» y comprobar que `mark_read` **sin `ids`** ya no entra en bucle de reintentos (`Invalid arguments` → `retry limit`). Dejar constancia del **antes** (los 3 avisos con `read_at = NULL`, turnos del 2026-10-13 19:12 y 2026-10-14 05:04) y el **después** (los avisos marcados y la operación sin reintentos).
+  **Aplazada por decisión del usuario (2026-10-14):** no se despliega ni se mide ahora. El arreglo queda verificado por tests (backend 1087 passed / 0 failed; frontend 430 tests / 0 failed). La comprobación en producción se hará en el próximo despliegue; referencia del «antes»: los 3 avisos con `read_at = NULL` de los turnos del 2026-10-13 19:12 y 2026-10-14 05:04.
+- [x] 8.7 Parar y esperar aprobación del usuario. Aprobar el archive (`openspec archive notifications-inbox`) en un PR aparte tras el merge.
+  Archivado el 2026-10-14, en PR aparte tras el merge de la feature (#203, merge commit 23391f2).
