@@ -5,6 +5,7 @@ import type {
   LastApiCall,
   MemoryStats,
   Message,
+  Notification,
   PaginatedResponse,
   Profile,
   StatsSummary,
@@ -188,6 +189,30 @@ export const api = {
     request<void>("/persistent-memory", { method: "DELETE" }),
 
   getSkills: () => request<SkillsResponse>("/skills"),
+
+  // --- Avisos (bandeja de notificaciones) ---------------------------------
+  // `GET /api/notifications/unread` solo lista los pendientes (no leídos), con
+  // paginación por cursor. `cursor` ausente = primera página.
+  listUnreadNotifications: (params?: { limit?: number; cursor?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.cursor) qs.set("cursor", params.cursor);
+    const suffix = qs.toString();
+    return request<PaginatedResponse<Notification>>(
+      `/notifications/unread${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  markNotificationsRead: (ids: string[]) =>
+    request<{ marked: number }>("/notifications/mark-read", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+  // `{}` (sin `ids`) es lo que hace que el backend marque **todas**.
+  markAllNotificationsRead: () =>
+    request<{ marked: number }>("/notifications/mark-read", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
 
   // --- Strava -------------------------------------------------------------
   // El flujo OAuth se inicia **navegando** a `/api/strava/authorize` (el

@@ -51,8 +51,27 @@ export interface UpdateProfile {
 
 export interface PaginatedResponse<T> {
   data: T[];
-  next_cursor?: string;
+  /**
+   * Cursor de la página siguiente. El backend lo serializa como `null` cuando
+   * no hay más resultados (`Option<String>`), no como campo ausente.
+   */
+  next_cursor?: string | null;
   total?: number;
+}
+
+/**
+ * Aviso de la bandeja de notificaciones (`GET /api/notifications/unread`).
+ * Espejo del contrato del backend: `metadata` puede ser `null` y `created_at`
+ * llega en el formato crudo de SQLite (`"YYYY-MM-DD HH:MM:SS"`, UTC).
+ */
+export interface Notification {
+  id: string;
+  origin: string;
+  author: string;
+  message: string;
+  level: "info" | "warning" | "critical";
+  metadata: Record<string, unknown> | null;
+  created_at: string;
 }
 
 export interface BrowserContext {

@@ -1,7 +1,7 @@
 //! Tests de integración de las rutas `/api/ingest-keys`.
 //!
-//! Cubre los requisitos de `openspec/changes/notification-ingest/specs/
-//! ingest-keys/spec.md`: el alta que devuelve el token una única vez, el listado
+//! Cubre los requisitos de `openspec/specs/ingest-keys/spec.md`: el alta que
+//! devuelve el token una única vez, el listado
 //! que nunca expone un token y la revocación idempotente. La sesión OIDC la
 //! impone el middleware de sesión; estos tests corren con OIDC desactivado (el
 //! middleware es un passthrough), como el resto del arnés `TestApp`.

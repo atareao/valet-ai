@@ -2,7 +2,7 @@ import React from "react";
 import { Card, Skeleton, Table, Tag } from "antd";
 import type { TableColumnsType } from "antd";
 import type { BackgroundStats } from "../../types";
-import { parseSqliteTimestamp } from "./sqliteTimestamp";
+import { parseSqliteTimestamp } from "../../utils/sqliteTimestamp";
 
 interface BackgroundCardProps {
   data: BackgroundStats[];
@@ -29,7 +29,7 @@ const formatLatency = (ms: number | null): string =>
 /**
  * Fecha de la última llamada. `null` (o una fecha no parseable) se muestra como
  * ausencia —`—`—, nunca como «Invalid Date» ni una celda vacía. El parseo del
- * crudo de SQLite vive en `./sqliteTimestamp` (`parseSqliteTimestamp`).
+ * crudo de SQLite vive en `../../utils/sqliteTimestamp` (`parseSqliteTimestamp`).
  */
 const formatLastCall = (value: string | null): string => {
   const dt = parseSqliteTimestamp(value);

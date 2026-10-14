@@ -1,8 +1,8 @@
 //! Tests de integración de las rutas `/api/notifications` y del middleware de
 //! ingesta.
 //!
-//! Cubre los requisitos de `openspec/changes/notification-ingest/specs/
-//! notifications/spec.md`: la autenticación por token de ingesta, la validación
+//! Cubre los requisitos de `openspec/specs/notifications/spec.md`: la
+//! autenticación por token de ingesta, la validación
 //! y normalización del cuerpo, la persistencia antes de responder, el listado de
 //! no leídas y la marca idempotente. La exención de sesión por par (método,
 //! ruta) se prueba en `tests/api/auth.rs`.
@@ -684,17 +684,283 @@ async fn mark_read_marks_and_is_idempotent() {
     assert_eq!(missing.json::<Value>().await["marked"], 0);
 }
 
-/// Scenario: una lista vacía o ausente se rechaza con `400`.
+/// Scenario: una lista **explícitamente vacía** (`[]`) o `null` se rechaza con
+/// `400`.
+///
+/// Este test sustituye al antiguo `mark_read_empty_or_missing_ids_returns_400`:
+/// la **ausencia** de `ids` ya **no** es un error, sino la petición de marcar
+/// *todas* las no leídas (ver `mark_read_missing_ids_marks_all_unread`). Solo el
+/// array vacío explícito —y un `null` explícito— siguen siendo un `400`, porque
+/// son una petición de marcar *nada*: casi siempre un error del llamante.
 #[tokio::test]
-async fn mark_read_empty_or_missing_ids_returns_400() {
+async fn mark_read_explicit_empty_ids_returns_400() {
     let app = TestApp::new_empty().await;
 
-    for body in [json!({}), json!({ "ids": [] })] {
+    for body in [json!({ "ids": [] }), json!({ "ids": null })] {
         let resp = app.post(MARK_READ).json(&body).send().await;
         assert_eq!(
             resp.status(),
             StatusCode::BAD_REQUEST,
-            "a missing or empty list must be rejected: {body}"
+            "an explicit empty or null list must be rejected: {body}"
+        );
+        let body = resp.json::<Value>().await;
+        assert!(body["error"].is_string(), "the body must carry an error");
+    }
+}
+
+/// Scenario: `POST` con `{}` (**`ids` ausente**) marca **todas** las no leídas.
+///
+/// La ausencia de `ids` significa «todas». Siembra tres no leídas, pide marcar
+/// todas y comprueba que las tres quedan con `read_at` no nulo. Repetir la
+/// llamada es idempotente (`marked: 0`).
+#[tokio::test]
+async fn mark_read_missing_ids_marks_all_unread() {
+    let app = TestApp::new_empty().await;
+
+    let a = insert_notification(&app, "a", "2020-01-01 00:00:01").await;
+    let b = insert_notification(&app, "b", "2020-01-01 00:00:02").await;
+    let c = insert_notification(&app, "c", "2020-01-01 00:00:03").await;
+
+    let first = app.post(MARK_READ).json(&json!({})).send().await;
+    assert_eq!(
+        first.status(),
+        StatusCode::OK,
+        "a missing `ids` means «all unread» and must succeed"
+    );
+    assert_eq!(
+        first.json::<Value>().await["marked"],
+        3,
+        "all three are marked"
+    );
+
+    // Las tres quedan con `read_at` no nulo (consulta directa).
+    for id in [&a, &b, &c] {
+        let read_at: Option<String> =
+            sqlx::query_scalar("SELECT read_at FROM notifications WHERE id = ?1")
+                .bind(id)
+                .fetch_one(&app.db)
+                .await
+                .expect("the row must exist");
+        assert!(
+            read_at.is_some(),
+            "every unread row must be marked by an absent-`ids` request: {id}"
         );
     }
+
+    // Repetir es idempotente.
+    let again = app.post(MARK_READ).json(&json!({})).send().await;
+    assert_eq!(again.status(), StatusCode::OK);
+    assert_eq!(
+        again.json::<Value>().await["marked"],
+        0,
+        "repeating is a no-op"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5.1 — Paginación por cursor de GET /api/notifications/unread
+// ---------------------------------------------------------------------------
+
+/// Percent-encode a value for use as a query-string parameter. The cursor is
+/// opaque, so the test only round-trips the exact string the API returned; this
+/// escapes any byte outside the unreserved set so the request URI stays valid
+/// (axum percent-decodes it back before handing it to the handler).
+fn encode_query_value(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Scenario: con más no leídas que `limit`, la primera página llega llena y trae
+/// un `next_cursor` no nulo; el `total` cuenta todas las no leídas.
+#[tokio::test]
+async fn unread_limit_10_returns_page_with_cursor() {
+    let app = TestApp::new_empty().await;
+
+    for i in 0..25 {
+        insert_notification(&app, &format!("n{i}"), &format!("2020-01-01 00:00:{i:02}")).await;
+    }
+
+    let resp = app.get(&format!("{UNREAD}?limit=10")).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<Value>().await;
+
+    assert_eq!(
+        body["data"]
+            .as_array()
+            .expect("data must be an array")
+            .len(),
+        10,
+        "the first page honours the limit"
+    );
+    assert_eq!(body["total"], 25, "total counts every unread row");
+    assert!(
+        !body["next_cursor"].is_null(),
+        "a full page with more rows must yield a non-null next_cursor"
+    );
+}
+
+/// Scenario: el cursor keyset no se salta filas con el MISMO `created_at`: la
+/// unión de las dos páginas son tres ids distintos, sin repetidos y sin perder
+/// ninguno.
+#[tokio::test]
+async fn unread_cursor_does_not_skip_same_second_rows() {
+    let app = TestApp::new_empty().await;
+
+    let mut inserted = Vec::new();
+    for i in 0..3 {
+        // El mismo `created_at` para las tres: empate a nivel de segundo.
+        let id = insert_notification(&app, &format!("n{i}"), "2020-01-01 00:00:00").await;
+        inserted.push(id);
+    }
+
+    let first = app.get(&format!("{UNREAD}?limit=2")).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = first.json::<Value>().await;
+    let first_page = first_body["data"]
+        .as_array()
+        .expect("data must be an array")
+        .clone();
+    assert_eq!(first_page.len(), 2, "the first page honours the limit");
+    let cursor = first_body["next_cursor"]
+        .as_str()
+        .expect("a non-empty remainder must yield a cursor")
+        .to_string();
+
+    let second = app
+        .get(&format!(
+            "{UNREAD}?limit=2&cursor={}",
+            encode_query_value(&cursor)
+        ))
+        .await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = second.json::<Value>().await;
+    let second_page = second_body["data"]
+        .as_array()
+        .expect("data must be an array")
+        .clone();
+    assert_eq!(
+        second_page.len(),
+        1,
+        "the second page returns the remaining row"
+    );
+    assert!(
+        second_body["next_cursor"].is_null(),
+        "the last page carries no next cursor"
+    );
+
+    let mut seen: Vec<String> = first_page
+        .iter()
+        .chain(second_page.iter())
+        .map(|n| n["id"].as_str().expect("id").to_string())
+        .collect();
+    seen.sort();
+    seen.dedup();
+    assert_eq!(
+        seen.len(),
+        3,
+        "the union of both pages must be three distinct ids, without repeats"
+    );
+    assert!(
+        inserted.iter().all(|id| seen.contains(id)),
+        "every inserted row must appear exactly once across the pages"
+    );
+}
+
+/// Scenario: el cursor keyset codifica **valores** (`created_at`, `rowid`), no
+/// la existencia de la fila. Marcar como leída una fila entre dos páginas no
+/// hace que el cursor se salte ninguna fila superviviente: la página 2 sigue
+/// resolviéndose por el par codificado.
+#[tokio::test]
+async fn unread_cursor_survives_row_read_between_pages() {
+    let app = TestApp::new_empty().await;
+
+    // Tres no leídas con el MISMO `created_at`: empate a nivel de segundo.
+    let mut inserted = Vec::new();
+    for i in 0..3 {
+        let id = insert_notification(&app, &format!("n{i}"), "2020-01-01 00:00:00").await;
+        inserted.push(id);
+    }
+
+    let first = app.get(&format!("{UNREAD}?limit=2")).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = first.json::<Value>().await;
+    let first_page = first_body["data"]
+        .as_array()
+        .expect("data must be an array")
+        .clone();
+    assert_eq!(first_page.len(), 2, "the first page honours the limit");
+    let first_page_ids: Vec<String> = first_page
+        .iter()
+        .map(|n| n["id"].as_str().expect("id").to_string())
+        .collect();
+    let cursor = first_body["next_cursor"]
+        .as_str()
+        .expect("a non-empty remainder must yield a cursor")
+        .to_string();
+
+    // La fila que quedó fuera de la página 1 (la tercera, la más antigua; la que
+    // la página 2 debería devolver) es la que debe sobrevivir a la lectura.
+    let survivor = inserted
+        .iter()
+        .find(|id| !first_page_ids.contains(id))
+        .expect("exactly one row must fall outside the first page")
+        .clone();
+
+    // Entre ambas páginas se marca como leída una de las filas que la página 1
+    // ya devolvió. El cursor keyset codifica **valores** (`created_at`, `rowid`),
+    // no la existencia de la fila, así que la página 2 se resuelve igual por el
+    // par codificado y devuelve la fila restante sin saltarse ninguna.
+    let marked = first_page_ids[0].clone();
+    NotificationsRepo::mark_read(&app.db, &[marked])
+        .await
+        .expect("mark a page-1 row read between pages");
+
+    let second = app
+        .get(&format!(
+            "{UNREAD}?limit=2&cursor={}",
+            encode_query_value(&cursor)
+        ))
+        .await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = second.json::<Value>().await;
+    let second_page = second_body["data"]
+        .as_array()
+        .expect("data must be an array");
+    assert_eq!(
+        second_page.len(),
+        1,
+        "a row marked read between pages must not make the cursor skip the survivor"
+    );
+    assert_eq!(
+        second_page[0]["id"], survivor,
+        "the surviving row is the one that fell outside page 1"
+    );
+    assert!(
+        second_body["next_cursor"].is_null(),
+        "the last page carries no next cursor"
+    );
+}
+
+/// Scenario: un `cursor` malformado se rechaza con `400` y `{"error": ...}`.
+#[tokio::test]
+async fn unread_malformed_cursor_returns_400() {
+    let app = TestApp::new_empty().await;
+    insert_notification(&app, "a", "2020-01-01 00:00:01").await;
+
+    let resp = app.get(&format!("{UNREAD}?cursor=basura")).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "a malformed cursor must be rejected"
+    );
+    let body = resp.json::<Value>().await;
+    assert!(body["error"].is_string(), "the body must carry an error");
 }

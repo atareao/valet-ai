@@ -6,7 +6,7 @@
 //! idempotente. La persistencia vive en [`IngestRepo`]; aquí solo se valida la
 //! entrada y se traduce el resultado a HTTP.
 //!
-//! Ver `openspec/changes/notification-ingest/specs/ingest-keys/spec.md`.
+//! Ver `openspec/specs/ingest-keys/spec.md`.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

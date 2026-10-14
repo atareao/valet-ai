@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { BackgroundCard } from "./BackgroundCard";
-import { parseSqliteTimestamp } from "./sqliteTimestamp";
+import { parseSqliteTimestamp } from "../../utils/sqliteTimestamp";
 import type { BackgroundStats } from "../../types";
 
 /**
