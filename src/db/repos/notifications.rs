@@ -106,11 +106,21 @@ impl NotificationsRepo {
     /// al paginar. Se traen `limit + 1` filas para saber si hay más: si llegan
     /// más de `limit`, se devuelven las `limit` primeras y un `next_cursor` que
     /// apunta a la última fila devuelta.
+    ///
+    /// **Precondición:** `limit >= 1`. El llamante debe garantizarlo (la ruta lo
+    /// valida en `[1, 200]` y la herramienta lo acota con `clamp(1, MAX_LIMIT)`);
+    /// con `limit == 0` el cálculo del cursor indexaría `limit - 1` y restaría.
+    ///
+    /// `total` se cuenta con una **segunda consulta, fuera de transacción**: bajo
+    /// escrituras concurrentes el recuento es aproximado respecto de la página
+    /// (una fila puede insertarse o marcarse como leída entre ambas consultas).
     pub async fn list_unread(
         pool: &SqlitePool,
         limit: i64,
         cursor: Option<&str>,
     ) -> Result<(Vec<Notification>, Option<String>, i64), sqlx::Error> {
+        debug_assert!(limit >= 1, "list_unread exige limit >= 1");
+
         let cursor = match cursor {
             Some(raw) => Some(
                 Self::parse_cursor(raw)
@@ -511,11 +521,15 @@ mod tests {
         assert_eq!(total, 3);
         let cursor = cursor.expect("a full page with more rows must yield a cursor");
 
-        let (page2, _cursor2, _total) =
+        let (page2, cursor2, _total) =
             NotificationsRepo::list_unread(&pool, 2, Some(cursor.as_str()))
                 .await
                 .unwrap();
         assert_eq!(page2.len(), 1, "second page returns the remaining row");
+        assert!(
+            cursor2.is_none(),
+            "the last page must not yield a next cursor"
+        );
 
         let mut seen: Vec<String> = page1
             .iter()

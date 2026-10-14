@@ -1,8 +1,8 @@
 //! Tests de integración de las rutas `/api/notifications` y del middleware de
 //! ingesta.
 //!
-//! Cubre los requisitos de `openspec/changes/notification-ingest/specs/
-//! notifications/spec.md`: la autenticación por token de ingesta, la validación
+//! Cubre los requisitos de `openspec/specs/notifications/spec.md`: la
+//! autenticación por token de ingesta, la validación
 //! y normalización del cuerpo, la persistencia antes de responder, el listado de
 //! no leídas y la marca idempotente. La exención de sesión por par (método,
 //! ruta) se prueba en `tests/api/auth.rs`.
@@ -871,6 +871,81 @@ async fn unread_cursor_does_not_skip_same_second_rows() {
     assert!(
         inserted.iter().all(|id| seen.contains(id)),
         "every inserted row must appear exactly once across the pages"
+    );
+}
+
+/// Scenario: el cursor keyset codifica **valores** (`created_at`, `rowid`), no
+/// la existencia de la fila. Marcar como leída una fila entre dos páginas no
+/// hace que el cursor se salte ninguna fila superviviente: la página 2 sigue
+/// resolviéndose por el par codificado.
+#[tokio::test]
+async fn unread_cursor_survives_row_read_between_pages() {
+    let app = TestApp::new_empty().await;
+
+    // Tres no leídas con el MISMO `created_at`: empate a nivel de segundo.
+    let mut inserted = Vec::new();
+    for i in 0..3 {
+        let id = insert_notification(&app, &format!("n{i}"), "2020-01-01 00:00:00").await;
+        inserted.push(id);
+    }
+
+    let first = app.get(&format!("{UNREAD}?limit=2")).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = first.json::<Value>().await;
+    let first_page = first_body["data"]
+        .as_array()
+        .expect("data must be an array")
+        .clone();
+    assert_eq!(first_page.len(), 2, "the first page honours the limit");
+    let first_page_ids: Vec<String> = first_page
+        .iter()
+        .map(|n| n["id"].as_str().expect("id").to_string())
+        .collect();
+    let cursor = first_body["next_cursor"]
+        .as_str()
+        .expect("a non-empty remainder must yield a cursor")
+        .to_string();
+
+    // La fila que quedó fuera de la página 1 (la tercera, la más antigua; la que
+    // la página 2 debería devolver) es la que debe sobrevivir a la lectura.
+    let survivor = inserted
+        .iter()
+        .find(|id| !first_page_ids.contains(id))
+        .expect("exactly one row must fall outside the first page")
+        .clone();
+
+    // Entre ambas páginas se marca como leída una de las filas que la página 1
+    // ya devolvió. El cursor keyset codifica **valores** (`created_at`, `rowid`),
+    // no la existencia de la fila, así que la página 2 se resuelve igual por el
+    // par codificado y devuelve la fila restante sin saltarse ninguna.
+    let marked = first_page_ids[0].clone();
+    NotificationsRepo::mark_read(&app.db, &[marked])
+        .await
+        .expect("mark a page-1 row read between pages");
+
+    let second = app
+        .get(&format!(
+            "{UNREAD}?limit=2&cursor={}",
+            encode_query_value(&cursor)
+        ))
+        .await;
+    assert_eq!(second.status(), StatusCode::OK);
+    let second_body = second.json::<Value>().await;
+    let second_page = second_body["data"]
+        .as_array()
+        .expect("data must be an array");
+    assert_eq!(
+        second_page.len(),
+        1,
+        "a row marked read between pages must not make the cursor skip the survivor"
+    );
+    assert_eq!(
+        second_page[0]["id"], survivor,
+        "the surviving row is the one that fell outside page 1"
+    );
+    assert!(
+        second_body["next_cursor"].is_null(),
+        "the last page carries no next cursor"
     );
 }
 

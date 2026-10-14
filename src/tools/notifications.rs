@@ -34,6 +34,10 @@ impl NotificationsTool {
     ///
     /// Delega en [`NotificationsRepo::list_unread`], la misma consulta que sirve
     /// a `GET /api/notifications/unread`: solo las que tienen `read_at` NULL.
+    ///
+    /// Devuelve la fila cruda ([`Notification`]), con `metadata` tal cual se
+    /// guardó —una cadena JSON o `null`—, a diferencia del `NotificationItem`
+    /// del endpoint, que parsea ese `metadata` a un objeto JSON.
     async fn list_unread(&self, args: Value) -> Result<ToolResult, ToolError> {
         let limit = args
             .get("limit")
@@ -56,7 +60,8 @@ impl NotificationsTool {
     /// Comparte la semántica idempotente de `POST /api/notifications/mark-read`:
     /// solo marca las que estaban sin leer, los ids inexistentes se ignoran y
     /// repetir la llamada devuelve `0`. Si `ids` se omite, marca todas las no
-    /// leídas; un `ids` explícitamente vacío es un error de argumentos.
+    /// leídas; un `ids` presente que no sea un array es un error de argumentos,
+    /// igual que un array vacío.
     async fn mark_read(&self, args: Value) -> Result<ToolResult, ToolError> {
         match args.get("ids") {
             None => {
@@ -67,16 +72,11 @@ impl NotificationsTool {
                     message: Some(format!("{marked} notificaciones marcadas como leídas")),
                 })
             }
-            Some(value) => {
-                let ids: Vec<String> = value
-                    .as_array()
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(|value| value.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+            Some(Value::Array(values)) => {
+                let ids: Vec<String> = values
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect();
 
                 if ids.is_empty() {
                     return Err(ToolError::InvalidArguments(
@@ -92,6 +92,11 @@ impl NotificationsTool {
                     message: Some(format!("{marked} notificaciones marcadas como leídas")),
                 })
             }
+            // `ids` presente pero no array (`"abc"`, `null`, un número…): no es
+            // un «array vacío», así que el mensaje debe hablar del tipo.
+            Some(_) => Err(ToolError::InvalidArguments(
+                "`ids` debe ser un array de strings".into(),
+            )),
         }
     }
 }
@@ -318,5 +323,27 @@ mod tests {
             matches!(error, ToolError::InvalidArguments(_)),
             "an empty `ids` must yield InvalidArguments, got {error:?}"
         );
+    }
+
+    /// Scenario: un `ids` presente pero **no array** (`"abc"` o `null`) es un
+    /// error de argumentos con un mensaje sobre el tipo, no el de «lista vacía».
+    #[tokio::test]
+    async fn mark_read_non_array_ids_is_invalid_arguments() {
+        let pool = setup_db().await;
+        let tool = NotificationsTool::new(pool.clone());
+
+        for ids in [serde_json::json!("abc"), serde_json::json!(null)] {
+            let error = tool
+                .execute(serde_json::json!({ "operation": "mark_read", "ids": ids }))
+                .await
+                .expect_err("a non-array `ids` must be rejected");
+            match error {
+                ToolError::InvalidArguments(message) => assert_eq!(
+                    message, "`ids` debe ser un array de strings",
+                    "a non-array `ids` must report a type error, not an empty list"
+                ),
+                other => panic!("expected InvalidArguments, got {other:?}"),
+            }
+        }
     }
 }

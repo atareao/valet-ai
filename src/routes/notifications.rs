@@ -7,7 +7,7 @@
 //! se traduce el resultado a HTTP. El `INSERT` precede a la respuesta y el
 //! despacho WebPush es *best-effort*, en segundo plano.
 //!
-//! Ver `openspec/changes/notification-ingest/specs/notifications/spec.md`.
+//! Ver `openspec/specs/notifications/spec.md`.
 
 use axum::extract::DefaultBodyLimit;
 use axum::extract::{Extension, Query, State};
