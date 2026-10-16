@@ -137,4 +137,49 @@ describe("IngestKeysSection", () => {
     expect(screen.queryByText("monitor")).not.toBeInTheDocument();
     expect(mockList).toHaveBeenCalledTimes(1);
   });
+
+  it("el crudo de SQLite en last_used_at y created_at se interpreta como UTC", async () => {
+    const rawKey: IngestKey = {
+      ...activeKey,
+      created_at: "2026-10-12 10:00:00",
+      last_used_at: "2026-10-12 13:55:33",
+    };
+    mockList.mockResolvedValue([rawKey]);
+
+    renderSection();
+
+    const expectedCreated = new Date("2026-10-12T10:00:00Z").toLocaleString();
+    const expectedLastUsed = new Date("2026-10-12T13:55:33Z").toLocaleString();
+
+    expect(await screen.findByText(expectedCreated)).toBeInTheDocument();
+    expect(screen.getByText(expectedLastUsed)).toBeInTheDocument();
+  });
+
+  it("un valor no parseable en last_used_at se muestra como ausencia (—) y nunca como el crudo ni Invalid Date", async () => {
+    const invalidKey: IngestKey = {
+      ...activeKey,
+      last_used_at: "no es una fecha",
+    };
+    mockList.mockResolvedValue([invalidKey]);
+
+    renderSection();
+
+    await screen.findByText("val_ABCDEFGH");
+    expect(screen.queryByText("no es una fecha")).not.toBeInTheDocument();
+    expect(screen.queryByText(/invalid date/i)).not.toBeInTheDocument();
+  });
+
+  it("un valor nulo en last_used_at se muestra como ausencia (—)", async () => {
+    const nullKey: IngestKey = {
+      ...activeKey,
+      last_used_at: null,
+    };
+    mockList.mockResolvedValue([nullKey]);
+
+    renderSection();
+
+    await screen.findByText("val_ABCDEFGH");
+    expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(1);
+  });
 });
+

@@ -18,14 +18,18 @@ import {
   revokeIngestKey,
 } from "../api/ingestKeys";
 import type { CreatedIngestKey, IngestKey } from "../types";
+import { parseSqliteTimestamp } from "../utils/sqliteTimestamp";
 
 const { Text, Title } = Typography;
 
-/** Formatea una fecha ISO a texto local; `null` se muestra como guion. */
+/**
+ * Formatea una fecha (ISO-8601 o formato crudo de SQLite `"YYYY-MM-DD HH:MM:SS"`)
+ * a texto local en hora del usuario. Los valores ausentes o no parseables se
+ * muestran como guion largo (`—`).
+ */
 function formatDate(value: string | null): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  const date = parseSqliteTimestamp(value);
+  return date ? date.toLocaleString() : "—";
 }
 
 /**
