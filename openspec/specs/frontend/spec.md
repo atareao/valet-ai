@@ -1514,6 +1514,16 @@ que quepan sin desbordamiento. Los avisos al usuario SHALL emitirse mediante la 
 antd ya usada por el proyecto (`App.useApp()`, ver la capability `ui-feedback`), NO mediante la API
 estática de antd.
 
+Las fechas que la lista muestra —la de **alta** (`created_at`) y la de **último uso**
+(`last_used_at`)— SHALL interpretarse como **UTC** cuando lleguen en el formato crudo de SQLite
+(`"YYYY-MM-DD HH:MM:SS"`: separador de espacio, sin `T` y sin zona horaria; es el valor que emite
+`datetime('now')` y que el backend reenvía tal cual). Un valor ya en ISO-8601 (con `T` y zona) SHALL
+respetarse sin tocarlo. Un valor **ausente o no parseable** SHALL mostrarse como una **ausencia
+legible** (`—` o equivalente) y SHALL NOT mostrarse nunca como el valor crudo ni como «Invalid
+Date». La marca temporal SHALL ser **independiente de la zona horaria** de la máquina del usuario,
+de modo que el mismo instante no cambie según el navegador que lo pinte (WebKit rechaza el crudo de
+SQLite; V8 lo interpreta como hora local).
+
 #### Scenario: Crear una clave muestra el token una sola vez con el aviso
 
 - **Given** un usuario en la pestaña API Keys del `SettingsDialog`
@@ -1540,6 +1550,34 @@ estática de antd.
 - **When** falla la creación
 - **Then** la interfaz comunica el fallo con un aviso
 - **And** NO deja la clave creada a medias en la lista
+
+#### Scenario: El crudo de SQLite se interpreta como UTC
+
+- **Given** una clave con `last_used_at` en el formato crudo de SQLite `"2026-10-12 13:55:33"`
+- **When** se renderiza la lista de claves
+- **Then** la celda de «último uso» muestra ese instante como UTC (`2026-10-12T13:55:33Z`)
+- **And** la celda de «alta» (`created_at`) se interpreta con la misma regla
+
+#### Scenario: La marca no depende de la zona horaria del navegador
+
+- **Given** una clave con `last_used_at` en el formato crudo de SQLite
+- **When** la lista se renderiza en WebKit y en V8
+- **Then** ambas muestran el mismo instante, sin desfase
+- **And** ninguna lo lee como hora local
+
+#### Scenario: Un valor no parseable se muestra como ausencia
+
+- **Given** una clave con `last_used_at` no parseable (p. ej. `"no es una fecha"`)
+- **When** se renderiza la lista de claves
+- **Then** la celda de «último uso» muestra `—`
+- **And** nunca muestra «Invalid Date»
+
+#### Scenario: Un valor ausente no se muestra como el crudo
+
+- **Given** una clave con `last_used_at` nulo
+- **When** se renderiza la lista de claves
+- **Then** la celda de «último uso» muestra `—`
+- **And** nunca muestra el valor crudo del backend
 
 ### Requirement: El selector de ventana del panel de estadísticas SHALL gobernar los tres paneles
 
