@@ -97,11 +97,24 @@ describe("JournalView", () => {
 
     render(<JournalView />);
 
-    // Con `new Date("2026-01-01")` en una zona al oeste de UTC esto pintaría el
-    // 31 de diciembre: la fecha se parte, no se reinterpreta.
+    // La cadena se parte, no se reinterpreta: si el formateo pasara por
+    // `new Date("2026-01-01")` (medianoche UTC) pintaría el 31 de diciembre. Eso
+    // solo se nota porque la suite fija la zona al oeste de UTC; el test de
+    // abajo lo comprueba.
     const time = await screen.findByText("1 de enero de 2026");
     expect(time.tagName).toBe("TIME");
     expect(time).toHaveAttribute("dateTime", "2026-01-01");
+  });
+
+  it("la zona de las pruebas está al oeste de UTC, así que un `new Date` de más movería el día", () => {
+    // Ancla del test anterior: con la zona del host (`Europe/Madrid`) el día no
+    // se movería y el test pasaría igual con la implementación incorrecta. Si
+    // esto falla, se ha perdido el anclaje (`test.env.TZ` en `vitest.config.ts`)
+    // y el test de arriba vuelve a ser vacuo.
+    const parsed = new Date("2026-01-01");
+    expect(parsed.getUTCDate()).toBe(1);
+    expect(parsed.getDate()).toBe(31);
+    expect(parsed.getFullYear()).toBe(2025);
   });
 
   it("una entrada sin ánimo, sin etiquetas y sin logros se muestra sin bloques vacíos", async () => {
@@ -161,6 +174,51 @@ describe("JournalView", () => {
     await waitFor(() => {
       expect(mockApi.listJournalEntries).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("dejar la entrada sin ánimo envía el ánimo como nulo y refresca", async () => {
+    const user = userEvent.setup();
+    const cleared = entry({ mood: null });
+    mockApi.listJournalEntries
+      .mockResolvedValueOnce([entry()])
+      .mockResolvedValueOnce([cleared]);
+    mockApi.upsertJournalEntry.mockResolvedValue(cleared);
+
+    render(<JournalView />);
+
+    await user.click(await screen.findByRole("button", { name: /^Editar$/ }));
+    await user.click(screen.getByRole("radio", { name: /^Sin ánimo$/ }));
+    await user.click(screen.getByRole("button", { name: /^Guardar$/ }));
+
+    await waitFor(() => {
+      expect(mockApi.upsertJournalEntry).toHaveBeenCalledWith("2026-10-18", {
+        content: "un día largo",
+        // «Sin ánimo» viaja como nulo, no como cadena vacía ni omitido.
+        mood: null,
+        tags: ["trabajo"],
+        achievements: ["terminar el informe"],
+        struggles: ["dormir poco"],
+      });
+    });
+    await waitFor(() => {
+      expect(mockApi.listJournalEntries).toHaveBeenCalledTimes(2);
+    });
+    expect(await screen.findByText("Sin ánimo")).toBeInTheDocument();
+  });
+
+  it("el grupo de ánimo se anuncia como grupo con nombre accesible", async () => {
+    const user = userEvent.setup();
+    mockApi.listJournalEntries.mockResolvedValue([entry()]);
+
+    render(<JournalView />);
+
+    await user.click(await screen.findByRole("button", { name: /^Editar$/ }));
+
+    const group = screen.getByRole("group", { name: "Ánimo" });
+    expect(group.tagName).toBe("FIELDSET");
+    // Los seis radios del conjunto cerrado, dentro del grupo que los agrupa:
+    // ningún ánimo queda fuera del nombre accesible.
+    expect(within(group).getAllByRole("radio")).toHaveLength(6);
   });
 
   it("si guardar falla, avisa y deja el formulario abierto", async () => {

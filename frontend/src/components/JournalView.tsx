@@ -155,21 +155,29 @@ const EntryEditor: React.FC<EntryEditorProps> = ({
         <time dateTime={entry.date}>{formatDate(entry.date)}</time>
       </Text>
 
-      <Radio.Group
-        aria-label="Ánimo"
-        value={mood ?? NO_MOOD}
-        onChange={(event) => {
-          const value: string = event.target.value;
-          setMood(value === NO_MOOD ? null : (value as Mood));
-        }}
-        options={[
-          ...MOOD_ORDER.map((value) => ({
-            label: MOODS[value].label,
-            value,
-          })),
-          { label: "Sin ánimo", value: NO_MOOD },
-        ]}
-      />
+      <fieldset style={{ border: 0, margin: 0, padding: 0 }}>
+        <legend style={{ padding: 0 }}>
+          <Text type="secondary">Ánimo</Text>
+        </legend>
+        {/* El nombre accesible del grupo vive en el `legend`: `Radio.Group` de
+            antd solo reenvía atributos `aria-*` al `<div>` que envuelve los
+            radios (no tiene rol), así que un `aria-label` ahí no agruparía
+            nada. El `fieldset` sí anuncia grupo y nombre al lector. */}
+        <Radio.Group
+          value={mood ?? NO_MOOD}
+          onChange={(event) => {
+            const value: string = event.target.value;
+            setMood(value === NO_MOOD ? null : (value as Mood));
+          }}
+          options={[
+            ...MOOD_ORDER.map((value) => ({
+              label: MOODS[value].label,
+              value,
+            })),
+            { label: "Sin ánimo", value: NO_MOOD },
+          ]}
+        />
+      </fieldset>
 
       <div>
         <label htmlFor={contentId}>
@@ -295,7 +303,7 @@ export const JournalView: React.FC = () => {
       ) : (
         <List
           dataSource={entries}
-          rowKey={(entry) => entry.date}
+          rowKey={(entry) => entry.id}
           renderItem={(entry) => (
             <List.Item
               actions={
