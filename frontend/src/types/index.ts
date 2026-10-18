@@ -367,3 +367,38 @@ export interface IngestKey {
 export interface CreatedIngestKey extends IngestKey {
   token: string;
 }
+
+/** Ánimo de una entrada de la bitácora: conjunto cerrado, o `null` si no hay. */
+export type Mood = "great" | "good" | "neutral" | "bad" | "terrible";
+
+/**
+ * Entrada de la bitácora (`GET /api/journal`). Espejo del contrato del backend:
+ * una entrada por perfil y día, y `date` llega ya como `YYYY-MM-DD` —se pinta
+ * partiéndola, nunca reinterpretándola con `Date`—. Las marcas de tiempo sí son
+ * el crudo de SQLite (`"YYYY-MM-DD HH:MM:SS"`, UTC).
+ */
+export interface JournalEntry {
+  id: string;
+  profile_id: string;
+  date: string;
+  mood: Mood | null;
+  content: string;
+  achievements: string[];
+  struggles: string[];
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Cuerpo de `PUT /api/journal/{date}`. `content` es obligatorio y no vacío; el
+ * resto es opcional. El reemplazo es **total**: lo que no llegue se guarda como
+ * lista vacía, así que quien edite debe mandar también lo que no toca.
+ */
+export interface JournalEntryInput {
+  content: string;
+  mood?: Mood | null;
+  achievements?: string[];
+  struggles?: string[];
+  tags?: string[];
+}
