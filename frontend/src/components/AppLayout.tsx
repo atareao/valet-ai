@@ -6,6 +6,7 @@ import {
   CheckSquareOutlined,
   BarChartOutlined,
   BellOutlined,
+  BookOutlined,
   LogoutOutlined,
 } from "@ant-design/icons";
 import { ChatView } from "./ChatView";
@@ -34,6 +35,9 @@ const NotificationsView = lazy(() =>
   import("./NotificationsView").then((m) => ({
     default: m.NotificationsView,
   })),
+);
+const JournalView = lazy(() =>
+  import("./JournalView").then((m) => ({ default: m.JournalView })),
 );
 
 // Fallback de carga de las vistas diferidas. antd ya está cargado en este punto
@@ -84,6 +88,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const [statsVisible, setStatsVisible] = useState(false);
   const [statsOpenKey, setStatsOpenKey] = useState(0);
   const [notificationsVisible, setNotificationsVisible] = useState(false);
+  const [journalVisible, setJournalVisible] = useState(false);
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -125,6 +130,14 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             aria-label="Avisos"
             title="Avisos"
             onClick={() => setNotificationsVisible(true)}
+            style={{ color: "rgba(255,255,255,0.65)" }}
+          />
+          <Button
+            type="text"
+            icon={<BookOutlined />}
+            aria-label="Bitácora"
+            title="Bitácora"
+            onClick={() => setJournalVisible(true)}
             style={{ color: "rgba(255,255,255,0.65)" }}
           />
           <Button
@@ -221,6 +234,17 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
       >
         <Suspense fallback={lazyViewFallback}>
           <NotificationsView />
+        </Suspense>
+      </Modal>
+      <Modal
+        title="📖 Bitácora"
+        open={journalVisible}
+        onCancel={() => setJournalVisible(false)}
+        footer={null}
+        width={1000}
+      >
+        <Suspense fallback={lazyViewFallback}>
+          <JournalView />
         </Suspense>
       </Modal>
       {settingsLoaded && (

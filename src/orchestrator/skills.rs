@@ -85,10 +85,10 @@ static CATALOG: [SkillSpec; 10] = [
         skill: Skill::Recuerdos,
         id: "recuerdos",
         instructions: "¿La respuesta requiere guardar o recuperar notas, apuntes o algo ya hablado?",
-        criteria_true: "El mensaje pide apuntar, guardar, recuperar o listar un texto, una idea o un diario, o pregunta por algo ya hablado.",
+        criteria_true: "El mensaje pide apuntar, guardar, recuperar o listar un texto, una idea o un diario, o pregunta por algo ya hablado. Cuenta también la bitácora personal: apuntar el día de hoy, leer una entrada o un rango de días, corregirla, borrarla o preguntar cómo fue mi día.",
         criteria_false: "El mensaje no pide guardar ni recuperar información personal del usuario ni busca en el historial.",
         threshold: 0.10,
-        tools: &["notes", "unified_search"],
+        tools: &["notes", "unified_search", "journal"],
         prompt_key: "SKILL_RECUERDOS_PROMPT",
         prompt_heading: "# SKILL ACTIVA: RECUERDOS",
     },
@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_twenty_nine_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_thirty_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -666,8 +666,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            29,
-            "el core más las diez skills deben cubrir las veintinueve herramientas: {covered:?}"
+            30,
+            "el core más las diez skills deben cubrir las treinta herramientas: {covered:?}"
         );
         for spec in catalog() {
             assert!(
@@ -825,5 +825,61 @@ mod tests {
             vec!["agenda", "pendientes", "entorno", "widgets"],
             "solo las skills del briefing deben declarar el saludo de apertura del día; declaran: {declaring:?}"
         );
+    }
+
+    // ─── RED: la bitácora en el catálogo (journal-entries, 3.8) ─────────────
+    //
+    // La bitácora es, para el enrutador, otra forma de «apuntar y recuperar
+    // algo personal»: el dominio de `recuerdos`, la misma skill que ya cubre
+    // `notes` y `unified_search`. Entra en ella —y **solo** en ella— y sus
+    // `criteria` ganan el habla de la bitácora. Estas pruebas describen ese
+    // contrato y **fallan** con el catálogo actual.
+
+    /// Scenario: la skill de recuerdos cubre la bitácora y su habla.
+    #[test]
+    fn recuerdos_covers_the_journal_and_no_other_skill_does() {
+        let recuerdos = catalog().iter().find(|spec| spec.skill == Skill::Recuerdos);
+        assert!(recuerdos.is_some(), "recuerdos debe estar en el catálogo");
+        let recuerdos = recuerdos.unwrap();
+        assert!(
+            recuerdos.tools.contains(&"journal"),
+            "recuerdos debe cubrir `journal` además de `notes` y `unified_search`: {:?}",
+            recuerdos.tools
+        );
+
+        let owners: Vec<&str> = catalog()
+            .iter()
+            .filter(|spec| spec.tools.contains(&"journal"))
+            .map(|spec| spec.id)
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["recuerdos"],
+            "`journal` no puede repartirse entre skills distintas; lo cubren: {owners:?}"
+        );
+
+        assert!(
+            !CORE_TOOLS.contains(&"journal"),
+            "`journal` es enrutable: no puede pertenecer al conjunto core"
+        );
+        assert_eq!(
+            skill_of_tool("journal"),
+            Some(Skill::Recuerdos),
+            "`journal` debe enrutarse con la skill recuerdos"
+        );
+    }
+
+    /// Scenario: las criteria de la skill de recuerdos ganan el habla de la
+    /// bitácora, de modo que el router la seleccione cuando el usuario pida
+    /// leer o apuntar su diario.
+    #[test]
+    fn recuerdos_criteria_mention_the_journal_speech() {
+        let criteria = criteria_true_of("recuerdos").unwrap_or("");
+        for marker in ["bitácora", "diario", "cómo fue mi día"] {
+            assert!(
+                criteria.contains(marker),
+                "las criteria de `recuerdos` deben incluir «{marker}»; tienen: {criteria:?}"
+            );
+        }
     }
 }
