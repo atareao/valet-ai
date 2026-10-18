@@ -1917,8 +1917,8 @@ mod tests {
     use crate::db::schema::run_migrations;
     use crate::embeddings::provider::EmbeddingError;
     use crate::llm::provider::{
-        ChatMessage, ChatRequest, ChatResponse, LLMError, ReasoningEffort, ReasoningSpec,
-        ResponseFormat, TokenUsage,
+        ChatMessage, ChatRequest, ChatResponse, FinishReason, LLMError, ReasoningEffort,
+        ReasoningSpec, ResponseFormat, TokenUsage,
     };
     use crate::models::timeline::TimelineEvent;
     use async_trait::async_trait;
@@ -1945,6 +1945,11 @@ mod tests {
         /// `state_sequence` but for the Layer D extractor, so a test can make
         /// the first attempt malformed and the next one valid.
         pub timeline_sequence: Arc<Mutex<std::collections::VecDeque<String>>>,
+        /// Per-call finish reasons for the consolidator/compression calls
+        /// (first call first). Falls back to `None` (the provider reported no
+        /// reason) once the queue is exhausted, so a test can simulate a
+        /// truncation (`length`) on the first attempt only.
+        pub semantic_finish_reasons: Arc<Mutex<std::collections::VecDeque<Option<FinishReason>>>>,
     }
 
     #[async_trait]
@@ -1964,10 +1969,19 @@ mod tests {
                 !is_semantic && matches!(request.response_format, Some(ResponseFormat::JsonObject));
             self.chat_calls.lock().unwrap().push(request);
 
+            let mut finish_reason: Option<FinishReason> = None;
             let content = if is_semantic {
                 if self.fail_semantic {
                     return Err(LLMError::HttpError("semantic backend down".into()));
                 }
+                // The finish reason is configurable per semantic call so a test
+                // can simulate a truncation (`length`) on the first attempt.
+                finish_reason = self
+                    .semantic_finish_reasons
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .flatten();
                 if system_content.contains(COMPRESSION_CALL_MARKER) {
                     self.compression_response.clone()
                 } else {
@@ -1999,7 +2013,7 @@ mod tests {
                     reasoning_tokens: 0,
                     cost: 0.0,
                 }),
-                finish_reason: None,
+                finish_reason,
             })
         }
 
@@ -2031,6 +2045,7 @@ mod tests {
                 fail_semantic: false,
                 state_sequence: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 timeline_sequence: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+                semantic_finish_reasons: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             }
         }
 
@@ -2067,6 +2082,14 @@ mod tests {
             self.timeline_sequence = Arc::new(Mutex::new(
                 responses.into_iter().map(String::from).collect(),
             ));
+            self
+        }
+
+        /// Queue per-call finish reasons for the semantic calls (first call
+        /// first). Falls back to `None` once the queue is exhausted.
+        fn finish_reasons(mut self, reasons: Vec<Option<FinishReason>>) -> Self {
+            self.semantic_finish_reasons =
+                Arc::new(Mutex::new(reasons.into_iter().collect()));
             self
         }
 
@@ -3576,6 +3599,197 @@ mod tests {
             })
             .count();
         assert_eq!(compression_calls, 1, "compression must not be retried");
+    }
+
+    // ─── Change `llm-worker-resilience` — RED (2.1, 2.2, 2.3) ─────────────
+    //
+    // RED: describen el comportamiento esperado tras la fase GREEN. Hoy la
+    // pasada aborta, el reintento repite el presupuesto y el diagnóstico no
+    // lleva el motivo de finalización.
+
+    /// 2.1 — Un corte por presupuesto (`finish_reason = length`) hace que el
+    /// reintento de la consolidación lleve `max_tokens` al **doble**; un fallo
+    /// que no es por truncamiento repite el presupuesto configurado.
+    #[tokio::test]
+    async fn test_consolidation_truncation_retries_with_doubled_budget() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &db,
+            "GENERATION_SEMANTIC_MAX_TOKENS",
+            "1000",
+        )
+        .await
+        .unwrap();
+
+        // Truncation: empty content with `finish_reason = length` on the first
+        // attempt; the retry then returns a valid state.
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .state_sequence(vec!["", DEFAULT_STATE_RESPONSE])
+            .finish_reasons(vec![Some(FinishReason::Length), Some(FinishReason::Stop)]);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        let outcome = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect("the retry with a doubled budget must succeed");
+
+        assert!(matches!(outcome, Consolidation::Write { .. }));
+        {
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 2, "exactly two attempts");
+            assert_eq!(
+                calls[0].max_tokens,
+                Some(1000),
+                "the first attempt uses the configured budget"
+            );
+            assert_eq!(
+                calls[1].max_tokens,
+                Some(2000),
+                "a truncation retry must double GENERATION_SEMANTIC_MAX_TOKENS"
+            );
+        }
+
+        // Not truncated: an empty first attempt (no finish reason) retries with
+        // the configured budget, not the doubled one.
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .state_sequence(vec!["", DEFAULT_STATE_RESPONSE]);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect("the retry must succeed");
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls[1].max_tokens,
+            Some(1000),
+            "a retry that is not a truncation keeps the configured budget"
+        );
+    }
+
+    /// 2.2 — Un fallo de la consolidación **degrada** la pasada: escribe ficha y
+    /// marca, y conserva el estado anterior, en vez de abortar.
+    #[tokio::test]
+    async fn test_consolidation_failure_degrades_the_pass() {
+        let db = test_db().await;
+        // A previous Layer C state that must survive the failure untouched.
+        let previous_payload = r#"{"schema_version":1,"user_profile":{"note":"estado anterior"},"system_rules":["regla previa"]}"#;
+        PersistentMemoryRepo::upsert(&db, previous_payload, "2026-09-01T10:00:00Z")
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_semantic();
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            mock.wrap(),
+            embedding_provider(),
+            &EpisodicMemoryConfig {
+                inactivity_minutes: 0,
+                ..Default::default()
+            },
+            &no_attempt(),
+        )
+        .await;
+
+        assert_eq!(
+            count_memory(&db).await,
+            1,
+            "the episodic card survives the consolidator failure"
+        );
+        let stored = PersistentMemoryRepo::get(&db)
+            .await
+            .unwrap()
+            .expect("the previous state must still be there");
+        assert_eq!(
+            stored.payload, previous_payload,
+            "the previous state must not be overwritten"
+        );
+        assert_eq!(stored.updated_at, "2026-09-01T10:00:00Z");
+        assert_eq!(
+            count_unindexed(&db).await,
+            0,
+            "the batch is still marked as indexed"
+        );
+
+        let errors: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests
+             WHERE kind = 'consolidator' AND status = 'error'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(
+            errors >= 1,
+            "the consolidator failure is recorded as an error row"
+        );
+    }
+
+    /// 2.3 — La fila `status = 'error'` del consolidador lleva el **motivo de
+    /// finalización** junto al `content_len` y el preview.
+    #[tokio::test]
+    async fn test_consolidation_error_diagnostic_includes_finish_reason() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+
+        // Both attempts are truncated: no valid content, `length` each time.
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .state_sequence(vec!["", ""])
+            .finish_reasons(vec![Some(FinishReason::Length), Some(FinishReason::Length)]);
+        let provider = mock.wrap();
+
+        let err = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect_err("two truncated attempts must fail");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("finish_reason=length"),
+            "the pass error must carry the finish reason: {msg}"
+        );
+
+        let error_message: Option<String> = sqlx::query_scalar(
+            "SELECT error_message FROM llm_requests
+             WHERE kind = 'consolidator' AND status = 'error'
+             ORDER BY rowid DESC LIMIT 1",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let error_message = error_message.expect("the error row must carry a diagnostic");
+        assert!(
+            error_message.contains("content_len"),
+            "the diagnostic keeps content_len: {error_message}"
+        );
+        assert!(
+            error_message.contains("preview="),
+            "the diagnostic keeps the preview: {error_message}"
+        );
+        assert!(
+            error_message.contains("finish_reason=length"),
+            "the diagnostic must include the finish reason: {error_message}"
+        );
     }
 
     // ─── Bloque 5: pasada unificada ────────────────────────────────────────

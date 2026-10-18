@@ -226,7 +226,7 @@ mod tests {
     use crate::db::repos::messages::MessagesRepo;
     use crate::db::schema::run_migrations;
     use crate::llm::provider::{
-        ChatMessage, ChatRequest, ChatResponse, LLMError, ReasoningSpec, TokenUsage,
+        ChatMessage, ChatRequest, ChatResponse, FinishReason, LLMError, ReasoningSpec, TokenUsage,
     };
     use async_trait::async_trait;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -258,6 +258,54 @@ mod tests {
                     cost: 0.0,
                 }),
                 finish_reason: None,
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<
+            std::pin::Pin<
+                Box<
+                    dyn tokio_stream::Stream<
+                            Item = Result<crate::llm::provider::StreamEvent, LLMError>,
+                        > + Send,
+                >,
+            >,
+            LLMError,
+        > {
+            unimplemented!("chat_stream not used in tests")
+        }
+    }
+
+    /// A mock LLM provider that returns a configurable response content (it may
+    /// be empty or whitespace-only), so a test can drive the empty-summary
+    /// guard. It records every [`ChatRequest`] it receives.
+    struct ConfigurableResponseLLMProvider {
+        pub calls: Arc<Mutex<Vec<ChatRequest>>>,
+        pub content: String,
+    }
+
+    #[async_trait]
+    impl LLMProvider for ConfigurableResponseLLMProvider {
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            self.calls.lock().unwrap().push(request);
+            Ok(ChatResponse {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: self.content.clone(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                usage: Some(TokenUsage {
+                    prompt_tokens: 100,
+                    completion_tokens: 0,
+                    cached_tokens: 0,
+                    reasoning_tokens: 0,
+                    cost: 0.0,
+                }),
+                finish_reason: Some(FinishReason::Stop),
             })
         }
 
@@ -620,6 +668,66 @@ mod tests {
             request.max_tokens,
             Some(1024),
             "a missing key must fall back to the role default"
+        );
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Change `llm-worker-resilience` — RED: guarda del resumen vacío (2.4)
+    // -----------------------------------------------------------------------
+
+    /// Scenario: Un resumen vacío no se escribe.
+    ///
+    /// A whitespace-only summary must NOT be stored in `collapsed_content`; the
+    /// failure is recorded as a `kind = 'collapse'`, `status = 'error'` row and
+    /// the message is left un-collapsed so a later attempt can retry it.
+    #[tokio::test]
+    async fn test_empty_summary_is_not_written_and_recorded_as_error(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = test_db().await?;
+        let msg_id = create_long_message(&pool).await?;
+
+        let (tx, rx) = mpsc::channel::<String>(16);
+        let calls: Arc<Mutex<Vec<ChatRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let mock = Arc::new(ConfigurableResponseLLMProvider {
+            calls: calls.clone(),
+            content: "   ".to_string(),
+        });
+
+        let _handle = CollapseWorker::start(
+            pool.clone(),
+            mock,
+            rx,
+            "Resume el siguiente mensaje.".to_string(),
+            "mistralai/mistral-small".to_string(),
+        );
+
+        tx.send(msg_id.clone()).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        assert!(
+            !calls.lock().unwrap().is_empty(),
+            "the collapse worker must have called the LLM"
+        );
+
+        let msg = MessagesRepo::find_by_id(&pool, &msg_id)
+            .await?
+            .expect("Message should exist");
+        assert!(
+            msg.collapsed_content.is_none(),
+            "a whitespace-only summary must never be stored as collapsed_content"
+        );
+
+        let errors: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests
+             WHERE kind = 'collapse' AND status = 'error'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            errors, 1,
+            "the empty summary must be recorded as one error row"
         );
 
         Ok(())
