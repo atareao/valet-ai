@@ -26,7 +26,7 @@ Que Valet mantenga una bitácora personal **por su cuenta**: que decida *cuándo
 ## Reparto en dos changes
 
 1. **`journal-entries` — la bitácora como registro.** ✅ **Completado** (PR #215). Migración, repositorio, herramienta `journal`, endpoints y sección en la app. Al terminarlo, el usuario puede escribir, corregir, listar y borrar entradas; Valet todavía **no** escribe solo.
-2. **`journal-worker` — la autonomía.** Worker propio, prompt sembrado y editable, ajustes (encendida o apagada, hora, modelo) y la marca de día juzgado. Al terminarlo, la bitácora se escribe sola.
+2. **`journal-worker` — la autonomía.** ✅ **Completado** (PR #218). Worker propio, prompt sembrado y editable, ajustes (encendida o apagada, hora, modelo) y la marca de día juzgado. Al terminarlo, la bitácora se escribe sola.
 
 El orden no es casual: la autonomía necesita la tabla y el repositorio del primero, y el primero ya entrega algo utilizable aunque el segundo se aparque.
 
@@ -56,3 +56,15 @@ Al cerrar `journal-entries`, los dos revisores dejaron hallazgos **no bloqueante
 - El test de carga diferida comprueba la forma del fuente (`lazy` + `Suspense`) y no el paquete construido; la prueba de verdad de que la vista no entra en el paquete inicial es el comprobador de presupuesto del `postbuild`. El test se queda como guarda barata.
 - La tabla no lleva `CHECK` en `mood`: la estrictez vive en el tipo y en el repositorio, que rechaza un valor fuera del conjunto incluso si entra por SQL a mano. Hay test.
 - La sincronía `frontend/dist` → `static/` sigue siendo **manual** (no hay receta en el `.justfile`) y ya ha hecho falta otra vez al cerrar este change.
+
+Del cierre de `journal-worker` (PR #218), la misma revisión dejó tres recomendaciones **no bloqueantes** y un apunte del revisor de frontend, aceptados sin acción:
+
+- **La lectura del material puede fallar sin marcar el día.** Si falla la *lectura* (p. ej. la consulta del material), el día no se marca en ese momento: se reintenta en la vuelta siguiente. No es un bucle —la marca impide el de los fallos del modelo—, pero un error persistente dejaría el día colgado hasta que sane.
+- **El aviso de `mood` fuera del conjunto no tiene aserción de test.** El aviso que registra un `mood` que no está en el conjunto no está asertado por ningún test; el comportamiento sí lo está (el relato se escribe sin ánimo). Se acepta.
+- **El shim de test que reconstruye `llm_requests` a mano es redundante.** Desde la migración que ensancha `kind`, ese shim no hace falta; se acepta sin reescribir los tests a estas alturas.
+- **El `aria-label` de grupo de la pestaña «Prompts».** Con la sexta sub-pestaña añadida, la pestaña de Prompts sigue sin `aria-label` de grupo, como las demás del patrón preexistente. Se tocaría en otro change, junto con la accesibilidad de la pestaña entera.
+
+Gotchas operativos que deja la **medición** de `journal-worker` (2026-10-18), para no redescubrirlos:
+
+- **Remedir un día exige borrar `journal_last_judged_day`.** Además de sembrar material hay que borrar la marca: una vuelta sin material marca el día al instante y lo saca del alcance del worker.
+- **`JOURNAL_MODEL` no está fijado en el despliegue de trabajo.** El worker usa `MEMORY_MODEL`, que de todos modos es el modelo sin razonamiento por defecto de las plantillas.
