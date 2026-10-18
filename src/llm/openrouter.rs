@@ -1553,4 +1553,47 @@ mod tests {
             "response_format must be omitted"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // RED phase — a 200 body without `choices` is an error, not an empty success
+    //
+    // This test WILL FAIL: today `parse_response` indexes `choices[0]` without
+    // checking it exists, so an upstream error body is accepted as a successful
+    // response with empty content.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: An error body on a 200 is an error
+    #[tokio::test]
+    async fn test_chat_rejects_success_body_without_choices() {
+        let server = MockServer::start().await;
+
+        // Upstream providers report their failures with a success HTTP status
+        // and an `{"error": …}` body that carries no `choices` array.
+        Mock::given(any())
+            .and(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "error": {"message": "Provider returned error"}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenRouterProvider::new(OpenRouterConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: server.uri(),
+            max_retries: 0,
+            timeout_secs: 5,
+        });
+
+        let result = provider.chat(generation_request(None, None, false)).await;
+
+        let err = result.expect_err(
+            "a 200 body without `choices` (e.g. {\"error\": …}) must be an LLMError, \
+             never an Ok carrying empty content",
+        );
+        assert!(
+            err.to_string().contains("Provider returned error"),
+            "the rejection must surface the provider's message, got: {err}"
+        );
+    }
 }
