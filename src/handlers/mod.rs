@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod events;
+pub mod journal;
 pub mod memories;
 pub mod messages;
 pub mod profile;
