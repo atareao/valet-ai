@@ -17,20 +17,35 @@
 //!   el día entero aunque dure 23 o 25 horas por un cambio de hora.
 //! - [`JournalSettings`] — los ajustes de la bitácora leídos **en cada vuelta**.
 //!
-//! # Estado (fase RED — tareas 1.1–1.6, 2.1–2.6 y 3.4)
+//! # Estado (fase GREEN — tareas 6.1–6.4)
 //!
-//! Este módulo fija la superficie pública y los tests que describen su
-//! contrato. Los cuerpos de las tres funciones puras, de
-//! [`JournalSettings::load`] y de [`JournalSettings::target`] son todavía
-//! `unimplemented!()`, y [`DEFAULT_JOURNAL_PROMPT_FALLBACK`] es todavía una
-//! cadena vacía: se implementan en la fase GREEN (tareas 6.1–6.4). Por eso
-//! `cargo test --lib journal` está en rojo a propósito.
+//! La parte pura del worker está implementada: el día local con su hora de
+//! corte y su zona ([`last_closed_day`]), el día objetivo ([`target_day`]), la
+//! ventana UTC del día ([`day_window`]), la lectura de ajustes en cada vuelta
+//! ([`JournalSettings::load`]) y el respaldo mínimo del prompt
+//! ([`DEFAULT_JOURNAL_PROMPT_FALLBACK`]). Nada de esto toca la base de datos ni
+//! el reloj del sistema salvo por lo que se le pasa como parámetro.
 //!
 //! El worker en sí (el ciclo, el material, la escritura y el fallo) llega en
 //! los grupos 4–6 de `tasks.md`, en otro encargo.
 
-use chrono::{DateTime, Utc};
+use std::str::FromStr;
+
+use chrono::{DateTime, NaiveDate, TimeZone, Timelike, Utc};
+use chrono_tz::Tz;
 use sqlx::SqlitePool;
+
+use crate::db::repos::settings::SettingsRepo;
+
+/// La hora de corte por defecto (`journal_hour`): el día anterior ya está
+/// cerrado cuando, en la zona del usuario, se ha pasado esta hora del día
+/// siguiente.
+pub const DEFAULT_JOURNAL_HOUR: u8 = 4;
+
+/// Cuánto puede desplazarse el inicio de un día local cuando su medianoche no
+/// existe (la zona cambia de hora justo entonces): se toma el primer instante
+/// válido de ese día, buscándolo como mucho estos minutos hacia adelante.
+const MAX_LOCAL_MIDNIGHT_SHIFT_MINUTES: i64 = 180;
 
 /// Respaldo mínimo del prompt de la bitácora, usado solo cuando
 /// `settings.journal_prompt` falta o está en blanco.
@@ -39,9 +54,15 @@ use sqlx::SqlitePool;
 /// pide **el mismo contrato de salida** que este respaldo: el objeto JSON con
 /// `write`, el relato y los campos opcionales, y el `{ "write": false }` de la
 /// jornada que no tiene nada que contar.
-///
-/// RED stub: vacío hasta la tarea 6.4.
-pub const DEFAULT_JOURNAL_PROMPT_FALLBACK: &str = "";
+pub const DEFAULT_JOURNAL_PROMPT_FALLBACK: &str = r#"Eres el diario del autor. Recibes el material de una jornada: los hechos ya registrados, los mensajes del día y la entrada anterior del diario.
+
+Escribe el relato del día en primera persona, como lo contaría su propio autor: cómo fue, qué costó y qué ilusionó. Los hechos del día ya están registrados en el timeline: no los enumeres otra vez, descríbelos. Describe en vez de diagnosticar, y no inventes nada que no esté en el material.
+
+Devuelve EXCLUSIVAMENTE un objeto JSON:
+- Si la jornada no tiene nada que contar: {"write": false}
+- Si hay algo que contar: {"write": true, "content": "el relato del día", "mood": "great|good|neutral|bad|terrible", "achievements": ["…"], "struggles": ["…"], "tags": ["…"]}
+
+"write" es obligatorio y booleano. Con "write" en true, "content" es el relato en primera persona y no puede estar vacío. "mood", "achievements", "struggles" y "tags" son opcionales."#;
 
 /// Los ajustes de la bitácora tal como el worker los necesita en **una** vuelta.
 ///
@@ -75,52 +96,194 @@ pub struct JournalSettings {
 }
 
 impl JournalSettings {
-    /// Lee los ajustes de la bitácora de `settings`.
+    /// Lee los ajustes de la bitácora de `settings`, **en cada llamada**.
     ///
-    /// RED stub: se implementa en la tarea 6.3.
+    /// Un ajuste ausente, vacío o ilegible cae a su defecto y deja su aviso en
+    /// [`JournalSettings::warnings`] —que nombra siempre la clave culpable—
+    /// para que el worker lo registre. Una lectura que falle se trata como
+    /// ausencia: la vuelta se degrada, pero nunca revienta.
     pub async fn load(db: &SqlitePool) -> Self {
-        let _ = db;
-        unimplemented!("JournalSettings::load: fase RED — se implementa en la tarea 6.3")
+        let mut warnings = Vec::new();
+
+        let enabled = match read_setting(db, "journal_enabled").await {
+            None => true,
+            Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+                "false" => false,
+                // Un valor vacío es «sin valor»: el defecto, sin aviso. Solo un
+                // valor presente pero irreconocible avisa.
+                "true" | "" => true,
+                _ => {
+                    warnings.push(format!(
+                        "settings.journal_enabled='{raw}' is not a boolean; keeping the journal on"
+                    ));
+                    true
+                }
+            },
+        };
+
+        let cut_hour = match read_setting(db, "journal_hour").await {
+            None => DEFAULT_JOURNAL_HOUR,
+            Some(raw) => match raw.trim().parse::<u8>() {
+                Ok(hour) if hour <= 23 => hour,
+                _ => {
+                    warnings.push(format!(
+                        "settings.journal_hour='{raw}' is not an hour between 0 and 23; \
+                         using {DEFAULT_JOURNAL_HOUR}"
+                    ));
+                    DEFAULT_JOURNAL_HOUR
+                }
+            },
+        };
+
+        let prompt = match read_setting(db, "journal_prompt").await {
+            Some(raw) if !raw.trim().is_empty() => raw,
+            Some(raw) => {
+                warnings.push(format!(
+                    "settings.journal_prompt='{raw}' is blank; using the minimal fallback"
+                ));
+                DEFAULT_JOURNAL_PROMPT_FALLBACK.to_string()
+            }
+            None => {
+                warnings
+                    .push("settings.journal_prompt is missing; using the minimal fallback".into());
+                DEFAULT_JOURNAL_PROMPT_FALLBACK.to_string()
+            }
+        };
+
+        let last_judged_day = match read_setting(db, "journal_last_judged_day").await {
+            None => None,
+            Some(raw) => match parse_iso_date(&raw) {
+                Some(day) => Some(day.format(ISO_DATE).to_string()),
+                None => {
+                    warnings.push(format!(
+                        "settings.journal_last_judged_day='{raw}' is not an ISO date; \
+                         treating it as never judged"
+                    ));
+                    None
+                }
+            },
+        };
+
+        // La zona se guarda tal cual: la caída a UTC la hacen las funciones
+        // puras, que es el único sitio donde una zona ausente o inválida se
+        // resuelve.
+        let timezone = read_setting(db, "timezone").await.unwrap_or_default();
+
+        Self {
+            enabled,
+            cut_hour,
+            prompt,
+            last_judged_day,
+            timezone,
+            warnings,
+        }
     }
 
     /// El día que toca juzgar en esta vuelta, o `None` cuando no hay nada
     /// pendiente: el último día cerrado en la zona del usuario, recortado por la
     /// marca de progreso ([`target_day`]).
     ///
-    /// RED stub: se implementa en la tarea 6.3.
+    /// No mira [`JournalSettings::enabled`]: apagar la bitácora es cosa del
+    /// worker, que es quien decide si llega a llamar al modelo.
     pub fn target(&self, now_utc: DateTime<Utc>) -> Option<String> {
-        let _ = now_utc;
-        unimplemented!("JournalSettings::target: fase RED — se implementa en la tarea 6.3")
+        let closed_day = last_closed_day(now_utc, &self.timezone, self.cut_hour);
+        target_day(self.last_judged_day.as_deref(), &closed_day)
     }
+}
+
+/// Lee una clave de `settings`. Un fallo de lectura se trata como ausencia.
+async fn read_setting(db: &SqlitePool, key: &str) -> Option<String> {
+    SettingsRepo::get(db, key).await.ok().flatten()
+}
+
+/// El formato de las fechas de la bitácora: el día se direcciona por fecha ISO.
+const ISO_DATE: &str = "%Y-%m-%d";
+
+/// Una fecha `YYYY-MM-DD`, o `None` si no encaja en el formato. Sin fecha
+/// inventada.
+fn parse_iso_date(date: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(date.trim(), ISO_DATE).ok()
+}
+
+/// La zona IANA pedida, o UTC si falta o no es válida.
+fn resolve_timezone(timezone: &str) -> Tz {
+    Tz::from_str(timezone.trim()).unwrap_or(chrono_tz::UTC)
+}
+
+/// El primer instante de un día local, en UTC.
+///
+/// Una medianoche local ambigua (la zona atrasa el reloj justo entonces) se
+/// resuelve con la primera de sus dos ocurrencias, y una inexistente (la zona
+/// adelanta el reloj justo entonces) con el primer instante válido del día.
+fn local_midnight(tz: &Tz, day: NaiveDate) -> Option<DateTime<Utc>> {
+    let midnight = day.and_hms_opt(0, 0, 0)?;
+    for minutes in 0..=MAX_LOCAL_MIDNIGHT_SHIFT_MINUTES {
+        let naive = midnight.checked_add_signed(chrono::Duration::minutes(minutes))?;
+        if let Some(local) = tz.from_local_datetime(&naive).earliest() {
+            return Some(local.with_timezone(&Utc));
+        }
+    }
+    None
 }
 
 /// El día local cerrado más reciente: `D` está cerrado cuando en la zona del
 /// usuario ya se ha pasado la hora de corte del día siguiente. Una zona ausente
 /// o inválida cae a UTC.
 ///
-/// RED stub: se implementa en la tarea 6.1.
+/// Con la hora de corte por defecto (4), a las 04:05 del 19 el día cerrado es el
+/// 18, y a las 03:59 sigue siendo el 17.
 pub fn last_closed_day(now_utc: DateTime<Utc>, timezone: &str, cut_hour: u8) -> String {
-    let _ = (now_utc, timezone, cut_hour);
-    unimplemented!("last_closed_day: fase RED — se implementa en la tarea 6.1")
+    let tz = resolve_timezone(timezone);
+    let local = now_utc.with_timezone(&tz);
+    let today = local.date_naive();
+
+    let closed = if local.hour() >= u32::from(cut_hour) {
+        // La hora de corte de hoy ya ha pasado: el día anterior está cerrado.
+        today.pred_opt()
+    } else {
+        // Todavía no: el último día cerrado es el de antes de ayer.
+        today.pred_opt().and_then(|yesterday| yesterday.pred_opt())
+    };
+
+    closed.unwrap_or(today).format(ISO_DATE).to_string()
 }
 
 /// El día que toca juzgar: el más antiguo posterior a `last_judged`, sin
 /// pasarse de `closed_day`. `None` cuando no hay nada que juzgar. Sin marca de
 /// progreso, el objetivo es `closed_day` (nunca el principio de los tiempos).
 ///
-/// RED stub: se implementa en la tarea 6.1.
+/// Una marca ilegible también se trata como «nunca juzgado»: el objetivo vuelve
+/// a ser el último día cerrado, no el principio de los tiempos.
 pub fn target_day(last_judged: Option<&str>, closed_day: &str) -> Option<String> {
-    let _ = (last_judged, closed_day);
-    unimplemented!("target_day: fase RED — se implementa en la tarea 6.1")
+    let closed = parse_iso_date(closed_day)?;
+
+    let next = match last_judged.and_then(parse_iso_date) {
+        Some(judged) => judged.succ_opt()?,
+        None => closed,
+    };
+
+    if next > closed {
+        None
+    } else {
+        Some(next.format(ISO_DATE).to_string())
+    }
 }
 
 /// La ventana UTC `[inicio, fin)` de un día local `YYYY-MM-DD`, o `None` si la
 /// fecha no encaja en el formato. Una zona ausente o inválida cae a UTC.
 ///
-/// RED stub: se implementa en la tarea 6.1.
+/// La ventana cubre el día local completo **aunque dure 23 o 25 horas** por un
+/// cambio de hora: el inicio es la medianoche local de `date` y el fin la de
+/// `date + 1`.
 pub fn day_window(date: &str, timezone: &str) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
-    let _ = (date, timezone);
-    unimplemented!("day_window: fase RED — se implementa en la tarea 6.1")
+    let day = parse_iso_date(date)?;
+    let next_day = day.succ_opt()?;
+    let tz = resolve_timezone(timezone);
+
+    let start = local_midnight(&tz, day)?;
+    let end = local_midnight(&tz, next_day)?;
+
+    Some((start, end))
 }
 
 #[cfg(test)]
@@ -500,7 +663,10 @@ mod tests {
         let db = test_db().await;
 
         let settings = JournalSettings::load(&db).await;
-        assert_eq!(settings.cut_hour, 4, "sin journal_hour la hora de corte es 4");
+        assert_eq!(
+            settings.cut_hour, 4,
+            "sin journal_hour la hora de corte es 4"
+        );
         assert!(
             !settings.warnings.iter().any(|w| w.contains("journal_hour")),
             "la ausencia del ajuste es su defecto, no un valor inservible"
@@ -566,7 +732,10 @@ mod tests {
             "el respaldo mínimo del código no puede quedar vacío"
         );
         assert!(
-            settings.warnings.iter().any(|w| w.contains("journal_prompt")),
+            settings
+                .warnings
+                .iter()
+                .any(|w| w.contains("journal_prompt")),
             "un prompt ausente deja un aviso: {:?}",
             settings.warnings
         );
@@ -581,7 +750,10 @@ mod tests {
         let settings = JournalSettings::load(&db).await;
         assert_eq!(settings.prompt, DEFAULT_JOURNAL_PROMPT_FALLBACK);
         assert!(
-            settings.warnings.iter().any(|w| w.contains("journal_prompt")),
+            settings
+                .warnings
+                .iter()
+                .any(|w| w.contains("journal_prompt")),
             "un prompt en blanco deja un aviso: {:?}",
             settings.warnings
         );
@@ -596,7 +768,10 @@ mod tests {
         let settings = JournalSettings::load(&db).await;
         assert_eq!(settings.prompt, "Escribe el diario del día.");
         assert!(
-            !settings.warnings.iter().any(|w| w.contains("journal_prompt")),
+            !settings
+                .warnings
+                .iter()
+                .any(|w| w.contains("journal_prompt")),
             "un prompt propio no deja aviso"
         );
     }

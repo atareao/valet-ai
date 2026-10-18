@@ -57,9 +57,6 @@ pub struct Config {
     pub timeline_model: String,
     /// Model used by the journal worker (bitácora). Reads `JOURNAL_MODEL` and
     /// falls back to `MEMORY_MODEL` (and, in turn, to its default).
-    ///
-    /// RED stub: se rellena en la tarea 6.2 (ahora queda vacío, y por eso los
-    /// tests de `JOURNAL_MODEL` están en rojo).
     pub journal_model: String,
     pub rag_budget_tokens: usize,
 
@@ -82,6 +79,9 @@ impl Config {
         // is not set it falls back to `MEMORY_MODEL` (and, in turn, to its
         // default).
         let timeline_model = env::var("TIMELINE_MODEL").unwrap_or_else(|_| memory_model.clone());
+        // `JOURNAL_MODEL` is the journal worker's model; when it is not set it
+        // falls back to `MEMORY_MODEL` (and, in turn, to its default).
+        let journal_model = env::var("JOURNAL_MODEL").unwrap_or_else(|_| memory_model.clone());
 
         Self {
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into()),
@@ -147,8 +147,7 @@ impl Config {
             memory_model,
             semantic_model,
             timeline_model,
-            // RED stub: en la tarea 6.2 se resuelve desde `JOURNAL_MODEL`.
-            journal_model: String::new(),
+            journal_model,
             rag_budget_tokens: env::var("RAG_BUDGET_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -633,7 +632,8 @@ mod tests {
 
         let cfg = Config::from_env();
         assert_eq!(
-            cfg.journal_model, "mistralai/mistral-small-24b-instruct-2501"
+            cfg.journal_model,
+            "mistralai/mistral-small-24b-instruct-2501"
         );
     }
 }
