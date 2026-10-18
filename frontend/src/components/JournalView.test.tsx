@@ -176,7 +176,11 @@ describe("JournalView", () => {
     expect(
       await screen.findByText("content must not be empty"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Guardar$/ })).toBeInTheDocument();
+    // El formulario sigue abierto con lo escrito. No se comprueba el nombre del
+    // botón «Guardar»: al pasar `saving` a `false`, el icono de carga de antd se
+    // va con una animación que en jsdom nunca termina, y mientras sigue montado
+    // suma su `aria-label` al nombre accesible del botón («loadingGuardar»).
+    expect(screen.getByLabelText("Relato")).toHaveValue("un día largo");
   });
 
   it("borrar pide confirmación antes de llamar a la API", async () => {
@@ -198,8 +202,10 @@ describe("JournalView", () => {
     await waitFor(() => {
       expect(mockApi.deleteJournalEntry).toHaveBeenCalledWith("2026-10-18");
     });
+    // El texto del estado vacío empieza en mayúscula («Aparecerán…»): la
+    // búsqueda es insensible a la caja para no atarla al inicio de la frase.
     expect(
-      await screen.findByText(/aparecerán a medida que el agente/),
+      await screen.findByText(/aparecerán a medida que el agente/i),
     ).toBeInTheDocument();
   });
 
@@ -244,7 +250,7 @@ describe("JournalView", () => {
     render(<JournalView />);
 
     expect(
-      await screen.findByText(/aparecerán a medida que el agente/),
+      await screen.findByText(/aparecerán a medida que el agente/i),
     ).toBeInTheDocument();
   });
 
