@@ -53,13 +53,21 @@ struct ColumnInfo {
     pk: i64,
 }
 
-async fn columns(pool: &SqlitePool) -> std::collections::BTreeMap<String, ColumnInfo> {
-    let rows: Vec<ColumnInfo> =
-        sqlx::query_as("SELECT cid, name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('journal_entries')")
-            .fetch_all(pool)
-            .await
-            .unwrap_or_else(|e| panic!("'journal_entries' must exist to be inspected: {e}"));
-    rows.into_iter().map(|c| (c.name.clone(), c)).collect()
+/// The columns of `journal_entries`, in `pragma_table_info` order — that is, in
+/// the order the table declares them.
+async fn columns(pool: &SqlitePool) -> Vec<ColumnInfo> {
+    sqlx::query_as("SELECT cid, name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('journal_entries')")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_else(|e| panic!("'journal_entries' must exist to be inspected: {e}"))
+}
+
+/// The description of one column, or a panic naming the missing one.
+fn column<'a>(columns: &'a [ColumnInfo], name: &str) -> &'a ColumnInfo {
+    columns
+        .iter()
+        .find(|c| c.name == name)
+        .unwrap_or_else(|| panic!("column '{name}' must exist"))
 }
 
 /// Every explicit index declared on `journal_entries` — `sql` is NULL for the
@@ -139,26 +147,38 @@ async fn test_journal_entries_table_exists_with_columns() {
     );
 
     let columns = columns(&pool).await;
-    let names: Vec<&str> = columns.keys().map(String::as_str).collect();
+    let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(
         names,
         EXPECTED_COLUMNS.to_vec(),
-        "'journal_entries' must carry exactly the declared columns, got {names:?}"
+        "'journal_entries' must carry exactly the declared columns, in the declared order; got {names:?}"
     );
 
-    let id = &columns["id"];
+    // `id` is the row's identity, so what is asserted is that it *is* the
+    // primary key — through the pragma flag and the declaration — and not a
+    // `notnull` flag: SQLite does not report a plain `TEXT PRIMARY KEY` as
+    // `NOT NULL` (verified against this very table: `pk = 1`, `notnull = 0`),
+    // only an explicit `NOT NULL` would set it. The table follows the
+    // repository's spelling (`id TEXT PRIMARY KEY`, as in `notes`,
+    // `timeline_events` and the other seven tables), and the spec asks for
+    // «clave primaria» here while spelling `NOT NULL` out for every other
+    // column — so the flag is the engine's quirk, not a missing constraint.
+    let id = column(&columns, "id");
     assert_eq!(id.r#type.to_uppercase(), "TEXT");
     assert_eq!(id.pk, 1, "'id' must be the PRIMARY KEY");
-    assert!(id.notnull, "'id' must be NOT NULL");
+    assert!(
+        table_sql(&pool).await.contains("id TEXT PRIMARY KEY"),
+        "the declaration must spell the primary key out"
+    );
 
     for required in ["profile_id", "date", "content"] {
-        let column = &columns[required];
+        let column = column(&columns, required);
         assert_eq!(column.r#type.to_uppercase(), "TEXT");
         assert!(column.notnull, "'{required}' must be NOT NULL");
     }
 
     for nullable in ["mood", "achievements", "struggles", "tags"] {
-        let column = &columns[nullable];
+        let column = column(&columns, nullable);
         assert_eq!(column.r#type.to_uppercase(), "TEXT");
         assert!(
             !column.notnull,
@@ -167,7 +187,7 @@ async fn test_journal_entries_table_exists_with_columns() {
     }
 
     for stamp in ["created_at", "updated_at"] {
-        let column = &columns[stamp];
+        let column = column(&columns, stamp);
         assert_eq!(column.r#type.to_uppercase(), "TEXT");
         assert!(column.notnull, "'{stamp}' must be NOT NULL");
         assert_eq!(
