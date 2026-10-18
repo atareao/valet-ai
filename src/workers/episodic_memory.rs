@@ -2019,6 +2019,11 @@ mod tests {
         pub compression_response: String,
         pub timeline_response: String,
         pub fail_semantic: bool,
+        /// Fail the episodic (Layer B) call — the archivist extraction — with a
+        /// transport error. `fail_semantic` only affects the consolidator and the
+        /// compression calls, so this is the switch that exercises a Layer B
+        /// failure.
+        pub fail_episodic: bool,
         pub state_sequence: Arc<Mutex<std::collections::VecDeque<String>>>,
         /// Per-call timeline responses (first call first). Falls back to
         /// `timeline_response` once the queue is exhausted. Mirrors
@@ -2075,6 +2080,9 @@ mod tests {
                     .pop_front()
                     .unwrap_or_else(|| self.timeline_response.clone())
             } else {
+                if self.fail_episodic {
+                    return Err(LLMError::HttpError("episodic backend down".into()));
+                }
                 self.chat_response.clone()
             };
 
@@ -2123,6 +2131,7 @@ mod tests {
                 compression_response: DEFAULT_STATE_RESPONSE.to_string(),
                 timeline_response: r#"{"events": []}"#.to_string(),
                 fail_semantic: false,
+                fail_episodic: false,
                 state_sequence: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 timeline_sequence: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 semantic_finish_reasons: Arc::new(Mutex::new(std::collections::VecDeque::new())),
@@ -2175,6 +2184,13 @@ mod tests {
         /// Make every semantic (consolidator/compression) call fail.
         fn failing_semantic(mut self) -> Self {
             self.fail_semantic = true;
+            self
+        }
+
+        /// Make the episodic (Layer B) extraction call fail. Lets a test exercise
+        /// the Layer B failure path, which `failing_semantic` does not touch.
+        fn failing_episodic(mut self) -> Self {
+            self.fail_episodic = true;
             self
         }
 
@@ -3997,6 +4013,183 @@ mod tests {
 
         assert_eq!(count_memory(&db).await, 1, "exactly one card, no duplicate");
         assert_eq!(count_unindexed(&db).await, 0, "still nothing unindexed");
+    }
+
+    /// Spec: «La pasada siguiente vuelve a la normalidad». A pass degraded by a
+    /// consolidation failure does not poison the worker: a **new** batch, with a
+    /// consolidation that succeeds, still updates the persistent state normally.
+    ///
+    /// The same rate limiter is carried across both passes, so this also proves
+    /// the degraded pass cleared it instead of leaving the worker stuck.
+    #[tokio::test]
+    async fn test_pass_after_a_degraded_one_updates_the_state_normally() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let previous = r#"{"schema_version":1,"user_profile":{"note":"estado inicial"},"system_rules":["regla inicial"]}"#;
+        PersistentMemoryRepo::upsert(&db, previous, "2026-09-01T10:00:00Z")
+            .await
+            .unwrap();
+        let config = EpisodicMemoryConfig {
+            inactivity_minutes: 0,
+            ..Default::default()
+        };
+        let last = no_attempt();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Antiguo {i}"), 100, false, &now).await;
+        }
+
+        // Pass 1 degrades: the card is written, the previous state is kept.
+        let failing = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_semantic();
+        EpisodicMemoryWorker::evaluate(&db, failing.wrap(), embedding_provider(), &config, &last)
+            .await;
+
+        assert_eq!(
+            count_memory(&db).await,
+            1,
+            "the degraded pass still writes the card"
+        );
+        let kept = PersistentMemoryRepo::get(&db)
+            .await
+            .unwrap()
+            .expect("the previous state must be kept");
+        assert_eq!(
+            kept.payload, previous,
+            "the degraded pass must not overwrite the state"
+        );
+        assert_eq!(
+            count_unindexed(&db).await,
+            0,
+            "the degraded batch is marked"
+        );
+
+        // A NEW batch, this time with a consolidation that succeeds.
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Nuevo {i}"), 100, false, &now).await;
+        }
+        let new_state = r#"{"schema_version":1,"user_profile":{"note":"estado nuevo"},"system_rules":["regla nueva"]}"#;
+        let working = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).semantic(new_state);
+        EpisodicMemoryWorker::evaluate(&db, working.wrap(), embedding_provider(), &config, &last)
+            .await;
+
+        let updated = PersistentMemoryRepo::get(&db)
+            .await
+            .unwrap()
+            .expect("the state must still be there");
+        assert!(
+            updated.payload.contains("estado nuevo"),
+            "the following pass must update the state normally: {}",
+            updated.payload
+        );
+        assert_eq!(count_memory(&db).await, 2, "one card per batch");
+        assert_eq!(count_unindexed(&db).await, 0, "the new batch is marked");
+    }
+
+    /// Spec: «Fallo episódico no escribe ni marca» (Layer B, not C). When the
+    /// **episodic** extraction fails, nothing is written, the batch stays
+    /// unmarked and the cooldown is armed so the next poll will not hammer the
+    /// provider.
+    #[tokio::test]
+    async fn test_episodic_failure_writes_nothing_marks_nothing_and_arms_cooldown() {
+        let db = test_db().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_episodic();
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+        // A long cooldown so a second pass inside it is unmistakably rate-limited.
+        let config = EpisodicMemoryConfig {
+            poll_interval_minutes: 120,
+            inactivity_minutes: 0,
+            ..Default::default()
+        };
+        let last = no_attempt();
+
+        EpisodicMemoryWorker::evaluate(&db, provider.clone(), embedding_provider(), &config, &last)
+            .await;
+
+        assert_eq!(
+            count_memory(&db).await,
+            0,
+            "a Layer B failure writes no card"
+        );
+        assert_eq!(
+            count_persistent_memory(&db).await,
+            0,
+            "a Layer B failure writes no Layer C state"
+        );
+        assert_eq!(
+            count_unindexed(&db).await,
+            5,
+            "a Layer B failure must not mark the batch"
+        );
+        assert!(
+            last.load(Ordering::Relaxed) > 0,
+            "a Layer B failure must arm the cooldown"
+        );
+
+        // Behavioural check of the cooldown: a second pass within it re-calls
+        // nothing, and the batch is still untouched.
+        EpisodicMemoryWorker::evaluate(&db, provider, embedding_provider(), &config, &last).await;
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            1,
+            "the cooldown must suppress a second LLM call"
+        );
+        assert_eq!(
+            count_unindexed(&db).await,
+            5,
+            "the batch is still waiting after the rate-limited pass"
+        );
+    }
+
+    /// Spec: «Fallo episódico seguido de éxito no duplica». After a Layer B
+    /// failure, a pass that succeeds writes the card exactly once.
+    #[tokio::test]
+    async fn test_episodic_failure_then_success_does_not_duplicate() {
+        let db = test_db().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let config = EpisodicMemoryConfig {
+            inactivity_minutes: 0,
+            ..Default::default()
+        };
+        let last = no_attempt();
+
+        // Pass 1: the episodic extraction fails — nothing is written or marked.
+        let failing = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_episodic();
+        EpisodicMemoryWorker::evaluate(&db, failing.wrap(), embedding_provider(), &config, &last)
+            .await;
+
+        assert_eq!(count_memory(&db).await, 0, "the failed pass writes nothing");
+        assert_eq!(count_unindexed(&db).await, 5, "the batch is still waiting");
+
+        // Pass 2: the cooldown has elapsed — the same batch, this time with a
+        // successful extraction.
+        let working = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            working.wrap(),
+            embedding_provider(),
+            &config,
+            &no_attempt(),
+        )
+        .await;
+
+        assert_eq!(
+            count_memory(&db).await,
+            1,
+            "the retried batch writes exactly one card"
+        );
+        assert_eq!(count_vec_memory(&db).await, 1, "one embedding for the card");
+        assert_eq!(count_unindexed(&db).await, 0, "the batch is now marked");
     }
 
     #[tokio::test]
