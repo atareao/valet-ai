@@ -1,4 +1,100 @@
 # Changelog
+## [0.15.0] - 2026-10-18
+
+### Bug Fixes
+
+- *(push)* Estados de permiso honestos y sin cuelgues en el registro
+- *(push)* Validar el punto P-256, normalizar el endpoint y tests honestos
+- *(workers)* El extractor del timeline deja de perder hechos
+- *(workers)* El consolidador deja de salir hueco y las stats dejan de mentir
+- *(notifications-ui)* Atiende la revisión del frontend
+- *(frontend)* Interpreta fechas de claves de ingesta como UTC
+
+### Documentation
+
+- *(openspec)* Archivar el change timeline-fact-integrity
+- *(openspec)* Archivar el change webpush-notifications
+- *(openspec)* Corregir las casillas verificadas del archive de webpush
+- *(openspec)* Registrar la verificación de la 5.6 en producción
+- *(openspec)* Archivar el change push-delivery-observability
+- *(openspec)* Redactar el change notification-ingest
+- *(openspec)* Archivar el change notification-ingest
+- *(api)* Documenta la API de notificaciones
+- *(agents)* Registra la medición aplazada de notifications-inbox
+- *(plans)* Cierra PLAN-003 tras completar temas 1-4
+- *(plans)* Cierra PLAN-006 tras sustituir «Guardar» por «Abrir»
+- *(agents)* Registra la prueba en Android aplazada y añade PLAN-006 al índice
+- *(agents)* Registra la prueba en Android de «Abrir» como verificada
+- *(agents)* Registra que MCP queda descartado
+
+### Features
+
+- *(push)* Construir la petición WebPush
+- *(push)* Enviar con reqwest y clasificar la respuesta
+- *(push)* Exponer /api/push (vapid-key, subscribe, unsubscribe)
+- *(push)* Worker que entrega los recordatorios vencidos
+- *(push)* Service worker y gestor de suscripción
+- *(push)* Registrar el service worker sin romper la app
+- *(push)* Tab de Notificaciones en Ajustes
+- *(push)* Contadores por suscripción y predicado del resumen del ciclo
+- *(db)* Migración notification_ingest (tablas notifications e ingest_keys)
+- *(notifications)* Repositorio de notificaciones (fase 2.1.2)
+- *(push)* Envío masivo y ayudante de host compartido (fase 3)
+- *(ingest-keys)* Repositorio de claves de ingesta (fase 2.2.2/2.2.3)
+- *(tools)* Herramienta notifications en la skill pendientes (fase 7)
+- *(router)* Las criteria y el fragmento de pendientes cubren los avisos entrantes (fase 7.3)
+- *(frontend)* Sección de claves de ingesta en la pestaña API Keys (fase 8)
+- *(notifications)* Autenticación por token y rutas de ingesta y consumo (fases 4 y 5)
+- *(ingest-keys)* Alta, listado y revocación de claves de ingesta (fase 6)
+- *(ingest)* Responde 401 con cuerpo JSON y registra el motivo
+- *(stats)* Agrega el eje de modelo a la agregación de fondo
+- *(stats-ui)* Una fila por rol y modelo, y ventana de 7 días
+- *(notifications)* Marca todas las no leídas y pagina por cursor
+- *(notifications-ui)* Bandeja de avisos paginada con marca individual y masiva
+- *(location-widget)* «Abrir» sustituye a «Guardar» en el LocationWidget
+
+### Miscellaneous Tasks
+
+- *(push)* Regenerar static y guardar el servicio de sw.js
+- *(push)* Marcar la verificación de la imagen en musl
+- *(push)* Marcar la suite completa verificada
+- *(openspec)* Registrar la verificación de la fase 9
+- *(openspec)* Archiva el change ingest-auth-diagnostics
+- *(openspec)* Archiva el change timeline-extractor-resilience
+- *(openspec)* Archiva el change episodic-call-integrity
+- *(openspec)* Añade el change stats-role-model-view
+- *(openspec)* Archiva el change stats-role-model-view
+- *(openspec)* Propone el change ingest-keys-timestamp-utc
+- *(openspec)* Cierra las tareas 6.7 y 6.8 de stats-role-model-view
+- *(openspec)* Propone el change notifications-inbox
+- *(openspec)* Cierra las tareas de notifications-inbox (48/50)
+- *(openspec)* Archiva el change notifications-inbox
+- *(openspec)* Archiva el change ingest-keys-timestamp-utc
+- *(openspec)* Archiva el change location-widget-open-action
+- *(frontend)* Resincroniza static con el build actual y quita 7 commits de deriva
+- *(openspec)* Cierra la tarea 6.3 de location-widget-open-action
+
+### Other
+
+- Tests de IngestRepo (2.2.1) y registro del módulo
+
+### Refactor
+
+- *(notifications)* Atiende la revisión del backend
+
+### Testing
+
+- *(db)* RED de la migración notification_ingest
+- *(push)* RED del envío masivo y del ayudante de host compartido
+- *(notifications)* RED del repositorio de notificaciones (fase 2.1.1)
+- *(notifications)* RED de la herramienta del agente y su sitio en el catálogo (fase 7.1)
+- *(frontend)* Rojo de la seccion de claves de ingesta (8.1)
+- *(notifications)* RED de la autenticación y las rutas de ingesta (fases 4 y 5)
+- *(ingest-keys)* RED de alta, listado y revocación (fase 6, tarea 6.1)
+- *(router)* El fallo abierto cubre las veintinueve herramientas
+- *(notifications)* Rojo para marcar todas y paginación por cursor
+- *(notifications)* Rojo de ruta y herramienta
+- *(notifications-ui)* Rojo de la bandeja de avisos
 ## [0.14.0] - 2026-10-11
 
 ### Documentation
