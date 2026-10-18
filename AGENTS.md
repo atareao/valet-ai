@@ -181,6 +181,8 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 
 **8. «Abrir» en Android: verificado en dispositivo real.** La prueba de la tarea 6.3 de `location-widget-open-action` (2026-10-18) salió bien: `geo:` **sin fijar paquete** abre la aplicación de mapas en un Android real y el pin cae donde debe. La decisión de diseño queda confirmada en la práctica y el `intent://` con `S.browser_fallback_url` que se descartó al diseñar **no hace falta**. No se reabre salvo que aparezca un dispositivo donde falle.
 
+**9. MCP no se implanta. Descartado por decisión del usuario (2026-10-18).** Se estudió el ecosistema y se llegó a proponer un plan de tres changes (añadir, habilitar/deshabilitar y borrar servidores MCP, con importación por pegado), pero el hilo queda **cerrado**: no se implementa soporte de MCP y no se reabre sin orden explícita. Lo que conviene no volver a investigar si alguien lo replantea: la imagen de producción es `alpine:3.21` con solo `ca-certificates` —nada de Node ni Python—, así que los servidores MCP por **stdio no pueden correr ahí** y una v1 tendría que ser forzosamente **HTTP remoto**; los formatos de importación de facto son `mcpServers` (Claude Desktop y Cursor), `servers` (VS Code) y `mcp` (OpenCode); el router de skills **falla abierto** ante un timeout, así que expondría de golpe las herramientas de todos los servidores conectados; y el punto de equilibrio entre una plataforma MCP genérica y seguir con integraciones nativas estaba en torno a 7-8 integraciones, con un inventario hoy de 29 herramientas y 10 skills. La alternativa que se venía usando —integración nativa por herramienta— sigue siendo la vigente.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
