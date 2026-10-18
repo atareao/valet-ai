@@ -14,6 +14,9 @@ La API SHALL exponer `GET /api/journal` y `GET /api/journal/{date}` con sesión 
 la impone sobre `/api/*`). `GET /api/journal` SHALL aceptar los parámetros opcionales `from` y `to`
 (fechas ISO `YYYY-MM-DD`, rango inclusivo) y un `limit` opcional, SHALL devolver `200` con un array
 de entradas ordenadas **de más reciente a más antigua** y SHALL acotar el resultado por `limit`.
+El `limit` SHALL valer `50` por defecto y SHALL tener `200` como máximo; un `limit` que no sea un
+entero positivo o que pase de `200` SHALL responder `400` con el motivo. Sin `from` ni `to`, el
+listado SHALL cubrir **todo** el diario.
 `GET /api/journal/{date}` SHALL devolver `200` con la entrada de ese día o `404` si ese día no tiene
 entrada. Cada entrada SHALL exponer `id`, `profile_id`, `date`, `mood` (uno de
 `great`/`good`/`neutral`/`bad`/`terrible`, o `null`), `content`, `achievements`, `struggles`, `tags`
@@ -43,6 +46,13 @@ entrada. Cada entrada SHALL exponer `id`, `profile_id`, `date`, `mood` (uno de
 - **When** se hace `GET /api/journal?limit=1`
 - **Then** la respuesta es `200` con una sola entrada
 - **And** es la más reciente
+
+#### Scenario: Un `limit` por encima del tope se rechaza y uno válido se respeta
+
+- **Given** un `limit` mayor que `200`
+- **When** se hace `GET /api/journal?limit=500`
+- **Then** la respuesta es `400` con el motivo
+- **And** con un `limit` válido (como `200`) la respuesta es `200` y respeta ese tope
 
 #### Scenario: Leer un día con entrada
 

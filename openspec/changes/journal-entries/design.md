@@ -106,6 +106,19 @@ no una preferencia. Se abre desde una entrada en la navegación del header de `A
 de forma diferida (`React.lazy` + `Suspense`) y muestra los estados de carga, vacío y error como las
 demás. Los textos van en español y los tipos en `frontend/src/types/`.
 
+## Medición del enrutado
+
+El habla de la bitácora se pisa con la de la skill `timeline` («un diario de actividad», «anotar algo vivido»), así que el efecto de meter `journal` en `recuerdos` se midió con el arnés del repositorio (`src/bin/route-eval.rs`) sobre una copia de la base del despliegue de trabajo, **antes y después** de tocar los criterios:
+
+| Medición | Antes (29 herramientas) | Después (30 herramientas) |
+|:--|:--|:--|
+| Corpus real, 76 turnos con `tools_used` | 98,7 % (75/76) | 99,1 % (226/228) |
+| Muestra de 88 turnos | 90,9 % (240/264) | 99,2 % (262/264) |
+| Turnos de bitácora (7) | 0/7 | 7/7 |
+| Turnos no-bitácora | 240/243 (98,8 %) | 261/264 (98,9 %) |
+
+Dos honestidades sobre esa tabla: los 7 turnos de bitácora son **frases escritas a mano**, no corpus real —la herramienta no existía y el corpus real no tiene ni un turno de diario—, y el único fallo que queda es el mismo turno real de `render_widget` que ya fallaba antes. La herramienta `journal` solo entra por la skill `recuerdos` (lo fija el test `recuerdos_covers_the_journal_and_no_other_skill_does`), de modo que un turno de bitácora cubierto significa que el router seleccionó `recuerdos`. Coste de las cuatro campañas: 0,06 $.
+
 ## Risks / Trade-offs
 
 - **Redundancia con el timeline** → es el riesgo que puede hundir la feature (D6). Aquí no se
