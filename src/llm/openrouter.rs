@@ -7,14 +7,26 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
 
 use super::provider::{
-    ChatMessage, ChatRequest, ChatResponse, LLMError, LLMProvider, StreamEvent, TokenUsage,
-    ToolCall,
+    ChatMessage, ChatRequest, ChatResponse, FinishReason, LLMError, LLMProvider, StreamEvent,
+    TokenUsage, ToolCall,
 };
 
 /// Application name sent to OpenRouter for identification.
 const APP_NAME: &str = "Valet";
 /// Application URL sent to OpenRouter for identification.
 const APP_URL: &str = "https://github.com/atareao/valet-ai";
+
+/// Map an OpenRouter `finish_reason` string to the typed [`FinishReason`].
+///
+/// Anything that is not `stop` or `length` (e.g. `tool_calls`) is preserved
+/// verbatim as [`FinishReason::Other`].
+fn map_finish_reason(reason: &str) -> FinishReason {
+    match reason {
+        "stop" => FinishReason::Stop,
+        "length" => FinishReason::Length,
+        other => FinishReason::Other(other.to_string()),
+    }
+}
 
 /// Configuration for the OpenRouter LLM provider.
 #[derive(Debug, Clone)]
@@ -49,7 +61,21 @@ impl OpenRouterProvider {
     /// `function.arguments` (a JSON string) is parsed into a `serde_json::Value`;
     /// if the string is not valid JSON, it falls back to a `Value::String`.
     fn parse_response(body: &Value) -> Result<ChatResponse, LLMError> {
-        let message = &body["choices"][0]["message"];
+        // A success status whose body carries no `choices` array is an upstream
+        // failure (e.g. `{"error": …}`), never a successful empty completion.
+        let choices = match body.get("choices").and_then(Value::as_array) {
+            Some(choices) if !choices.is_empty() => choices,
+            _ => {
+                let details = body["error"]["message"]
+                    .as_str()
+                    .or_else(|| body["error"].as_str())
+                    .unwrap_or("response body carries no `choices`");
+                return Err(LLMError::HttpError(details.to_string()));
+            }
+        };
+
+        let choice = &choices[0];
+        let message = &choice["message"];
 
         // `content` may be:
         // - a plain string (most common),
@@ -105,6 +131,8 @@ impl OpenRouterProvider {
             .unwrap_or(0) as u32;
         let cost = body["usage"]["cost"].as_f64().unwrap_or(0.0);
 
+        let finish_reason = choice["finish_reason"].as_str().map(map_finish_reason);
+
         Ok(ChatResponse {
             message: ChatMessage {
                 role: "assistant".into(),
@@ -120,6 +148,7 @@ impl OpenRouterProvider {
                 reasoning_tokens,
                 cost,
             }),
+            finish_reason,
         })
     }
 }
@@ -683,6 +712,7 @@ pub fn parse_sse_event(
                     tool_call_id: None,
                 },
                 usage: acc.usage.clone(),
+                finish_reason: Some(map_finish_reason(finish_reason)),
             })));
         }
     }

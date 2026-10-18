@@ -485,6 +485,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             } else {
                 Ok(crate::llm::provider::ChatResponse {
@@ -496,6 +497,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
         }

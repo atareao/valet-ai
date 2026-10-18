@@ -204,11 +204,31 @@ pub struct ChatRequest {
     pub response_format: Option<ResponseFormat>,
 }
 
+/// The reason a chat completion finished.
+///
+/// A typed reason lets callers tell a truncated completion apart from a
+/// complete one without comparing magic strings. Providers that do not report
+/// a finish reason (e.g. Ollama) yield `None` in [`ChatResponse::finish_reason`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishReason {
+    /// The model finished its answer normally.
+    Stop,
+    /// The answer was cut off because the token budget was exhausted.
+    Length,
+    /// Any other reason reported by the provider, kept verbatim.
+    Other(String),
+}
+
 /// Response from an LLM chat completion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatResponse {
     pub message: ChatMessage,
     pub usage: Option<TokenUsage>,
+    /// The reason the completion finished, when the provider reports one.
+    ///
+    /// `None` for providers that do not report it (e.g. Ollama).
+    pub finish_reason: Option<FinishReason>,
 }
 
 /// Token usage statistics.
