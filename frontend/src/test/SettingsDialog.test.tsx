@@ -48,6 +48,7 @@ const defaultSettings: Record<string, string> = {
   consolidator_prompt:
     "Consolida {{ ESTADO_ACTUAL }} con {{ BLOQUE_DE_MENSAJES }}",
   timeline_prompt: "Extrae hechos fechados",
+  journal_prompt: "Cuenta el día como lo viviste",
   font_size: "16",
   message_page_size: "50",
   openweather_api_key: "",
@@ -397,6 +398,90 @@ describe("SettingsDialog", () => {
       key.startsWith("GENERATION_"),
     );
     expect(generationKeys).toHaveLength(15);
+  });
+
+  it("shows the Journal sub-tab in the Prompts tab", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Prompts"));
+
+    expect(screen.getByText("Journal")).toBeInTheDocument();
+  });
+
+  it("shows journal_prompt when opening the Journal sub-tab", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Journal"));
+
+    expect(screen.getByLabelText("Journal Prompt")).toHaveValue(
+      "Cuenta el día como lo viviste",
+    );
+  });
+
+  it("saves journal_prompt via updateSettings without touching the other prompts", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Prompts"));
+    await user.click(screen.getByText("Journal"));
+
+    const area = screen.getByLabelText("Journal Prompt");
+    await user.clear(area);
+    await user.type(area, "Mi relato personalizado");
+
+    const form = area.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          journal_prompt: "Mi relato personalizado",
+          system_prompt: "Eres Valet",
+          archivist_prompt: "Eres un archivista",
+          collapse_prompt: "Resume el texto",
+          consolidator_prompt:
+            "Consolida {{ ESTADO_ACTUAL }} con {{ BLOQUE_DE_MENSAJES }}",
+          timeline_prompt: "Extrae hechos fechados",
+        }),
+      );
+    });
+
+    // El mensaje de éxito se muestra tras guardar.
+    expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
+  });
+
+  it("vuelve a mostrar un journal_prompt personalizado al reabrir (la siembra no lo pisa)", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    const first = renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // Guardar un valor personalizado en la sub-pestaña Journal.
+    await user.click(await screen.findByText("Prompts"));
+    await user.click(screen.getByText("Journal"));
+
+    const area = screen.getByLabelText("Journal Prompt");
+    await user.clear(area);
+    await user.type(area, "Mi relato personalizado");
+
+    const form = area.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+    await waitFor(() => expect(mockUpdateSettings).toHaveBeenCalled());
+    first.unmount();
+
+    // Reabrir el diálogo: el hook persiste lo guardado (el PUT mockeado
+    // refresca `settings`) y el TextArea muestra el valor personalizado, no el
+    // sembrado por la migración.
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+    await user.click(await screen.findByText("Prompts"));
+    await user.click(screen.getByText("Journal"));
+
+    expect(screen.getByLabelText("Journal Prompt")).toHaveValue(
+      "Mi relato personalizado",
+    );
   });
 
   it("shows system_prompt when opening the System sub-tab", async () => {

@@ -2407,4 +2407,83 @@ mod tests {
             "the discarded row's cost must not leak into any canonical entry"
         );
     }
+
+    // ── 20. background_summary: el origen journal (la bitácora) ─────────────
+
+    /// `journal` is a canonical background origin: with rows it is aggregated
+    /// like any other, counting calls, tokens, cost and errors.
+    #[tokio::test]
+    async fn test_background_summary_counts_journal_origin() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool, "j-1", "journal", "m", 10, 5, 15, 0.001, Some(50), "success", None, None,
+        )
+        .await;
+        insert_request_with_kind(
+            &pool, "j-2", "journal", "m", 20, 10, 30, 0.002, Some(60), "error", None, None,
+        )
+        .await;
+        insert_request_with_kind(
+            &pool, "j-3", "journal", "m", 20, 10, 30, 0.002, Some(60), "error", None, None,
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool, 30).await.unwrap();
+        let journal = bg
+            .iter()
+            .find(|b| b.kind == "journal")
+            .expect("background_summary must include the 'journal' origin");
+        assert_eq!(journal.calls, 3);
+        assert_eq!(journal.input_tokens, 50);
+        assert_eq!(journal.output_tokens, 25);
+        assert_eq!(journal.total_tokens, 75);
+        assert!((journal.total_cost - 0.005).abs() < f64::EPSILON);
+        assert_eq!(journal.total_errors, 2);
+    }
+
+    /// `journal` is canonical even with no rows: the origin is reported with
+    /// the counters at zero and `model: None`, like the rest.
+    #[tokio::test]
+    async fn test_background_summary_journal_zero_filled_when_empty() {
+        let pool = setup().await;
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+        let journal = bg
+            .iter()
+            .find(|b| b.kind == "journal")
+            .expect("an empty 'journal' origin must still be reported at zero");
+        assert!(journal.model.is_none());
+        assert_eq!(journal.calls, 0);
+        assert_eq!(journal.input_tokens, 0);
+        assert_eq!(journal.output_tokens, 0);
+        assert_eq!(journal.total_tokens, 0);
+        assert_eq!(journal.total_cost, 0.0);
+        assert_eq!(journal.total_errors, 0);
+        assert_eq!(journal.suspicious_calls, 0);
+        assert!(journal.last_call_at.is_none());
+    }
+
+    /// A `journal` success with a single completion token is a suspiciously
+    /// empty success: it counts in `suspicious_calls`, not in `total_errors`.
+    #[tokio::test]
+    async fn test_background_summary_journal_suspicious_calls() {
+        let pool = setup().await;
+
+        insert_request_with_kind(
+            &pool, "j-sus", "journal", "m", 10, 1, 11, 0.0, None, "success", None, None,
+        )
+        .await;
+
+        let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
+        let journal = bg
+            .iter()
+            .find(|b| b.kind == "journal")
+            .expect("the 'journal' origin must be present");
+        assert_eq!(journal.suspicious_calls, 1);
+        assert_eq!(
+            journal.total_errors, 0,
+            "the empty success is invisible to the errors column"
+        );
+    }
 }
