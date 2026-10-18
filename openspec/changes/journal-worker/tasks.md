@@ -136,7 +136,7 @@ Comandos de verificación de este repositorio: `cargo test`, `cargo test --lib j
 - [ ] 6.9 `cargo test` (suite completa) en verde y `cargo clippy --all-targets -- -D warnings` sin
   warnings.
 
-## 7. RED — la migración y la visibilidad del origen (D10)
+## 7. RED — la migración, el origen visible y el prompt editable (D10, D15)
 
 - [ ] 7.1 RED — test de migración: tras `run_migrations()`, el `CHECK` de `llm_requests.kind` admite
   `'journal'`; las filas de los cinco orígenes anteriores —incluidas las de `'timeline'`— sobreviven
@@ -151,8 +151,12 @@ Comandos de verificación de este repositorio: `cargo test`, `cargo test --lib j
   **Pegar la salida en rojo.**
 - [ ] 7.4 RED — test de la tarjeta de estadísticas: una fila con `kind = "journal"` se muestra con la
   etiqueta legible «Bitácora» y su `kind` crudo al lado. **Pegar la salida en rojo.**
+- [ ] 7.5 RED — test de la pestaña «Prompts» de Ajustes: existe la sub-pestaña «Journal» con el
+  `journal_prompt` vigente cargado desde `GET /settings`, y editarla y guardar envía `journal_prompt`
+  con el texto editado por `PUT /settings` sin tocar el resto de prompts; un valor personalizado
+  vuelve a mostrarse al reabrir el diálogo (la siembra no lo pisa). **Pegar la salida en rojo.**
 
-## 8. GREEN — la migración y la visibilidad del origen
+## 8. GREEN — la migración, el origen visible y el prompt editable
 
 - [ ] 8.1 GREEN — `migrations/20261018000002_journal_worker.sql`, bloque 1: reconstruir `llm_requests`
   con el `CHECK` ampliado a `'journal'`, conservando todas las filas y recreando sus índices.
@@ -164,7 +168,11 @@ Comandos de verificación de este repositorio: `cargo test`, `cargo test --lib j
   la lista de orígenes estructurados de las llamadas sospechosas. Verificar 7.3 en verde.
 - [ ] 8.4 GREEN — `frontend/src/components/stats/BackgroundCard.tsx`: etiqueta «Bitácora» para
   `journal`. Verificar 7.4 en verde.
-- [ ] 8.5 `cargo test` en verde, `npx vitest run` en verde y `npx tsc --noEmit` limpio.
+- [ ] 8.5 GREEN — `frontend/src/components/SettingsDialog.tsx`: la sexta sub-pestaña «Journal» de la
+  pestaña «Prompts» con el `TextArea` de `journal_prompt`, siguiendo el patrón de las cinco existentes
+  (carga desde `GET /settings` y guardado con el resto de prompts por `PUT /settings`). Verificar 7.5
+  en verde.
+- [ ] 8.6 `cargo test` en verde, `npx vitest run` en verde y `npx tsc --noEmit` limpio.
 
 ## 9. REFACTOR
 

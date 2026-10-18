@@ -40,8 +40,10 @@ Lo que condiciona el diseño:
 
 - No se tocan la herramienta `journal`, la skill `recuerdos`, el timeline ni la memoria.
 - No hay resumen semanal, «insights», avisos por push, clima ni vistas nuevas.
-- No se estrena un rol de generación (ver D11) ni una sección de ajustes de la bitácora en la
-  interfaz: sus claves se leen y escriben por `GET`/`PUT /api/settings` como el resto.
+- No se estrena un rol de generación (ver D11): el modelo del diario es configuración por entorno. Sus
+  dos ajustes de comportamiento (`journal_enabled` y `journal_hour`) se leen y escriben por
+  `GET`/`PUT /api/settings` como el resto, sin pestaña propia; el prompt, en cambio, se afina desde la
+  pestaña «Prompts» que ya existe (D15).
 - No se toca `docker-compose.prod.yml`.
 
 ## Decisions
@@ -158,6 +160,16 @@ ajuste: el diseño fija tres claves nuevas y ninguna es esta.
 El prompt pide el relato **en primera persona, como lo contaría el propio usuario**: la bitácora es su
 diario, la sección de la app es suya y las entradas se leen como suyas. Es una decisión de redacción,
 revisable editando el prompt (D6 no se rompe: el valor sembrado puede cambiarse).
+
+**D15 — El prompt se edita desde Ajustes, no solo por API.**
+`journal_prompt` **entra en la pestaña «Prompts» del diálogo de Ajustes como sexta sub-pestaña**, con
+el mismo patrón que las cinco que ya existen (*System*, *Archivist*, *Collapse*, *Consolidator* y
+*Timeline*, cableadas a mano en `SettingsDialog.tsx`): carga desde `GET /settings`, un `TextArea` y
+guardado con el resto de prompts por `PUT /settings`. Corrige la decisión preliminar que lo dejaba
+fuera: **el prompt es donde vive o muere el «relato en vez de recuento»** (D6, y el riesgo que puede
+hundir la feature), así que poder afinarlo sin `curl` es **parte de la capacidad**, no un extra. El
+resto de las claves de la bitácora (`journal_enabled` y `journal_hour`) siguen sin interfaz propia:
+no se estrena una pestaña de ajustes de la bitácora, solo un campo en la que ya existe.
 
 ## Risks / Trade-offs
 

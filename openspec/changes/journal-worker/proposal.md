@@ -40,6 +40,11 @@ editable de prompts por migración (`episodic-call-integrity`).
 - **El relato manda sobre los hechos.** El prompt vive en los ajustes (`journal_prompt`), lo siembra
   una migración **solo si nadie lo ha editado**, y pide lectura —cómo fue, qué costó, qué ilusiona—,
   no un recuento: qué pasó ya lo escribe el timeline.
+- **El prompt se afina desde Ajustes.** `journal_prompt` se lee y se guarda desde la pestaña
+  «Prompts» del diálogo de Ajustes, con una sub-pestaña «Journal» como las cinco que ya existen
+  (*System*, *Archivist*, *Collapse*, *Consolidator* y *Timeline*). El prompt es donde vive o muere el
+  «relato en vez de recuento» (D6), así que poder afinarlo sin `curl` es parte de la capacidad, no un
+  extra.
 - **Nace encendida, con ajuste para apagarla** (`journal_enabled`), hora (`journal_hour`) y modelo por
   variable de entorno propia (`JOURNAL_MODEL`, que cae a `MEMORY_MODEL`), sin sembrar modelos que
   razonan en las plantillas.
@@ -72,8 +77,9 @@ Ninguna. La bitácora ya tiene sus capacidades; este change no estrena ninguna.
 - `db/repos`: **2 modificados** — la agregación de procesos de fondo (`journal` entra como origen
   canónico, o sus filas se descartarían en silencio) y la marca de llamadas sospechosas (`journal`
   es un origen estructurado más).
-- `frontend`: **1 modificado** — la tarjeta «Procesos de fondo» gana la etiqueta legible del origen
-  `journal`, que hoy caería al `kind` crudo.
+- `frontend`: **2 modificados** — la tarjeta «Procesos de fondo» gana la etiqueta legible del origen
+  `journal`, que hoy caería al `kind` crudo, y la pestaña «Prompts» de Ajustes gana la sub-pestaña del
+  prompt de la bitácora, junto a las cinco que ya tiene.
 
 ## Impact
 
@@ -84,7 +90,9 @@ Ninguna. La bitácora ya tiene sus capacidades; este change no estrena ninguna.
 - **Base de datos:** una **migración nueva** que (a) amplía el `CHECK` de `llm_requests.kind` a
   `'journal'` y (b) siembra `journal_prompt`, `journal_enabled` y `journal_hour`. No se toca ninguna
   columna de `journal_entries`.
-- **Frontend:** `frontend/src/components/stats/BackgroundCard.tsx` (una etiqueta) y su test colocado.
+- **Frontend:** `frontend/src/components/stats/BackgroundCard.tsx` (una etiqueta) y su test colocado;
+  y `frontend/src/components/SettingsDialog.tsx` (la sub-pestaña «Journal» de la pestaña «Prompts»),
+  con la suya.
 - **Plantillas:** `.env.j2` y `.env.example` ganan `JOURNAL_MODEL` (sin modelos que razonan).
 - **Spec:** deltas en `workers`, `db/schema`, `db/repos` y `frontend`.
 - **Sin dependencias nuevas.** Sin rutas nuevas, sin cambios en la herramienta `journal` ni en la
@@ -108,8 +116,9 @@ Y además:
 - **No se estrena un rol de generación nuevo**: el modelo del diario es configuración por entorno y
   sus parámetros salen del rol mecánico existente (ver `design.md`). Un rol propio, con su fila en la
   pestaña «Generación», sería otro change.
-- **No se añade una sección de ajustes de la bitácora a la interfaz**: `journal_prompt`,
-  `journal_enabled` y `journal_hour` son claves de `settings` y se leen y se escriben por
-  `GET`/`PUT /api/settings`, como el resto; la pestaña propia sería otro change.
+- **No se estrena una pestaña de ajustes de la bitácora**: `journal_enabled` y `journal_hour` son
+  claves de `settings` y se leen y se escriben por `GET`/`PUT /api/settings`, como el resto; una
+  pestaña propia sería otro change. El prompt sí se afina desde la pestaña «Prompts» que ya existe
+  (ver «What Changes»).
 - **No se migra ni se reescribe ninguna entrada existente**: la bitácora escrita a mano manda.
 - **No se toca `docker-compose.prod.yml`** ni la deriva de las plantillas de despliegue.
