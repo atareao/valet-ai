@@ -5,6 +5,7 @@ pub mod email;
 pub mod geo;
 pub mod geo_utils;
 pub mod google_places;
+pub mod journal;
 pub mod notes;
 pub mod notifications;
 pub mod permission;

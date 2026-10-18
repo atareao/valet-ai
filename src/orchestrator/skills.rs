@@ -85,10 +85,10 @@ static CATALOG: [SkillSpec; 10] = [
         skill: Skill::Recuerdos,
         id: "recuerdos",
         instructions: "¿La respuesta requiere guardar o recuperar notas, apuntes o algo ya hablado?",
-        criteria_true: "El mensaje pide apuntar, guardar, recuperar o listar un texto, una idea o un diario, o pregunta por algo ya hablado.",
+        criteria_true: "El mensaje pide apuntar, guardar, recuperar o listar un texto, una idea o un diario, o pregunta por algo ya hablado. Cuenta también la bitácora personal: apuntar el día de hoy, leer una entrada o un rango de días, corregirla, borrarla o preguntar cómo fue mi día.",
         criteria_false: "El mensaje no pide guardar ni recuperar información personal del usuario ni busca en el historial.",
         threshold: 0.10,
-        tools: &["notes", "unified_search"],
+        tools: &["notes", "unified_search", "journal"],
         prompt_key: "SKILL_RECUERDOS_PROMPT",
         prompt_heading: "# SKILL ACTIVA: RECUERDOS",
     },
@@ -654,7 +654,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_twenty_nine_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_thirty_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -666,8 +666,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            29,
-            "el core más las diez skills deben cubrir las veintinueve herramientas: {covered:?}"
+            30,
+            "el core más las diez skills deben cubrir las treinta herramientas: {covered:?}"
         );
         for spec in catalog() {
             assert!(

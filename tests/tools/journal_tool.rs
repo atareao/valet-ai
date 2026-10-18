@@ -654,23 +654,29 @@ async fn test_journal_descriptions_are_in_spanish() -> Result<(), Box<dyn std::e
         }
     }
 
+    // Corrección del RED: el marcador se busca sin distinguir mayúsculas —una
+    // descripción en español empieza por mayúscula— sin rebajar lo que exige la
+    // spec, que es que estén redactadas en español.
     let date = properties["date"]["description"]
         .as_str()
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_lowercase();
     assert!(
         date.contains("fecha"),
         "`date` debe describirse en español, got: {date}"
     );
     let content = properties["content"]["description"]
         .as_str()
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_lowercase();
     assert!(
         content.contains("relato") || content.contains("contenido"),
         "`content` debe describirse en español, got: {content}"
     );
     let mood = properties["mood"]["description"]
         .as_str()
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_lowercase();
     assert!(
         mood.contains("ánimo"),
         "`mood` debe describirse en español, got: {mood}"
