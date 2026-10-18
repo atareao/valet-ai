@@ -35,13 +35,6 @@ consolidado o, si el tamaño obligó a conservarlo **o si la consolidación fall
 **And** NO se sobrescribe el estado persistente (se conserva el anterior)
 **And** los mensajes del lote pasan a `is_indexed = 1`
 
-#### Scenario: Un fallo de la consolidación escribe la ficha y marca el lote
-**Given** un lote cuya extracción episódica tiene éxito y cuya consolidación falla
-**When** el worker procesa
-**Then** se persiste la ficha episódica
-**And** NO se sobrescribe el estado persistente (se conserva el anterior)
-**And** los mensajes del lote pasan a `is_indexed = 1` en la misma transacción
-
 ### Requirement: La consolidación y la compresión SHALL forzar modo JSON
 
 La llamada de consolidación y la pasada de compresión SHALL enviar
@@ -92,9 +85,9 @@ SHALL NOT ser configurable.
 
 Cuando la consolidación inicial no produce un objeto JSON válido tras los reintentos, el error
 SHALL incluir la longitud del contenido (`content_len`) y un preview corto, para permitir el
-diagnóstico sin depender del log del proveedor. El worker SHALL registrar además una fila en
-`llm_requests` con `kind = 'consolidator'` y `status = 'error'`, cuyo `error_message` incluya
-`content_len`, el preview del contenido y el motivo de finalización de la respuesta.
+diagnóstico sin depender del log del proveedor. El diagnóstico SHALL incluir además el motivo de
+finalización de la respuesta, de modo que el `error_message` lleve el `finish_reason` junto al
+`content_len` y el preview.
 
 #### Scenario: error con diagnóstico
 **Given** una consolidación cuyo contenido no es un objeto JSON
@@ -105,8 +98,8 @@ diagnóstico sin depender del log del proveedor. El worker SHALL registrar adem�
 #### Scenario: El fallo queda en las estadísticas
 **Given** una consolidación que falla tras el reintento
 **When** el worker la descarta
-**Then** `llm_requests` gana una fila con `kind = 'consolidator'` y `status = 'error'`
-**And** su `error_message` incluye `content_len`, el preview y el motivo de finalización
+**Then** su `error_message` incluye el motivo de finalización de la respuesta
+**And** conserva el `content_len` y el preview
 
 ## REMOVED Requirements
 

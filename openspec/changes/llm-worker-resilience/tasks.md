@@ -15,7 +15,7 @@
 
 - [ ] 2.1 Test que falla: al truncar por presupuesto (`finish_reason = length`), el reintento de la consolidación usa el **doble** de presupuesto.
 - [ ] 2.2 Test que falla: un fallo de la consolidación **degrada** la pasada —escribe ficha y marca, conserva el estado anterior— en vez de abortar.
-- [ ] 2.3 Test que falla: un fallo del consolidador registra una fila `status='error'` en `llm_requests` con el diagnóstico.
+- [ ] 2.3 Test que falla: la fila `status='error'` del consolidador incluye el **motivo de finalización** en el diagnóstico. (La fila `status='error'` ya existe: la cubrió `episodic-call-integrity`, archivado el 2026-10-12; lo que falta es el motivo, que depende del grupo 1.)
 - [ ] 2.4 Test que falla: un resumen vacío o solo-espacios **no se escribe** en `messages.collapsed_content` y el mensaje queda sin colapsar.
 
 ## 3. GREEN
@@ -32,9 +32,9 @@
 
 ## 5. Verificación y cierre
 
-- [ ] 5.1 `cargo test` en verde (baseline: 1054 passed).
+- [ ] 5.1 `cargo test` en verde (baseline: 1423 passed).
 - [ ] 5.2 `cargo clippy --all-targets -- -D warnings` (0 warnings).
 - [ ] 5.3 `cargo fmt --check` en verde.
 - [ ] 5.4 `openspec validate llm-worker-resilience --strict` en verde.
 - [ ] 5.5 Revisión con `@rust-reviewer`; hallazgos aplicados.
-- [ ] 5.6 `openspec archive llm-worker-resilience` y actualizar `plans/PLAN-003.md` (Tema 5).
+- [ ] 5.6 `openspec archive llm-worker-resilience` y actualizar `plans/PLAN-003-COMPLETED.md` (Tema 5).
