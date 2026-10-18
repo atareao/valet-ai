@@ -694,7 +694,7 @@ pub fn parse_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::provider::{ReasoningEffort, ReasoningSpec, ResponseFormat};
+    use crate::llm::provider::{FinishReason, ReasoningEffort, ReasoningSpec, ResponseFormat};
     use wiremock::matchers::{any, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1594,6 +1594,77 @@ mod tests {
         assert!(
             err.to_string().contains("Provider returned error"),
             "the rejection must surface the provider's message, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RED phase — finish_reason in the provider contract
+    //
+    // These tests WILL NOT COMPILE: `FinishReason` does not exist and
+    // `ChatResponse` has no `finish_reason` field yet.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: El motivo de finalización se expone cuando el proveedor lo envía
+    #[test]
+    fn test_openrouter_exposes_finish_reason_stop() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {"content": "Hello!"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+
+        let response = OpenRouterProvider::parse_response(&body)
+            .expect("parse_response should succeed for a normally finished completion");
+
+        assert_eq!(
+            response.finish_reason,
+            Some(FinishReason::Stop),
+            "a completion the provider finished normally must report FinishReason::Stop"
+        );
+    }
+
+    /// Scenario: An absent finish reason is None
+    #[test]
+    fn test_openrouter_finish_reason_is_none_when_absent() {
+        // A provider that does not report finish_reason (e.g. Ollama) simply
+        // omits the field.
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {"content": "Hello from Ollama"}
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+
+        let response = OpenRouterProvider::parse_response(&body)
+            .expect("parse_response should succeed when the provider omits finish_reason");
+
+        assert_eq!(
+            response.finish_reason, None,
+            "a provider that reports no finish_reason (e.g. Ollama) must yield None"
+        );
+    }
+
+    /// Scenario: A truncated completion is reported as Length
+    #[test]
+    fn test_openrouter_parses_finish_reason_length_as_length() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {"content": "{\"trunc"},
+                "finish_reason": "length"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+
+        let response = OpenRouterProvider::parse_response(&body)
+            .expect("parse_response should succeed for a budget-truncated completion");
+
+        assert_eq!(
+            response.finish_reason,
+            Some(FinishReason::Length),
+            "finish_reason \"length\" must be FinishReason::Length so callers can tell a \
+             truncated completion apart from a complete one"
         );
     }
 }
