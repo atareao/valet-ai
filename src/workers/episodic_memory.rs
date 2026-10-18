@@ -1780,17 +1780,6 @@ impl EpisodicMemoryWorker {
             .replace('\n', " ")
     }
 
-    /// Human-readable label for a completion's finish reason, for diagnostics.
-    /// `None` (the provider reports no reason) becomes `"none"`.
-    fn finish_reason_label(reason: &Option<FinishReason>) -> String {
-        match reason {
-            Some(FinishReason::Stop) => "stop".to_string(),
-            Some(FinishReason::Length) => "length".to_string(),
-            Some(FinishReason::Other(other)) => other.clone(),
-            None => "none".to_string(),
-        }
-    }
-
     /// Run the initial consolidation, retrying **once** when the response yields no
     /// valid state (empty, non-JSON or schema-invalid). An LLM transport error is
     /// not retried: it propagates immediately.
@@ -1820,7 +1809,10 @@ impl EpisodicMemoryWorker {
             )
             .await?;
             let content_len = outcome.content.len();
-            let finish_reason = Self::finish_reason_label(&outcome.finish_reason);
+            let finish_reason = match &outcome.finish_reason {
+                Some(reason) => reason.to_string(),
+                None => "none".to_string(),
+            };
             match Self::extract_json_object(&outcome.content) {
                 Some(candidate) => match validate_payload(&candidate) {
                     Ok(validated) => {

@@ -7,6 +7,7 @@ pub mod provider;
 pub use provider::ChatMessage;
 pub use provider::ChatRequest;
 pub use provider::ChatResponse;
+pub use provider::FinishReason;
 pub use provider::LLMError;
 pub use provider::LLMProvider;
 pub use provider::StreamEvent;

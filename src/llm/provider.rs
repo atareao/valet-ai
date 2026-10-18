@@ -209,8 +209,15 @@ pub struct ChatRequest {
 /// A typed reason lets callers tell a truncated completion apart from a
 /// complete one without comparing magic strings. Providers that do not report
 /// a finish reason (e.g. Ollama) yield `None` in [`ChatResponse::finish_reason`].
+///
+/// On the wire it is the **flat** provider string (`"stop"`, `"length"`,
+/// `"tool_calls"`, …), not the serde default for `Other(String)`
+/// (`{"other":"tool_calls"}`). The flat form is implemented by converting to and
+/// from `String`, so serialization and deserialization stay symmetric and match
+/// what the providers actually send. [`Display`](std::fmt::Display) is the single
+/// source of truth for the mapping.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(into = "String", from = "String")]
 pub enum FinishReason {
     /// The model finished its answer normally.
     Stop,
@@ -218,6 +225,32 @@ pub enum FinishReason {
     Length,
     /// Any other reason reported by the provider, kept verbatim.
     Other(String),
+}
+
+impl std::fmt::Display for FinishReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FinishReason::Stop => f.write_str("stop"),
+            FinishReason::Length => f.write_str("length"),
+            FinishReason::Other(other) => f.write_str(other),
+        }
+    }
+}
+
+impl From<FinishReason> for String {
+    fn from(reason: FinishReason) -> Self {
+        reason.to_string()
+    }
+}
+
+impl From<String> for FinishReason {
+    fn from(raw: String) -> Self {
+        match raw.as_str() {
+            "stop" => FinishReason::Stop,
+            "length" => FinishReason::Length,
+            _ => FinishReason::Other(raw),
+        }
+    }
 }
 
 /// Response from an LLM chat completion.
