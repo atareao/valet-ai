@@ -27,6 +27,8 @@ Mitigación aplicada por configuración (fuera de este change): bake-off de 5 lo
 | `qwen/qwen3-235b-a22b-2507` | 0/15 | 0 | 0 | **0** | $0,68 |
 | `deepseek/deepseek-v4.1-flash` (lo que había) | — | — | se come el presupuesto | — | ~$4,60 |
 
+**Estado al retomarlo (2026-10-18).** Una de las tres causas encadenadas ya está cerrada por otro change: `episodic-call-integrity` (archivado el 2026-10-12) hizo que la petición del consolidador lleve un turno de usuario —con lo que el modelo que razona dejó de devolver `content: null` con `finish_reason: "stop"`— y que la fila de `llm_requests` refleje la validación en vez de escribirse antes de validar. Este change conserva el resto, que sigue pendiente y verificado en el código de hoy: el motivo de finalización en el contrato del proveedor, el rechazo de un HTTP 200 sin `choices`, el reintento con presupuesto ampliado al truncar, la degradación de la pasada en vez de abortarla y la guarda del colapso. Además, las plantillas `.env.j2` y `.env.example` **siguen sembrando modelos que razonan** para los roles mecánicos (`SEMANTIC_MODEL=deepseek/deepseek-v4.1-flash`), así que un aprovisionamiento nuevo reproduce el punto de partida de la avería.
+
 ## What Changes
 
 - `ChatResponse` SHALL exponer el **motivo de finalización** (`finish_reason`), para distinguir una respuesta truncada de una completa.
