@@ -2875,6 +2875,7 @@ mod tests {
                     tool_call_id: None,
                 },
                 usage: None,
+                finish_reason: None,
             })
         }
 
@@ -2899,6 +2900,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 }))];
             Ok(Box::pin(futures::stream::iter(events)))
         }
@@ -3022,6 +3024,7 @@ mod tests {
                     tool_call_id: None,
                 },
                 usage: None,
+                finish_reason: None,
             })
         }
 
@@ -3046,6 +3049,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 }))];
             Ok(Box::pin(futures::stream::iter(events)))
         }
@@ -3195,6 +3199,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             } else {
                 // Second call: return final answer without tool calls
@@ -3207,6 +3212,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
         }
@@ -3394,6 +3400,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             } else {
                 Ok(ChatResponse {
@@ -3405,6 +3412,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
         }
@@ -3759,6 +3767,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
 
@@ -3879,6 +3888,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
 
@@ -3987,6 +3997,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
 
@@ -4123,6 +4134,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             } else {
                 // Second call: return final answer (LLM recovers from error)
@@ -4135,6 +4147,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
         }
@@ -4379,6 +4392,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             } else {
                 // Final answer after exhausting retries
@@ -4391,6 +4405,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
         }
@@ -4579,6 +4594,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             } else {
                 // Subsequent calls: return plain text answer
@@ -4591,6 +4607,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
         }
@@ -4747,6 +4764,7 @@ mod tests {
                     tool_call_id: None,
                 },
                 usage: None,
+                finish_reason: None,
             })
         }
 
@@ -4768,6 +4786,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 }))];
             let stream = futures::stream::iter(events);
             Ok(Box::pin(stream))
@@ -4931,6 +4950,7 @@ mod tests {
                     reasoning_tokens: 0,
                     cost: 0.0,
                 }),
+                finish_reason: None,
             })
         }
 
@@ -5354,6 +5374,7 @@ mod tests {
                     tool_call_id: None,
                 },
                 usage: None,
+                finish_reason: None,
             })
         }
 
@@ -5386,6 +5407,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })));
             } else {
                 if n == 2 {
@@ -5409,6 +5431,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })));
             }
 
@@ -5757,6 +5780,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             } else {
                 Ok(ChatResponse {
@@ -5768,6 +5792,7 @@ mod tests {
                         tool_call_id: None,
                     },
                     usage: None,
+                    finish_reason: None,
                 })
             }
         }

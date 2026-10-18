@@ -231,6 +231,7 @@ mod tests {
                     reasoning_tokens: 0,
                     cost: 0.0,
                 }),
+                finish_reason: None,
             })
         }
 

@@ -73,6 +73,7 @@ impl OllamaProvider {
                 tool_call_id: None,
             },
             usage: None,
+            finish_reason: None,
         })
     }
 }

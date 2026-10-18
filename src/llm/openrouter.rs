@@ -7,14 +7,26 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
 
 use super::provider::{
-    ChatMessage, ChatRequest, ChatResponse, LLMError, LLMProvider, StreamEvent, TokenUsage,
-    ToolCall,
+    ChatMessage, ChatRequest, ChatResponse, FinishReason, LLMError, LLMProvider, StreamEvent,
+    TokenUsage, ToolCall,
 };
 
 /// Application name sent to OpenRouter for identification.
 const APP_NAME: &str = "Valet";
 /// Application URL sent to OpenRouter for identification.
 const APP_URL: &str = "https://github.com/atareao/valet-ai";
+
+/// Map an OpenRouter `finish_reason` string to the typed [`FinishReason`].
+///
+/// Anything that is not `stop` or `length` (e.g. `tool_calls`) is preserved
+/// verbatim as [`FinishReason::Other`].
+fn map_finish_reason(reason: &str) -> FinishReason {
+    match reason {
+        "stop" => FinishReason::Stop,
+        "length" => FinishReason::Length,
+        other => FinishReason::Other(other.to_string()),
+    }
+}
 
 /// Configuration for the OpenRouter LLM provider.
 #[derive(Debug, Clone)]
@@ -49,7 +61,21 @@ impl OpenRouterProvider {
     /// `function.arguments` (a JSON string) is parsed into a `serde_json::Value`;
     /// if the string is not valid JSON, it falls back to a `Value::String`.
     fn parse_response(body: &Value) -> Result<ChatResponse, LLMError> {
-        let message = &body["choices"][0]["message"];
+        // A success status whose body carries no `choices` array is an upstream
+        // failure (e.g. `{"error": …}`), never a successful empty completion.
+        let choices = match body.get("choices").and_then(Value::as_array) {
+            Some(choices) if !choices.is_empty() => choices,
+            _ => {
+                let details = body["error"]["message"]
+                    .as_str()
+                    .or_else(|| body["error"].as_str())
+                    .unwrap_or("response body carries no `choices`");
+                return Err(LLMError::HttpError(details.to_string()));
+            }
+        };
+
+        let choice = &choices[0];
+        let message = &choice["message"];
 
         // `content` may be:
         // - a plain string (most common),
@@ -105,6 +131,8 @@ impl OpenRouterProvider {
             .unwrap_or(0) as u32;
         let cost = body["usage"]["cost"].as_f64().unwrap_or(0.0);
 
+        let finish_reason = choice["finish_reason"].as_str().map(map_finish_reason);
+
         Ok(ChatResponse {
             message: ChatMessage {
                 role: "assistant".into(),
@@ -120,6 +148,7 @@ impl OpenRouterProvider {
                 reasoning_tokens,
                 cost,
             }),
+            finish_reason,
         })
     }
 }
@@ -683,6 +712,7 @@ pub fn parse_sse_event(
                     tool_call_id: None,
                 },
                 usage: acc.usage.clone(),
+                finish_reason: Some(map_finish_reason(finish_reason)),
             })));
         }
     }
@@ -694,7 +724,7 @@ pub fn parse_sse_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::provider::{ReasoningEffort, ReasoningSpec, ResponseFormat};
+    use crate::llm::provider::{FinishReason, ReasoningEffort, ReasoningSpec, ResponseFormat};
     use wiremock::matchers::{any, method};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1551,6 +1581,120 @@ mod tests {
         assert!(
             body.get("response_format").is_none(),
             "response_format must be omitted"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RED phase — a 200 body without `choices` is an error, not an empty success
+    //
+    // This test WILL FAIL: today `parse_response` indexes `choices[0]` without
+    // checking it exists, so an upstream error body is accepted as a successful
+    // response with empty content.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: An error body on a 200 is an error
+    #[tokio::test]
+    async fn test_chat_rejects_success_body_without_choices() {
+        let server = MockServer::start().await;
+
+        // Upstream providers report their failures with a success HTTP status
+        // and an `{"error": …}` body that carries no `choices` array.
+        Mock::given(any())
+            .and(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "error": {"message": "Provider returned error"}
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = OpenRouterProvider::new(OpenRouterConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: server.uri(),
+            max_retries: 0,
+            timeout_secs: 5,
+        });
+
+        let result = provider.chat(generation_request(None, None, false)).await;
+
+        let err = result.expect_err(
+            "a 200 body without `choices` (e.g. {\"error\": …}) must be an LLMError, \
+             never an Ok carrying empty content",
+        );
+        assert!(
+            err.to_string().contains("Provider returned error"),
+            "the rejection must surface the provider's message, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RED phase — finish_reason in the provider contract
+    //
+    // These tests WILL NOT COMPILE: `FinishReason` does not exist and
+    // `ChatResponse` has no `finish_reason` field yet.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: El motivo de finalización se expone cuando el proveedor lo envía
+    #[test]
+    fn test_openrouter_exposes_finish_reason_stop() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {"content": "Hello!"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+
+        let response = OpenRouterProvider::parse_response(&body)
+            .expect("parse_response should succeed for a normally finished completion");
+
+        assert_eq!(
+            response.finish_reason,
+            Some(FinishReason::Stop),
+            "a completion the provider finished normally must report FinishReason::Stop"
+        );
+    }
+
+    /// Scenario: An absent finish reason is None
+    #[test]
+    fn test_openrouter_finish_reason_is_none_when_absent() {
+        // A provider that does not report finish_reason (e.g. Ollama) simply
+        // omits the field.
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {"content": "Hello from Ollama"}
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+
+        let response = OpenRouterProvider::parse_response(&body)
+            .expect("parse_response should succeed when the provider omits finish_reason");
+
+        assert_eq!(
+            response.finish_reason, None,
+            "a provider that reports no finish_reason (e.g. Ollama) must yield None"
+        );
+    }
+
+    /// Scenario: A truncated completion is reported as Length
+    #[test]
+    fn test_openrouter_parses_finish_reason_length_as_length() {
+        let body = serde_json::json!({
+            "choices": [{
+                "message": {"content": "{\"trunc"},
+                "finish_reason": "length"
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5}
+        });
+
+        let response = OpenRouterProvider::parse_response(&body)
+            .expect("parse_response should succeed for a budget-truncated completion");
+
+        assert_eq!(
+            response.finish_reason,
+            Some(FinishReason::Length),
+            "finish_reason \"length\" must be FinishReason::Length so callers can tell a \
+             truncated completion apart from a complete one"
         );
     }
 }
