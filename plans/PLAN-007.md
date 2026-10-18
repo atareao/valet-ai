@@ -25,7 +25,7 @@ Que Valet mantenga una bitácora personal **por su cuenta**: que decida *cuándo
 
 ## Reparto en dos changes
 
-1. **`journal-entries` — la bitácora como registro.** Migración, repositorio, herramienta `journal`, endpoints y sección en la app. Al terminarlo, el usuario puede escribir, corregir, listar y borrar entradas; Valet todavía **no** escribe solo.
+1. **`journal-entries` — la bitácora como registro.** ✅ **Completado** (PR #215). Migración, repositorio, herramienta `journal`, endpoints y sección en la app. Al terminarlo, el usuario puede escribir, corregir, listar y borrar entradas; Valet todavía **no** escribe solo.
 2. **`journal-worker` — la autonomía.** Worker propio, prompt sembrado y editable, ajustes (encendida o apagada, hora, modelo) y la marca de día juzgado. Al terminarlo, la bitácora se escribe sola.
 
 El orden no es casual: la autonomía necesita la tabla y el repositorio del primero, y el primero ya entrega algo utilizable aunque el segundo se aparque.
@@ -45,3 +45,14 @@ El orden no es casual: la autonomía necesita la tabla y el repositorio del prim
 - Nada escribe sobre el usuario sin que él pueda verlo y deshacerlo.
 - El enrutado de skills no empeora con la herramienta nueva, medido con el arnés.
 - Todo con tests y con su verificación en CLI, como el resto del repositorio.
+
+## Observaciones de revisión aceptadas
+
+Al cerrar `journal-entries`, los dos revisores dejaron hallazgos **no bloqueantes** que se aceptaron sin acción, y quedan aquí para que no se redescubran:
+
+- La validación estricta de fecha está duplicada en la herramienta del agente y en el handler de la API (misma regla, distinto tipo de error). Se acepta: deduplicarla cruzaría dos capas que hoy no comparten nada.
+- La vista memoriza de menos (`handleSave`/`handleDelete` se recrean en cada render). Se acepta: con el volumen de un diario no hay problema medible.
+- El hook de la vista replica el patrón de `useEvents`, con su misma debilidad ante el desmontaje. Se acepta por coherencia con el molde del repositorio.
+- El test de carga diferida comprueba la forma del fuente (`lazy` + `Suspense`) y no el paquete construido; la prueba de verdad de que la vista no entra en el paquete inicial es el comprobador de presupuesto del `postbuild`. El test se queda como guarda barata.
+- La tabla no lleva `CHECK` en `mood`: la estrictez vive en el tipo y en el repositorio, que rechaza un valor fuera del conjunto incluso si entra por SQL a mano. Hay test.
+- La sincronía `frontend/dist` → `static/` sigue siendo **manual** (no hay receta en el `.justfile`) y ya ha hecho falta otra vez al cerrar este change.
