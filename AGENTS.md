@@ -179,6 +179,8 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 
 **7. La medición en producción del arreglo de «marcar todas» (`notifications-inbox`) queda aplazada.** Decidido el 2026-10-14 al cerrar la feature: el arreglo está verificado por tests, pero no se desplegó ni se midió. La comprobación —pedirle al agente «marca todas las notificaciones como leídas» y confirmar que `mark_read` sin `ids` ya no entra en bucle de reintentos— se hará en el próximo despliegue. Referencia del «antes»: los 3 avisos con `read_at = NULL` de los turnos del 2026-10-13 19:12 y 2026-10-14 05:04.
 
+**8. La prueba en un Android real del botón «Abrir» (`location-widget-open-action`) queda aplazada.** El change está archivado y verificado por tests (62 ficheros / 466 de frontend, 1423 de Rust, 0 fallos), pero la comprobación en dispositivo real no se ha hecho: falta confirmar que «Abrir» ofrece el selector de aplicaciones o la app de mapas por defecto **sin dejar pestaña en blanco** y que el pin cae donde debe. Es la tarea 6.3, la única sin marcar del change archivado (`openspec/changes/archive/2026-10-18-location-widget-open-action/`). Si fallara, lo primero a revisar es la elección de `geo:` **sin fijar paquete** frente al `intent://` con `S.browser_fallback_url` que se descartó al diseñar.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
@@ -210,6 +212,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-003-COMPLETED.md` | Selección por skills y otros temas (Temas 1–4 ✅: PR #155, #159, #163, #166/#167; Tema 5 aparcado) | ✅ Completado |
 | `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log, observabilidad | ⏸️ Pending |
 | `plans/PLAN-005-COMPLETED.md` | Activity Timeline & Life Journal (línea temporal de hechos) (PR #169) | ✅ Completado |
+| `plans/PLAN-006-COMPLETED.md` | `LocationWidget`: de «Guardar» a «Abrir» (change `location-widget-open-action`) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
