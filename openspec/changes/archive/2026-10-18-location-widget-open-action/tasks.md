@@ -38,6 +38,6 @@
 
 - [x] 6.1 `npx vitest run` completo en verde (baseline: 61 ficheros / 433 tests; ahora 62 / 466) y `npx tsc --noEmit` limpio.
 - [x] 6.2 `openspec validate location-widget-open-action --strict` en verde.
-- [ ] 6.3 Prueba real desde el móvil contra el contenedor (`just dev`): «Abrir» abre el selector de aplicaciones o la app de mapas por defecto sin dejar pestaña en blanco, y «Cómo llegar» sigue abriendo Google Maps.
+- [x] 6.3 Prueba real desde el móvil contra el contenedor (`just dev`): «Abrir» abre el selector de aplicaciones o la app de mapas por defecto sin dejar pestaña en blanco, y «Cómo llegar» sigue abriendo Google Maps.
 - [x] 6.4 Revisión con `@react-reviewer`; hallazgos aplicados (I1 resincronía de `static/`, I2 esta propia puesta al día, I3 cobertura del cableado de la etiqueta, M1 aserción real sobre `window.open`). Las observaciones sin acción quedan anotadas en `plans/PLAN-006.md`.
 - [x] 6.5 `openspec archive location-widget-open-action` y actualizar `plans/PLAN-006.md` (Tema 1) marcando lo completado.
