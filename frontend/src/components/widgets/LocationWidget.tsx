@@ -10,6 +10,7 @@ import "leaflet/dist/leaflet.css";
 import "./LocationWidget.css";
 import type { LocationData, WidgetProps } from "./types";
 import { TILE_URL, TILE_ATTRIBUTION } from "./locationTiles";
+import { openLocationUrl } from "./locationLinks";
 
 const { Text } = Typography;
 
@@ -17,16 +18,16 @@ const isFiniteNumber = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
 
 /**
- * Mapa de una ubicación con sus acciones. Tolera datos incompletos: si las
- * coordenadas no son números finitos, muestra un aviso en lugar del mapa y no
- * lanza. Emite `onAction("save_place", { title, address, latitude, longitude })`
- * al pulsar «Guardar».
+ * Mapa de una ubicación con sus acciones: «Abrir», «Cómo llegar» y «Copiar
+ * coordenadas». Componente presentacional: no emite ninguna acción hacia el
+ * backend (el prop `onAction` del tipo se conserva por compatibilidad con el
+ * registry, pero ya no se usa). «Abrir» resuelve su destino según la plataforma
+ * del navegador —`geo:` en Android, Apple Maps en iOS y Google Maps en el
+ * resto— delegando en `locationLinks`; navega en el contexto actual, sin abrir
+ * pestaña nueva. Tolera datos incompletos: si las coordenadas no son números
+ * finitos, muestra un aviso en lugar del mapa y no lanza.
  */
-export const LocationWidget: FC<WidgetProps<LocationData>> = ({
-  data,
-  onAction,
-  disabled,
-}) => {
+export const LocationWidget: FC<WidgetProps<LocationData>> = ({ data, disabled }) => {
   const { message } = App.useApp();
   const { latitude, longitude, title, address, description } = data ?? {};
 
@@ -44,9 +45,13 @@ export const LocationWidget: FC<WidgetProps<LocationData>> = ({
   const lat = latitude;
   const lon = longitude;
 
-  const handleSave = () => {
-    onAction("save_place", { title, address, latitude: lat, longitude: lon });
-  };
+  // Destino de «Abrir» según la plataforma del navegador. Se calcula una vez
+  // por render: es una función pura y barata.
+  const openHref = openLocationUrl(
+    { latitude: lat, longitude: lon, label: title ?? address },
+    navigator.userAgent,
+    navigator.maxTouchPoints,
+  );
 
   const handleDirections = () => {
     const opened = window.open(
@@ -121,8 +126,8 @@ export const LocationWidget: FC<WidgetProps<LocationData>> = ({
         <Text style={{ display: "block", marginTop: 8 }}>{description}</Text>
       )}
       <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-        <Button type="primary" onClick={handleSave} disabled={disabled}>
-          Guardar
+        <Button type="primary" href={openHref} disabled={disabled}>
+          Abrir
         </Button>
         <Button onClick={handleDirections} disabled={disabled}>
           Cómo llegar
