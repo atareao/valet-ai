@@ -51,8 +51,27 @@ export interface UpdateProfile {
 
 export interface PaginatedResponse<T> {
   data: T[];
-  next_cursor?: string;
+  /**
+   * Cursor de la página siguiente. El backend lo serializa como `null` cuando
+   * no hay más resultados (`Option<String>`), no como campo ausente.
+   */
+  next_cursor?: string | null;
   total?: number;
+}
+
+/**
+ * Aviso de la bandeja de notificaciones (`GET /api/notifications/unread`).
+ * Espejo del contrato del backend: `metadata` puede ser `null` y `created_at`
+ * llega en el formato crudo de SQLite (`"YYYY-MM-DD HH:MM:SS"`, UTC).
+ */
+export interface Notification {
+  id: string;
+  origin: string;
+  author: string;
+  message: string;
+  level: "info" | "warning" | "critical";
+  metadata: Record<string, unknown> | null;
+  created_at: string;
 }
 
 export interface BrowserContext {
@@ -141,18 +160,29 @@ export interface ModelStats {
 }
 
 /**
- * Uso de LLM de un origen no-chat (router, archivist, consolidator, collapse).
- * Espejo de `BackgroundStats` en `src/models/stats.rs`; el backend devuelve una
- * entrada por origen desde `GET /api/stats/llm/background`.
+ * Uso de LLM de un origen no-chat (router, archivist, consolidator, collapse,
+ * timeline). Espejo de `BackgroundStats` en `src/models/stats.rs`; el backend
+ * devuelve **una entrada por pareja (origen, modelo)** desde
+ * `GET /api/stats/llm/background`. `model` es `null` para un origen canónico
+ * sin ninguna fila (contadores a cero): la visibilidad de que un rol nunca
+ * corre es información, no ruido.
  */
 export interface BackgroundStats {
   kind: string;
+  model: string | null;
   calls: number;
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
   total_cost: number;
   total_errors: number;
+  /**
+   * Llamadas con `status='success'` y `completion_tokens <= 1`: el «éxito con
+   * forma de avería» que ni el código ni `total_errors` ven.
+   */
+  suspicious_calls: number;
+  /** `MAX(created_at)` de la pareja; `null` si el origen no tiene filas. */
+  last_call_at: string | null;
   avg_duration_ms: number | null;
 }
 
@@ -296,4 +326,44 @@ export interface StravaCheckResult {
   athlete_id: string | null;
   athlete_name: string | null;
   error: string | null;
+}
+
+/** Respuesta de `GET /api/push/vapid-key`: la clave pública VAPID en base64url. */
+export interface VapidKeyResponse {
+  public_key: string;
+}
+
+/** Suscripción WebPush del navegador tal como la espera el backend. */
+export interface PushSubscriptionPayload {
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+}
+
+/** Respuesta de `POST /api/push/subscriptions`. */
+export interface PushSubscriptionResponse {
+  id: string;
+}
+
+/**
+ * Clave de ingesta tal como la devuelve `GET /api/ingest-keys`. Nunca incluye el
+ * token: solo su `prefix`.
+ */
+export interface IngestKey {
+  id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+}
+
+/**
+ * Respuesta de `POST /api/ingest-keys`: el token en claro se entrega **una sola
+ * vez**, en el alta. No vuelve a estar disponible en ningún listado.
+ */
+export interface CreatedIngestKey extends IngestKey {
+  token: string;
 }

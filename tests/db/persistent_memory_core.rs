@@ -151,8 +151,14 @@ async fn characterization_persistent_memory_table_present_after_migration() {
 /// extractions from the same batch — the episodic card (Layer B), the
 /// consolidated persistent state (Layer C) and the chronological facts
 /// (Layer D) — and writes all of them, plus the index mark.
+///
+/// **CHANGED ON PURPOSE (timeline-extractor-resilience, Capa D)**: Layer D now
+/// retries once when the extractor does not return the `{"events": [...]}`
+/// envelope, so this double — which answers with that body only for the
+/// consolidator — sees **four** calls: the three layers plus the Layer D retry.
 #[tokio::test]
-async fn characterization_worker_makes_three_extractions_and_writes_all_layers() {
+async fn characterization_worker_makes_three_extractions_plus_a_layer_d_retry_and_writes_all_layers(
+) {
     let pool = setup().await;
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -191,11 +197,12 @@ async fn characterization_worker_makes_three_extractions_and_writes_all_layers()
     memory_tx.send(()).await.expect("signal");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // THREE extractions: Layer B (card), Layer C (state) and Layer D (facts).
+    // THREE extractions plus Layer D's single retry: Layer B (card), Layer C
+    // (state), Layer D (facts) and the Layer D retry (D′).
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        3,
-        "the worker makes three extractions: the card (B), the state (C) and the facts (D)"
+        4,
+        "the worker makes three extractions — card (B), state (C), facts (D) — plus the Layer D retry"
     );
 
     let memory_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory")

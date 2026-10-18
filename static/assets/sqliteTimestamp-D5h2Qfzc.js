@@ -1,0 +1,1 @@
+var e=/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d+)?)$/,t=t=>{if(!t)return null;let n=e.exec(t),r=n?`${n[1]}T${n[2]}Z`:t,i=new Date(r);return Number.isNaN(i.getTime())?null:i};export{t};

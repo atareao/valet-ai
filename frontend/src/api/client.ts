@@ -5,6 +5,7 @@ import type {
   LastApiCall,
   MemoryStats,
   Message,
+  Notification,
   PaginatedResponse,
   Profile,
   StatsSummary,
@@ -51,7 +52,10 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+export async function request<T>(
+  path: string,
+  options?: RequestInit,
+): Promise<T> {
   const resp = await fetch(`${BASE_URL}${path}`, {
     ...options,
     credentials: "include",
@@ -147,9 +151,10 @@ export const api = {
     request<Task>(`/tasks/${id}`, { method: "DELETE" }),
 
   getStatsSummary: () => request<StatsSummary>("/stats/llm/summary"),
-  getStatsByModel: () => request<ModelStats[]>("/stats/llm/by-model"),
-  getStatsBackground: () =>
-    request<BackgroundStats[]>("/stats/llm/background"),
+  getStatsByModel: (days = 30) =>
+    request<ModelStats[]>(`/stats/llm/by-model?days=${days}`),
+  getStatsBackground: (days = 30) =>
+    request<BackgroundStats[]>(`/stats/llm/background?days=${days}`),
   getStatsByDay: (days = 30) => request<DayStats[]>(`/stats/llm/by-day?days=${days}`),
   getStatsTools: () => request<ToolStats[]>("/stats/llm/tools"),
   getDbSizes: () => request<TableSize[]>("/stats/db/sizes"),
@@ -184,6 +189,30 @@ export const api = {
     request<void>("/persistent-memory", { method: "DELETE" }),
 
   getSkills: () => request<SkillsResponse>("/skills"),
+
+  // --- Avisos (bandeja de notificaciones) ---------------------------------
+  // `GET /api/notifications/unread` solo lista los pendientes (no leídos), con
+  // paginación por cursor. `cursor` ausente = primera página.
+  listUnreadNotifications: (params?: { limit?: number; cursor?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params?.cursor) qs.set("cursor", params.cursor);
+    const suffix = qs.toString();
+    return request<PaginatedResponse<Notification>>(
+      `/notifications/unread${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  markNotificationsRead: (ids: string[]) =>
+    request<{ marked: number }>("/notifications/mark-read", {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
+  // `{}` (sin `ids`) es lo que hace que el backend marque **todas**.
+  markAllNotificationsRead: () =>
+    request<{ marked: number }>("/notifications/mark-read", {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
 
   // --- Strava -------------------------------------------------------------
   // El flujo OAuth se inicia **navegando** a `/api/strava/authorize` (el

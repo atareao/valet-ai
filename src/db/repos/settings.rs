@@ -10,7 +10,11 @@ use std::collections::HashMap;
 /// `GET /api/settings` y hace que `PUT /api/settings` la ignore. El
 /// `strava_client_secret` **no** figura aquí a propósito: se edita desde la
 /// sección de Integraciones y por eso sigue viajando en los ajustes.
-pub const SENSITIVE_KEYS: &[&str] = &["strava_access_token", "strava_refresh_token"];
+pub const SENSITIVE_KEYS: &[&str] = &[
+    "strava_access_token",
+    "strava_refresh_token",
+    "push_vapid_private_key",
+];
 
 /// `true` si `key` es sensible y por tanto debe omitirse en las respuestas y
 /// descartarse en las escrituras de ajustes.

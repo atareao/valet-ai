@@ -241,8 +241,9 @@ async fn test_stats_repo_inserts_llm_request() {
     assert!((summary.total_cost - 0.015).abs() < f64::EPSILON);
     assert_eq!(summary.total_errors, 0);
 
-    // 4. Verify by_model returns one row
-    let models = valet::db::repos::stats::StatsRepo::by_model(&pool)
+    // 4. Verify by_model returns one row. The row was inserted with the
+    //    default `datetime('now')`, so a 30-day window comfortably includes it.
+    let models = valet::db::repos::stats::StatsRepo::by_model(&pool, 30)
         .await
         .unwrap();
     assert_eq!(models.len(), 1);

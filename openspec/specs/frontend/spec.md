@@ -166,18 +166,25 @@ La lista de eventos del día SHALL apilar cada evento a ancho completo con títu
 
 ### Requirement: StatsDashboard SHALL display cost and tokens by model
 
-StatsDashboard SHALL mostrar el coste y los tokens por modelo mediante un gráfico de barras y una tabla.
+StatsDashboard SHALL mostrar el coste y los tokens por modelo mediante un gráfico de barras y una tabla, sobre **todos los orígenes** (chat y procesos de fondo), de modo que un modelo que solo trabaja en roles de fondo también aparezca. El panel SHALL dejar de rotularse como exclusivo de chat y su título/etiqueta SHALL reflejar que agrega todos los orígenes.
 
-**Given** el endpoint `/api/stats/llm/by-model` devuelve datos
+**Given** el endpoint `/api/stats/llm/by-model?days=<ventana>` devuelve datos
 **When** se renderiza StatsDashboard
 **Then** muestra un gráfico de barras (Chart.js) con coste por modelo
 **And** una tabla con modelo, calls, tokens, coste
+**And** un modelo que solo se usa en roles de fondo aparece con su coste agregado
 
 #### Scenario: Gráfico con 2 modelos
 **Given** by-model devuelve `[{model: "gpt-4o", calls: 100, total_tokens: 40000, total_cost: 1.0}, {model: "claude-3", calls: 50, total_tokens: 10000, total_cost: 0.25}]`
 **When** se renderiza
 **Then** el gráfico tiene 2 barras
 **And** la tabla tiene 2 filas ordenadas por coste descendente
+
+#### Scenario: Un modelo de un rol de fondo aparece en el panel
+**Given** by-model devuelve `[{model: "qwen/qwen3-235b-a22b-2507", calls: 33, total_tokens: 242522, total_cost: 0.12}]`
+**When** se renderiza
+**Then** el gráfico incluye una barra para ese modelo
+**And** la tabla incluye su fila con el coste agregado
 
 ### Requirement: StatsDashboard SHALL display daily time series
 
@@ -1294,44 +1301,6 @@ posición). Ninguna de estas variantes SHALL provocar un error de render.
 **When** el usuario marca "Paso uno" y envía
 **Then** se invoca `onAction("submit", { "checkedIds": ["item-0"] })`
 
-### Requirement: El widget `LocationWidget` SHALL mostrar una ubicación en un mapa con acciones
-
-El frontend SHALL registrar un widget `LocationWidget` que, a partir de `LocationData`
-(`{ title?, description?, latitude?, longitude?, address? }`), pinte un mapa Leaflet centrado en las
-coordenadas, con un marcador y su popup, y un panel con el título, la dirección y la descripción. El
-mapa SHALL usar tiles de **OpenStreetMap** (sin API key) con su atribución visible, y SHALL aplicar un
-filtro CSS sobre el panel de tiles para el aspecto oscuro. El mapa SHALL tener `scrollWheelZoom`
-desactivado. El widget SHALL ofrecer las acciones «Guardar», «Cómo llegar» y «Copiar coordenadas». El
-componente SHALL cargarse de forma **diferida** para no incluir la librería de mapas en el bundle
-inicial.
-
-#### Scenario: Renderiza la ubicación
-
-**Given** un `LocationData` con `title`, `latitude` y `longitude` válidos
-**When** se renderiza `LocationWidget`
-**Then** se muestra el título y un mapa centrado en esas coordenadas con un marcador
-
-#### Scenario: El mapa usa tiles de OpenStreetMap sin API key
-
-**Given** la configuración de tiles del widget `LocationWidget`
-**When** se inspecciona su URL de tiles
-**Then** apunta a `openstreetmap.org`
-**And** no apunta a un proveedor que requiera API key
-**And** incluye la atribución de OpenStreetMap
-
-#### Scenario: Guardar devuelve la acción al backend
-
-**Given** un `LocationWidget` renderizado con coordenadas válidas
-**When** el usuario pulsa «Guardar»
-**Then** se invoca `onAction("save_place", …)` con el título, la dirección y las coordenadas
-
-#### Scenario: Coordenadas ausentes no rompen el widget
-
-**Given** un `LocationData` sin `latitude` o `longitude`
-**When** se renderiza `LocationWidget`
-**Then** se muestra un aviso visible
-**And** no se lanza ninguna excepción
-
 ### Requirement: El frontend SHALL reconstruir los widgets persistidos al cargar el historial
 
 Al inicializar el chat (`GET /api/chat/init`), el frontend SHALL poblar `widgetsByMessage` a partir del
@@ -1447,25 +1416,270 @@ El bundle inicial del frontend —el que se descarga antes de resolver la sesió
 
 ### Requirement: El panel de estadísticas SHALL mostrar los procesos de fondo por separado
 
-La pestaña «Modelos» del panel de estadísticas SHALL incluir una tarjeta «Procesos de fondo» alimentada por `GET /api/stats/llm/background`, con una fila por origen (router, archivist, consolidator, collapse, timeline) y sus llamadas, tokens, coste, latencia media y errores. Cada origen SHALL mostrarse con una etiqueta legible y su `kind` crudo. Las tarjetas de chat (resumen, modelos y diaria) SHALL NOT incluir las peticiones de los orígenes de fondo.
+La pestaña «Modelos» del panel de estadísticas SHALL incluir una tarjeta «Procesos de fondo» alimentada por `GET /api/stats/llm/background`, con **una fila por pareja (rol, modelo)** —no una por rol—. Cada fila SHALL mostrar el rol con una etiqueta legible y su `kind` crudo, el modelo, sus llamadas, tokens, coste, latencia media, errores y **la fecha de la última llamada**. Los errores SHALL resaltarse cuando sean `> 0`. Las llamadas señaladas como sospechosas (`suspicious_calls`, salida de un token registrada como éxito) SHALL mostrarse con una marca visible. Las filas SHALL respetar la ventana temporal seleccionada en el dashboard.
+
+Las tarjetas de **resumen** y **diaria** SHALL NOT incluir las peticiones de los orígenes de fondo. La tarjeta de **modelos** sí las agrega: es una reversión deliberada de la restricción anterior (`design.md`, «Decisión consciente: el panel de modelos deja de ser solo de chat»), porque un modelo configurado en producción quedaba invisible.
 
 #### Scenario: La tarjeta muestra el uso de cada origen
-- **Given** el endpoint devuelve entradas para router y collapse
-- **When** se abre la pestaña «Modelos»
-- **Then** la tarjeta «Procesos de fondo» muestra una fila por origen con sus cifras
+**Given** el endpoint devuelve entradas para las parejas (router, modelo A) y (collapse, modelo B)
+**When** se abre la pestaña «Modelos»
+**Then** la tarjeta «Procesos de fondo» muestra una fila por pareja (rol, modelo) con sus cifras
 
 #### Scenario: El timeline aparece etiquetado como origen propio
-- **Given** el endpoint devuelve una entrada con `kind: "timeline"`
-- **When** se abre la pestaña «Modelos»
-- **Then** la tarjeta muestra una fila cuya etiqueta legible es «Línea temporal»
-- **And** se ve el `kind` crudo `timeline` junto a ella
+**Given** el endpoint devuelve una entrada con `kind: "timeline"`
+**When** se abre la pestaña «Modelos»
+**Then** la tarjeta muestra una fila cuya etiqueta legible es «Línea temporal»
+**And** se ve el `kind` crudo `timeline` junto a ella
 
 #### Scenario: Sin procesos de fondo
-- **Given** el endpoint devuelve todas las entradas a cero
-- **When** se abre la pestaña «Modelos»
-- **Then** la tarjeta muestra un estado vacío sin romper la vista
+**Given** el endpoint devuelve todas las entradas a cero
+**When** se abre la pestaña «Modelos»
+**Then** la tarjeta muestra un estado vacío sin romper la vista
 
 #### Scenario: Las tarjetas de chat no incluyen los orígenes de fondo
-- **Given** datos de chat y de los orígenes de fondo
-- **When** se renderizan las tarjetas de chat
-- **Then** sus cifras no incluyen las peticiones de los orígenes de fondo
+**Given** datos de chat y de los orígenes de fondo
+**When** se renderizan las tarjetas de resumen y diaria
+**Then** sus cifras no incluyen las peticiones de los orígenes de fondo
+**And** la tarjeta de modelos sí las agrega (reversión deliberada)
+
+#### Scenario: Varios modelos del mismo rol son filas distintas
+**Given** el endpoint devuelve dos parejas del rol `consolidator`, una por modelo
+**When** se abre la pestaña «Modelos»
+**Then** la tarjeta muestra dos filas para `consolidator`, una por modelo
+
+#### Scenario: Las llamadas sospechosas se marcan
+**Given** una pareja con `suspicious_calls > 0`
+**When** se abre la pestaña «Modelos»
+**Then** su fila muestra una marca visible de llamadas sospechosas
+
+#### Scenario: Los errores se resaltan
+**Given** una pareja con `total_errors > 0`
+**When** se abre la pestaña «Modelos»
+**Then** la cifra de errores de esa fila aparece resaltada
+
+#### Scenario: La última llamada se muestra
+**Given** una pareja con `last_call_at` poblado
+**When** se abre la pestaña «Modelos»
+**Then** la fila muestra la fecha de la última llamada
+
+### Requirement: SettingsDialog SHALL permitir crear y revocar claves de ingesta desde la pestaña API Keys
+
+En la pestaña **API Keys** del `SettingsDialog` —que ya existe y hoy muestra las claves **salientes**
+(OpenWeatherMap, Google Places, Brave, apimail y Miniflux)— se SHALL añadir una sección separada de
+claves **entrantes**, para las aplicaciones que envían avisos. Esa sección SHALL ofrecer un formulario
+para crear una clave a partir de un **nombre**, la lista de claves existentes y la revocación de cada
+una. La lista SHALL mostrar de cada clave el nombre, el prefijo, la fecha de alta, el último uso y si
+está revocada, y SHALL NOT mostrar nunca el token: solo el prefijo. El **token SHALL mostrarse una
+única vez**, en el momento del alta, con un aviso explícito de que no se volverá a mostrar. NO SHALL
+añadirse una pestaña nueva de primer nivel, porque el diálogo ya tiene siete y existe un requisito de
+que quepan sin desbordamiento. Los avisos al usuario SHALL emitirse mediante la API contextual de
+antd ya usada por el proyecto (`App.useApp()`, ver la capability `ui-feedback`), NO mediante la API
+estática de antd.
+
+Las fechas que la lista muestra —la de **alta** (`created_at`) y la de **último uso**
+(`last_used_at`)— SHALL interpretarse como **UTC** cuando lleguen en el formato crudo de SQLite
+(`"YYYY-MM-DD HH:MM:SS"`: separador de espacio, sin `T` y sin zona horaria; es el valor que emite
+`datetime('now')` y que el backend reenvía tal cual). Un valor ya en ISO-8601 (con `T` y zona) SHALL
+respetarse sin tocarlo. Un valor **ausente o no parseable** SHALL mostrarse como una **ausencia
+legible** (`—` o equivalente) y SHALL NOT mostrarse nunca como el valor crudo ni como «Invalid
+Date». La marca temporal SHALL ser **independiente de la zona horaria** de la máquina del usuario,
+de modo que el mismo instante no cambie según el navegador que lo pinte (WebKit rechaza el crudo de
+SQLite; V8 lo interpreta como hora local).
+
+#### Scenario: Crear una clave muestra el token una sola vez con el aviso
+
+- **Given** un usuario en la pestaña API Keys del `SettingsDialog`
+- **When** crea una clave de ingesta con un nombre
+- **Then** la interfaz muestra el token recién creado
+- **And** muestra un aviso explícito de que no se volverá a mostrar
+
+#### Scenario: La lista no contiene el token
+
+- **Given** una clave de ingesta ya creada
+- **When** se inspecciona la lista de claves
+- **Then** la lista muestra el prefijo de la clave
+- **And** la lista NO muestra el token
+
+#### Scenario: Revocar marca la clave como revocada
+
+- **Given** una clave existente
+- **When** el usuario la revoca
+- **Then** la lista marca la clave como revocada
+
+#### Scenario: Un fallo del backend al crear se comunica sin dejar la clave a medias
+
+- **Given** un usuario que crea una clave y un backend que responde con error
+- **When** falla la creación
+- **Then** la interfaz comunica el fallo con un aviso
+- **And** NO deja la clave creada a medias en la lista
+
+#### Scenario: El crudo de SQLite se interpreta como UTC
+
+- **Given** una clave con `last_used_at` en el formato crudo de SQLite `"2026-10-12 13:55:33"`
+- **When** se renderiza la lista de claves
+- **Then** la celda de «último uso» muestra ese instante como UTC (`2026-10-12T13:55:33Z`)
+- **And** la celda de «alta» (`created_at`) se interpreta con la misma regla
+
+#### Scenario: La marca no depende de la zona horaria del navegador
+
+- **Given** una clave con `last_used_at` en el formato crudo de SQLite
+- **When** la lista se renderiza en WebKit y en V8
+- **Then** ambas muestran el mismo instante, sin desfase
+- **And** ninguna lo lee como hora local
+
+#### Scenario: Un valor no parseable se muestra como ausencia
+
+- **Given** una clave con `last_used_at` no parseable (p. ej. `"no es una fecha"`)
+- **When** se renderiza la lista de claves
+- **Then** la celda de «último uso» muestra `—`
+- **And** nunca muestra «Invalid Date»
+
+#### Scenario: Un valor ausente no se muestra como el crudo
+
+- **Given** una clave con `last_used_at` nulo
+- **When** se renderiza la lista de claves
+- **Then** la celda de «último uso» muestra `—`
+- **And** nunca muestra el valor crudo del backend
+
+### Requirement: El selector de ventana del panel de estadísticas SHALL gobernar los tres paneles
+
+El panel de estadísticas SHALL exponer un selector de ventana temporal con **7 días** como valor por
+defecto. El valor seleccionado SHALL propagarse a las tres consultas del panel —resumen diario
+(`by-day`), procesos de fondo (`background`) y modelos (`by-model`)— de modo que las tres tarjetas
+compartan la misma ventana. Al abrir el panel sin selección previa, SHALL usarse 7 días.
+
+#### Scenario: El valor por defecto es 7 días
+**Given** un usuario que abre el panel de estadísticas sin haber elegido ventana
+**When** se cargan las tarjetas
+**Then** las tres consultas se hacen con `days=7`
+
+#### Scenario: Cambiar la ventana gobierna los tres paneles
+**Given** el panel de estadísticas abierto con la ventana en 7 días
+**When** el usuario selecciona 30 días
+**Then** las consultas de diaria, procesos de fondo y modelos se repiten con `days=30`
+
+#### Scenario: La ventana llega al endpoint de fondo
+**Given** la ventana seleccionada en 7 días
+**When** se carga la tarjeta «Procesos de fondo»
+**Then** la petición a `/api/stats/llm/background` incluye `days=7`
+
+### Requirement: La fecha de última llamada SHALL interpretarse como UTC y mostrar la ausencia sin ambigüedad
+
+El campo `last_call_at` que alimenta la tarjeta «Procesos de fondo» SHALL interpretarse como **UTC** cuando llegue en el formato crudo de SQLite (`"YYYY-MM-DD HH:MM:SS"`: separador de espacio, sin `T` y sin zona horaria; es el valor que emite `sqlite3` y que el backend reenvía tal cual). Un valor **no parseable** SHALL mostrarse como ausencia (`—`) y nunca como «Invalid Date». La marca temporal SHALL ser independiente de la zona horaria de la máquina del usuario, de modo que el hecho mostrado no dependa del navegador (WebKit rechaza el crudo de SQLite; V8 lo interpreta como hora local).
+
+#### Scenario: El crudo de SQLite se interpreta como UTC
+**Given** una pareja con `last_call_at` en el formato crudo de SQLite `"2026-10-12 19:08:45"`
+**When** se abre la pestaña «Modelos»
+**Then** la fila muestra ese instante como UTC (`2026-10-12T19:08:45Z`)
+**And** la marca no depende de la zona horaria de la máquina
+
+#### Scenario: Un valor no parseable se muestra como ausencia
+**Given** una pareja con un `last_call_at` no parseable
+**When** se abre la pestaña «Modelos»
+**Then** la celda muestra `—`
+**And** nunca muestra «Invalid Date»
+
+#### Scenario: La ausencia se distingue de una fecha válida
+**Given** una pareja con `last_call_at` nulo y otra con una fecha válida
+**When** se abre la pestaña «Modelos»
+**Then** la primera muestra `—`
+**And** la segunda nunca se degrada a `—` por culpa de la zona horaria del navegador
+
+### Requirement: El widget `LocationWidget` SHALL mostrar una ubicación en un mapa con las acciones Abrir, Cómo llegar y Copiar coordenadas
+
+El frontend SHALL registrar un widget `LocationWidget` que, a partir de `LocationData`
+(`{ title?, description?, latitude?, longitude?, address? }`), pinte un mapa Leaflet centrado en las
+coordenadas, con un marcador y su popup, y un panel con el título, la dirección y la descripción. El
+mapa SHALL usar tiles de **OpenStreetMap** (sin API key) con su atribución visible, y SHALL aplicar un
+filtro CSS sobre el panel de tiles para el aspecto oscuro. El mapa SHALL tener `scrollWheelZoom`
+desactivado. El widget SHALL ofrecer las acciones «Abrir», «Cómo llegar» y «Copiar coordenadas», y
+SHALL NOT ofrecer ninguna acción que devuelva un turno de usuario al backend. El componente SHALL
+cargarse de forma **diferida** para no incluir la librería de mapas en el bundle inicial.
+
+La acción «Abrir» SHALL llevar el punto a la aplicación de mapas del dispositivo y SHALL resolver su
+destino según la plataforma del navegador: en Android SHALL usar el esquema `geo:` **sin fijar
+paquete**, de modo que el sistema ofrezca el selector de aplicaciones o use la aplicación de mapas
+predeterminada del usuario; en iOS SHALL usar la URL de Apple Maps; y en el resto de plataformas SHALL
+usar la URL oficial de Google Maps. El destino SHALL derivarse siempre de las **coordenadas** y SHALL
+NOT usar la dirección ni el título como consulta de búsqueda. Cuando el esquema lo permita, el título
+—o, en su defecto, la dirección— SHALL viajar como **etiqueta codificada** del punto, nunca como
+sustituto de las coordenadas. «Abrir» SHALL iniciar la navegación en el contexto actual y SHALL NOT
+abrir una pestaña nueva.
+
+#### Scenario: Renderiza la ubicación
+
+**Given** un `LocationData` con `title`, `latitude` y `longitude` válidos
+**When** se renderiza `LocationWidget`
+**Then** se muestra el título y un mapa centrado en esas coordenadas con un marcador
+
+#### Scenario: El mapa usa tiles de OpenStreetMap sin API key
+
+**Given** la configuración de tiles del widget `LocationWidget`
+**When** se inspecciona su URL de tiles
+**Then** apunta a `openstreetmap.org`
+**And** no apunta a un proveedor que requiera API key
+**And** incluye la atribución de OpenStreetMap
+
+#### Scenario: Abrir en Android usa el esquema geo: sin fijar paquete
+
+**Given** un `LocationWidget` renderizado con coordenadas válidas
+**When** se resuelve la acción «Abrir» en un navegador de Android
+**Then** el destino empieza por `geo:`
+**And** el destino contiene las coordenadas
+**And** el destino NO fija ningún paquete de aplicación
+
+#### Scenario: Abrir en iOS usa Apple Maps
+
+**Given** un `LocationWidget` renderizado con coordenadas válidas
+**When** se resuelve la acción «Abrir» en iOS
+**Then** el destino apunta a `maps.apple.com`
+**And** el destino contiene las coordenadas
+
+#### Scenario: Abrir en las demás plataformas usa Google Maps
+
+**Given** un `LocationWidget` renderizado con coordenadas válidas
+**When** se resuelve la acción «Abrir» en un navegador de escritorio
+**Then** el destino apunta a la URL oficial de Google Maps
+**And** el destino contiene las coordenadas
+
+#### Scenario: Abrir usa las coordenadas, no la dirección
+
+**Given** un `LocationData` cuya `address` es el nombre de un lugar y cuyas coordenadas son válidas
+**When** se resuelve la acción «Abrir»
+**Then** el destino contiene las coordenadas
+**And** la dirección NO se usa como consulta de búsqueda
+
+#### Scenario: La etiqueta del punto viaja codificada
+
+**Given** un `LocationData` con un `title` que contiene espacios, acentos y paréntesis
+**When** se resuelve la acción «Abrir» en Android
+**Then** la etiqueta aparece codificada en el destino
+**And** los paréntesis de la etiqueta no alteran la estructura del destino
+
+#### Scenario: Sin etiqueta no se añaden paréntesis
+
+**Given** un `LocationData` sin `title` ni `address`
+**When** se resuelve la acción «Abrir» en Android
+**Then** el destino NO contiene paréntesis
+
+#### Scenario: Abrir no abre una pestaña nueva
+
+**Given** un `LocationWidget` renderizado con coordenadas válidas
+**When** el usuario pulsa «Abrir»
+**Then** la navegación se inicia en el contexto actual
+**And** NO se abre una pestaña nueva
+
+#### Scenario: El widget ya no ofrece «Guardar»
+
+**Given** un `LocationWidget` renderizado con coordenadas válidas
+**When** se inspeccionan sus acciones
+**Then** sus acciones son «Abrir», «Cómo llegar» y «Copiar coordenadas»
+**And** NO existe una acción «Guardar»
+**And** NO se invoca `onAction` en ningún caso
+
+#### Scenario: Coordenadas ausentes no rompen el widget
+
+**Given** un `LocationData` sin `latitude` o `longitude`
+**When** se renderiza `LocationWidget`
+**Then** se muestra un aviso visible
+**And** no se lanza ninguna excepción

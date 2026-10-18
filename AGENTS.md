@@ -177,6 +177,12 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 
 **6. El router falla abierto y su margen de timeout es del 70 %.** `ROUTER_TIMEOUT_MS=800` y, al expirar, el router expone todas las skills habilitadas. En producción no ha ocurrido nunca (44 llamadas, todas `success`, media 349 ms, **máximo 567 ms**), pero si la latencia sube esos turnos pagan el catálogo entero. Dato anotado para `llm-worker-resilience` (aparcado; no reabrir sin orden explícita).
 
+**7. La medición en producción del arreglo de «marcar todas» (`notifications-inbox`) queda aplazada.** Decidido el 2026-10-14 al cerrar la feature: el arreglo está verificado por tests, pero no se desplegó ni se midió. La comprobación —pedirle al agente «marca todas las notificaciones como leídas» y confirmar que `mark_read` sin `ids` ya no entra en bucle de reintentos— se hará en el próximo despliegue. Referencia del «antes»: los 3 avisos con `read_at = NULL` de los turnos del 2026-10-13 19:12 y 2026-10-14 05:04.
+
+**8. «Abrir» en Android: verificado en dispositivo real.** La prueba de la tarea 6.3 de `location-widget-open-action` (2026-10-18) salió bien: `geo:` **sin fijar paquete** abre la aplicación de mapas en un Android real y el pin cae donde debe. La decisión de diseño queda confirmada en la práctica y el `intent://` con `S.browser_fallback_url` que se descartó al diseñar **no hace falta**. No se reabre salvo que aparezca un dispositivo donde falle.
+
+**9. MCP no se implanta. Descartado por decisión del usuario (2026-10-18).** Se estudió el ecosistema y se llegó a proponer un plan de tres changes (añadir, habilitar/deshabilitar y borrar servidores MCP, con importación por pegado), pero el hilo queda **cerrado**: no se implementa soporte de MCP y no se reabre sin orden explícita. Lo que conviene no volver a investigar si alguien lo replantea: la imagen de producción es `alpine:3.21` con solo `ca-certificates` —nada de Node ni Python—, así que los servidores MCP por **stdio no pueden correr ahí** y una v1 tendría que ser forzosamente **HTTP remoto**; los formatos de importación de facto son `mcpServers` (Claude Desktop y Cursor), `servers` (VS Code) y `mcp` (OpenCode); el router de skills **falla abierto** ante un timeout, así que expondría de golpe las herramientas de todos los servidores conectados; y el punto de equilibrio entre una plataforma MCP genérica y seguir con integraciones nativas estaba en torno a 7-8 integraciones, con un inventario hoy de 29 herramientas y 10 skills. La alternativa que se venía usando —integración nativa por herramienta— sigue siendo la vigente.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
@@ -205,9 +211,10 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 |:---|:---|:---:|
 | `plans/PLAN-001-COMPLETED.md` | Plan maestro original (`PLAN.md`): fases F0–F4 | ✅ Completado |
 | `plans/PLAN-002-COMPLETED.md` | OIDC (PocketID), producción tras Traefik y cierres (`PLAN-PENDIENTE.md`) | ✅ Completado |
-| `plans/PLAN-003.md` | Selección por skills y otros temas (Temas 1–3 ✅: PR #155, #159, #163) | 🟢 Activo |
+| `plans/PLAN-003-COMPLETED.md` | Selección por skills y otros temas (Temas 1–4 ✅: PR #155, #159, #163, #166/#167; Tema 5 aparcado) | ✅ Completado |
 | `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log, observabilidad | ⏸️ Pending |
 | `plans/PLAN-005-COMPLETED.md` | Activity Timeline & Life Journal (línea temporal de hechos) (PR #169) | ✅ Completado |
+| `plans/PLAN-006-COMPLETED.md` | `LocationWidget`: de «Guardar» a «Abrir» (change `location-widget-open-action`) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

@@ -23,6 +23,7 @@ pub struct WorkerPool {
     pub collapse_tx: Option<mpsc::Sender<String>>,
     pub memory: Option<JoinHandle<()>>,
     pub memory_tx: Option<mpsc::Sender<()>>,
+    pub reminder_push: Option<JoinHandle<()>>,
     pub shutdown_tx: Option<broadcast::Sender<()>>,
 }
 
@@ -132,11 +133,22 @@ impl WorkerPool {
             }
         };
 
+        // ── Reminder push worker ──
+        let reminder_push = {
+            let db = db.clone();
+            let shutdown_rx = shutdown_tx.subscribe();
+            Some(crate::workers::reminder_push::ReminderPushWorker::start(
+                db,
+                shutdown_rx,
+            ))
+        };
+
         Self {
             collapse: Some(collapse),
             collapse_tx: Some(collapse_tx),
             memory,
             memory_tx,
+            reminder_push,
             shutdown_tx: Some(shutdown_tx),
         }
     }
@@ -160,6 +172,9 @@ impl WorkerPool {
             handle.abort();
         }
         self.memory_tx.take();
+        if let Some(handle) = self.reminder_push.take() {
+            handle.abort();
+        }
     }
 }
 

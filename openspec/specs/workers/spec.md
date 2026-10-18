@@ -380,6 +380,10 @@ iniciar el cooldown. Al reintentar, SHALL reprocesar el lote completo sin duplic
 `Config::from_env()` SHALL leer `SEMANTIC_MODEL` y, si no está definida, SHALL usar el valor
 de `MEMORY_MODEL`. La llamada de consolidación SHALL usar ese modelo en `ChatRequest.model`.
 La llamada SHALL registrar stats con `profile_id` NULL y `kind='consolidator'`, como las demás llamadas de worker.
+La fila SHALL reflejar el resultado de la **validación posterior**, no solo el del transporte: cuando
+la respuesta llegue pero su contenido no valide (vacío, sin objeto JSON o con un esquema inválido),
+la fila SHALL quedar con `status = 'error'` y el motivo SHALL quedar en `error_message`; solo una
+respuesta que valide SHALL quedar con `status = 'success'`.
 
 **Given** las variables de entorno  
 **When** se construye la configuración  
@@ -401,6 +405,17 @@ La llamada SHALL registrar stats con `profile_id` NULL y `kind='consolidator'`, 
 **When** se registra la petición  
 **Then** `llm_requests.profile_id` es `NULL`  
 **And** `llm_requests.kind` es `'consolidator'`
+
+#### Scenario: Una respuesta que no valida se registra como error
+**Given** una consolidación cuyo contenido validó el transporte pero no la validación posterior (vacío, sin objeto JSON o con esquema inválido)  
+**When** se registra la petición  
+**Then** `llm_requests.status` es `'error'`  
+**And** `llm_requests.error_message` lleva el motivo del fallo de validación
+
+#### Scenario: Una respuesta válida se registra como éxito
+**Given** una consolidación cuyo contenido es un objeto JSON que pasa la validación del esquema  
+**When** se registra la petición  
+**Then** `llm_requests.status` es `'success'`
 
 ### Requirement: Los workers SHALL usar los parámetros de generación de settings en cada llamada
 
@@ -547,28 +562,44 @@ diagnóstico sin depender del log del proveedor.
 
 Al procesar un lote de mensajes sin indexar, el worker SHALL obtener, además de la ficha episódica
 (Capa B) y del estado persistente (Capa C), los **hechos cronológicos** del lote (Capa D), y SHALL
-persistirlos en la tabla `timeline_events` **dentro de la misma transacción** que la ficha, el estado
-y la marca. La extracción SHALL recibir el lote principal **numerado y con la fecha de cada mensaje**
-(la línea de cada mensaje SHALL empezar por su número y por su `created_at`), y el modelo SHALL
-devolver, por cada hecho, el número de la línea de la que procede (`source`), su `category` y su
-`fact`. El `timestamp` y el `source_message_id` de cada hecho SHALL derivarse de ese mensaje de origen
-—su `created_at` y su `id`— y SHALL NOT tomarse de la hora del sistema ni de un valor propuesto por el
-modelo: el extractor SHALL NOT pedirle fechas al modelo. La llamada SHALL usar el modo JSON forzado,
-SHALL tomar su prompt de `settings.timeline_prompt` —con un respaldo mínimo si la clave falta, está
-vacía o no se puede leer— y SHALL registrar su estadística con `kind = 'timeline'`.
+persistirlos en la tabla `timeline_events` **dentro de la misma transacción** que la ficha, el estado y
+la marca. La extracción SHALL recibir el lote principal **numerado y con la fecha y el rol de cada
+mensaje** (la línea de cada mensaje SHALL empezar por su número, por su `created_at` y por su rol), el
+**instante de referencia** del lote y la lista de **hechos ya registrados** de los últimos días. El
+modelo SHALL devolver, por cada hecho, el número de la línea de la que procede (`source`), su `category`
+y su `fact`, y opcionalmente su `timestamp` y su `location`. La llamada SHALL usar el modo JSON forzado,
+SHALL tomar su prompt de `settings.timeline_prompt` —con un respaldo mínimo si la clave falta, está vacía
+o no se puede leer— y SHALL registrar su estadística con `kind = 'timeline'`.
+
+**La fecha SHALL ser la del hecho, no la de la mención.** Cuando el hecho traiga un `timestamp` válido,
+SHALL ser ese su `timestamp`; si falta, no parsea, no lleva desfase horario, está en el futuro más allá
+de la tolerancia admitida o es anterior a la ventana admitida, SHALL caer al `created_at` del mensaje
+citado. El `source_message_id` SHALL ser siempre el `id` de ese mensaje.
 
 #### Scenario: Un lote produce hechos con la fecha de sus mensajes
 - **Given** un lote de mensajes sin indexar, cada uno con su `created_at`
-- **When** el worker lo procesa y el extractor devuelve hechos
+- **When** el worker lo procesa y el extractor devuelve hechos sin `timestamp`
 - **Then** cada hecho se persiste en `timeline_events` con el `timestamp` del mensaje que su `source` señala
 - **And** cada hecho apunta a ese mensaje en `source_message_id`
 - **And** la ficha, el estado y la marca se escriben en la misma transacción
+
+#### Scenario: Una fecha propuesta y válida es la fecha del hecho
+- **Given** un hecho cuyo mensaje citado es de las 15:25 y que trae un `timestamp` válido de las 10:21 del mismo día
+- **When** se valida
+- **Then** el hecho se persiste con las 10:21
 
 #### Scenario: Sin hechos no hay filas nuevas
 - **Given** un lote cuyo extractor devuelve `{"events": []}`
 - **When** el worker lo procesa
 - **Then** NO se inserta ninguna fila en `timeline_events`
 - **And** la ficha, el estado y la marca se escriben igual
+
+#### Scenario: El bloque lleva el rol, el instante de referencia y los hechos conocidos
+- **Given** un lote de mensajes sin indexar y un timeline con hechos de los últimos días
+- **When** el worker construye el bloque de la Capa D
+- **Then** cada línea empieza por su número, su `created_at` y su rol
+- **And** el bloque incluye el instante de referencia del lote
+- **And** el bloque incluye los hechos ya registrados de los últimos días
 
 #### Scenario: El prompt del extractor sale de settings
 - **Given** una clave `timeline_prompt` sembrada en `settings`
@@ -579,16 +610,54 @@ vacía o no se puede leer— y SHALL registrar su estadística con `kind = 'time
 ### Requirement: La extracción de hechos cronológicos SHALL ser best-effort y SHALL NOT abortar la pasada
 
 Un extractor que devuelva contenido vacío, truncado o sin JSON válido SHALL NOT abortar la pasada: la
-ficha episódica, el estado persistente y la marca de `is_indexed` SHALL escribirse igual, SHALL
-registrarse el diagnóstico del contenido y la estadística de la llamada SHALL quedar con
-`status = 'error'` y `kind = 'timeline'`. La validación de cada hecho SHALL descartar sin fallar lo
-inservible: una `category` fuera del conjunto cerrado SHALL normalizarse a `lifestyle` sin perder el
-hecho, un `fact` vacío o en blanco SHALL descartar ese hecho, y un `source` ausente o fuera del lote
-SHALL descartar ese hecho —un hecho que no se puede fechar ni atribuir no se persiste—. Los hechos
-repetidos dentro de un mismo lote SHALL deduplicarse.
+ficha episódica, el estado persistente y la marca de `is_indexed` SHALL escribirse igual y SHALL
+registrarse el diagnóstico del contenido. Antes de darse por vencida, la extracción SHALL reintentarse
+al menos una vez cuando el contenido no sea un objeto JSON interpretable o no contenga la clave
+`events`; los intentos intermedios SHALL registrarse como cualquier otra llamada, y solo tras agotar
+los reintentos SHALL la pasada continuar sin hechos y registrar el fallo con `kind = 'timeline'`. Un
+contenido que sea un **array JSON vacío suelto** (`[]`, y no el envoltorio `{"events": []}`) SHALL
+tratarse como **fallo de forma**: SHALL NOT interpretarse como cero hechos y SHALL NOT registrarse con
+`status = 'success'`; SHALL agotar los reintentos como cualquier otro fallo de forma, y solo tras
+agotarlos SHALL la pasada continuar sin hechos y registrar el fallo con `kind = 'timeline'`. El caso
+de cero hechos **legítimo** SHALL ser el **envoltorio** `{"events": []}`, y ese SHALL quedar con
+`status = 'success'`. La
+validación de cada hecho SHALL descartar sin fallar lo inservible: una `category` fuera del conjunto
+cerrado SHALL normalizarse a `lifestyle` sin perder el hecho; un `fact` vacío o en blanco SHALL
+descartar ese hecho; un `fact` de más de 280 caracteres SHALL descartarse por no ser atómico; un
+`source` ausente o fuera del lote SHALL descartar ese hecho —un hecho que no se puede fechar ni
+atribuir no se persiste—; y un `source` que señale una línea cuyo rol no sea `user` SHALL descartarse:
+los mensajes del asistente son contexto, nunca origen de un hecho. Un `location` vacío o en blanco
+SHALL quedar a `NULL`, y uno de más de 120 caracteres SHALL descartarse. Los hechos repetidos dentro de
+un mismo lote SHALL deduplicarse, y un hecho que ya exista en la tabla para ese mismo día SHALL
+ignorarse sin fallar: la inserción SHALL ser `INSERT OR IGNORE`.
+
+#### Scenario: Un array suelto es un fallo de forma, no cero hechos
+
+- **Given** un lote que cumple las condiciones de procesamiento y un extractor que responde un `[]` suelto **en todos los intentos**
+- **When** el worker procesa la pasada
+- **Then** no se inserta ninguna fila en `timeline_events`
+- **And** la estadística de la llamada queda con `kind = 'timeline'` y `status = 'error'`
+- **And** la ficha episódica, el estado persistente y la marca `is_indexed` se escriben igual
+- **And** la pasada no falla
+
+#### Scenario: Un array vacío es cero hechos, no un error
+
+- **Given** un lote que cumple las condiciones de procesamiento y un extractor que responde un array vacío **dentro del envoltorio** (`{"events": []}`)
+- **When** el worker procesa la pasada
+- **Then** no se inserta ninguna fila en `timeline_events`
+- **And** la estadística de la llamada queda con `kind = 'timeline'` y `status = 'success'`
+- **And** la pasada no falla
+
+#### Scenario: Un fallo de forma se reintenta antes de rendirse
+
+- **Given** un extractor que no devuelve el envoltorio `{"events": [...]}` en el primer intento y sí lo devuelve, con hechos válidos, en el siguiente
+- **When** el worker procesa la pasada
+- **Then** los hechos del intento que sí traía el envoltorio se persisten
+- **And** la pasada no falla
 
 #### Scenario: Un extractor inservible no pierde el lote
-- **Given** un lote que cumple las condiciones de procesamiento y un extractor que responde vacío o sin JSON válido
+
+- **Given** un lote que cumple las condiciones de procesamiento y un extractor que responde vacío o sin JSON válido **en todos los intentos**
 - **When** el worker procesa la pasada
 - **Then** la ficha episódica se escribe
 - **And** el estado persistente se escribe
@@ -596,27 +665,66 @@ repetidos dentro de un mismo lote SHALL deduplicarse.
 - **And** la estadística de la llamada queda con `kind = 'timeline'` y `status = 'error'`
 
 #### Scenario: Una categoría desconocida no descarta el hecho
+
 - **Given** un hecho cuya `category` está fuera del conjunto cerrado
 - **When** se valida el hecho
 - **Then** se persiste con la categoría `lifestyle`
 - **And** el hecho no se pierde
 
 #### Scenario: Un fact vacío descarta solo ese hecho
+
 - **Given** un extractor que devuelve dos hechos, uno de ellos con `fact` en blanco
 - **When** se validan
 - **Then** solo se persiste el hecho con texto
 - **And** la pasada no falla
 
+#### Scenario: Un fact desmedido descarta solo ese hecho
+
+- **Given** un extractor que devuelve un hecho cuyo `fact` pasa de 280 caracteres
+- **When** se valida
+- **Then** ese hecho se descarta
+- **And** el resto del lote se persiste con normalidad
+
 #### Scenario: Un source fuera del lote descarta solo ese hecho
+
 - **Given** un extractor que devuelve un hecho cuyo `source` no es un número del lote
 - **When** se valida el hecho
 - **Then** ese hecho se descarta
 - **And** el resto del lote se persiste con normalidad
 
+#### Scenario: Un hecho del asistente no se persiste
+
+- **Given** un extractor que devuelve un hecho cuyo `source` señala una línea de rol `assistant`
+- **When** se valida
+- **Then** ese hecho se descarta
+- **And** el resto del lote se persiste con normalidad
+
+#### Scenario: Una fecha inservible cae al mensaje citado
+
+- **Given** un hecho cuyo `timestamp` no parsea, no lleva desfase horario, está en el futuro o es anterior a la ventana admitida
+- **When** se valida
+- **Then** el hecho se persiste con el `created_at` del mensaje citado
+- **And** el hecho no se pierde
+
+#### Scenario: Un lugar inservible queda a nulo
+
+- **Given** un hecho con `location` vacío o de más de 120 caracteres
+- **When** se valida
+- **Then** el hecho se persiste con `location` a `NULL`
+- **And** el hecho no se pierde
+
 #### Scenario: Los hechos repetidos se deduplican
+
 - **Given** un lote cuyo extractor devuelve dos veces el mismo hecho
 - **When** se persisten
 - **Then** queda una sola fila en `timeline_events`
+
+#### Scenario: Un hecho que ya está en la tabla no se duplica
+
+- **Given** un hecho ya registrado en `timeline_events` para un día
+- **When** una pasada posterior vuelve a extraer ese mismo hecho con ese mismo día
+- **Then** no se inserta una segunda fila
+- **And** la pasada termina sin error
 
 ### Requirement: El modelo del extractor SHALL ser configurable y SHALL usar los parámetros de su propio rol
 
@@ -639,3 +747,287 @@ caer al default de ese rol.
 - **Given** un `settings` sin ninguna clave `GENERATION_TIMELINE_*`
 - **When** se leen los parámetros de generación del extractor
 - **Then** se usan los defaults del rol `GENERATION_TIMELINE_*`
+
+### Requirement: El prompt sembrado del extractor SHALL definir qué es un hecho y SHALL pedir fecha y lugar
+
+El valor sembrado de `timeline_prompt` SHALL definir un hecho como **un acontecimiento del pasado,
+completo y comprensible sin la conversación**, y SHALL decir explícitamente que las fases de un mismo
+acontecimiento son **un solo hecho** y no varios: salir a correr, correr diez kilómetros y terminar el
+entrenamiento son un único hecho. SHALL excluir expresamente las órdenes o peticiones dirigidas al
+asistente, los estados transitorios, las opiniones, las preguntas y los planes futuros. SHALL pedir el
+`location` cuando el mensaje lo diga, SHALL pedir el `timestamp` del hecho en ISO 8601 cuando se pueda
+deducir del mensaje, y SHALL ordenar no repetir ningún hecho ya registrado —ni con las mismas palabras ni
+con otras—. Para el lote que no contenga ningún hecho, SHALL pedir el envoltorio `{"events": []}` —la
+forma exacta del contrato de salida— y SHALL NOT pedir una lista suelta `[]`. El respaldo mínimo del
+código SHALL ser coherente con ese contrato.
+
+#### Scenario: El prompt sembrado excluye lo que no es un hecho
+- **Given** el valor sembrado de `timeline_prompt`
+- **When** se inspecciona
+- **Then** nombra las órdenes dirigidas al asistente y los estados transitorios entre lo que no debe extraerse
+
+#### Scenario: El prompt sembrado une las fases de un acontecimiento
+- **Given** el valor sembrado de `timeline_prompt`
+- **When** se inspecciona
+- **Then** dice que las fases de un mismo acontecimiento son un solo hecho
+- **And** pone el ejemplo de salir a correr, correr y terminar el entrenamiento
+
+#### Scenario: El prompt sembrado pide fecha y lugar
+- **Given** el valor sembrado de `timeline_prompt`
+- **When** se inspecciona
+- **Then** pide el `timestamp` del hecho en ISO 8601
+- **And** pide el `location` cuando el mensaje lo diga
+
+#### Scenario: El prompt sembrado prohíbe repetir lo ya registrado
+- **Given** el valor sembrado de `timeline_prompt`
+- **When** se inspecciona
+- **Then** ordena no repetir los hechos ya registrados que se le listan
+- **And** no solo con las mismas palabras, también con otras
+
+#### Scenario: El prompt sembrado pide el envoltorio vacío para el lote sin hechos
+- **Given** el valor sembrado de `timeline_prompt`
+- **When** se inspecciona
+- **Then** pide el objeto `{"events": []}` para el lote que no contiene ningún hecho
+- **And** NO pide una lista suelta `[]`
+
+### Requirement: WorkerPool SHALL incluir el ReminderPushWorker
+
+El `WorkerPool` SHALL arrancar un `ReminderPushWorker` junto al resto de workers y SHALL detenerlo
+con la señal de `shutdown`, siguiendo el mismo patrón que `EpisodicMemoryWorker`.
+
+#### Scenario: El arranque del pool arranca el worker
+
+- **Given** un `WorkerPool::start()`
+- **When** se inicia el pool
+- **Then** arranca el `ReminderPushWorker`
+- **And** la referencia al worker queda retenida en el pool
+
+#### Scenario: El shutdown detiene el worker
+
+- **Given** un `WorkerPool` en marcha
+- **When** se emite la señal de `shutdown`
+- **Then** el `ReminderPushWorker` se detiene
+
+### Requirement: El worker SHALL entregar cada recordatorio vencido al menos una vez
+
+En cada ciclo —de 60 segundos— el worker SHALL seleccionar los `reminders` con `status='pending'`,
+`notified_at IS NULL` y `datetime <= ahora`, y al entregar uno con éxito SHALL fijar su `notified_at`.
+
+La garantía es *at-least-once*: si el proceso muere entre el envío correcto y la marca, el ciclo
+siguiente reenvía el aviso. El `tag` del payload evita apilar dos avisos del mismo recordatorio, pero
+no elimina la repetición; un aviso puede repetirse en ese caso.
+
+#### Scenario: Un recordatorio vencido se envía y se marca
+
+- **Given** un recordatorio vencido con `status='pending'` y `notified_at` a `NULL`, y al menos una suscripción
+- **When** el worker ejecuta un ciclo
+- **Then** se envía el aviso
+- **And** el recordatorio queda con `notified_at` fijado
+
+#### Scenario: El mismo recordatorio no se reenvía en el ciclo siguiente
+
+- **Given** un recordatorio ya entregado y marcado con `notified_at`
+- **When** el worker ejecuta otro ciclo
+- **Then** el recordatorio no se selecciona
+- **And** no se envía ningún aviso de nuevo
+
+#### Scenario: Un recordatorio futuro no se toca
+
+- **Given** un recordatorio cuyo `datetime` es posterior a `ahora`
+- **When** el worker ejecuta un ciclo
+- **Then** el recordatorio no se selecciona
+- **And** su `notified_at` sigue a `NULL`
+
+### Requirement: El worker SHALL NO consumir un recordatorio cuando no hay ninguna suscripción
+
+Sin dispositivos suscritos el worker SHALL NOT marcar `notified_at`: el recordatorio SHALL entregarse
+cuando aparezca una suscripción, si sigue dentro de la ventana.
+
+#### Scenario: Sin suscripciones no hay envío ni marca
+
+- **Given** un recordatorio vencido y ninguna suscripción registrada
+- **When** el worker ejecuta un ciclo
+- **Then** no se envía ningún aviso
+- **And** el recordatorio sigue con `notified_at` a `NULL`
+
+#### Scenario: Al aparecer una suscripción se entrega el recordatorio vigente
+
+- **Given** un recordatorio vencido que sigue dentro de la ventana y ninguna suscripción
+- **When** se registra un dispositivo y el worker ejecuta el ciclo siguiente
+- **Then** el recordatorio se entrega
+- **And** su `notified_at` queda fijado
+
+### Requirement: Los recordatorios vencidos fuera de la ventana SHALL descartarse sin entregarse
+
+Si `ahora - datetime` supera `push_reminder_grace_hours` —por defecto 24 horas—, el worker SHALL
+fijar `notified_at` y registrar un aviso, sin enviar, para no inundar de avisos antiguos al primer
+dispositivo que se suscriba.
+
+#### Scenario: Un recordatorio vencido dentro de la ventana se entrega
+
+- **Given** un recordatorio vencido hace menos de la ventana configurada
+- **When** el worker ejecuta un ciclo
+- **Then** el recordatorio se entrega
+- **And** su `notified_at` queda fijado
+
+#### Scenario: Un recordatorio vencido fuera de la ventana se descarta con un aviso
+
+- **Given** un recordatorio vencido hace más que la ventana configurada
+- **When** el worker ejecuta un ciclo
+- **Then** no se envía ningún aviso
+- **And** su `notified_at` queda fijado
+- **And** se registra un aviso de descarte
+
+#### Scenario: El umbral se lee del ajuste y con '0' todo queda fuera de ventana
+
+- **Given** `push_reminder_grace_hours` con el valor `'0'`
+- **When** el worker evaluaba un recordatorio ya vencido
+- **Then** se considera fuera de la ventana
+- **And** se marca sin enviarse
+
+### Requirement: El payload del aviso SHALL identificar el recordatorio
+
+El payload del aviso SHALL llevar `title` «Recordatorio», `body` el texto del recordatorio, `url` `/`
+y `tag` `reminder-<id>`, de modo que el `tag` evite que dos avisos del mismo recordatorio se apilen.
+
+#### Scenario: El payload contiene el texto del recordatorio
+
+- **Given** un recordatorio con su texto
+- **When** el worker construye el payload del aviso
+- **Then** el `body` es el texto del recordatorio
+- **And** el `title` es «Recordatorio»
+- **And** el `url` es `/`
+
+#### Scenario: El tag incluye el id del recordatorio
+
+- **Given** un recordatorio con su `id`
+- **When** el worker construye el payload del aviso
+- **Then** el `tag` es `reminder-<id>`
+
+### Requirement: El envío SHALL ser inyectable para poder probarlo sin red
+
+El worker SHALL depender de una abstracción `PushSender` y SHALL NO construir el cliente HTTP por
+dentro, de modo que las pruebas puedan sustituirlo.
+
+#### Scenario: Un PushSender de prueba registra las llamadas
+
+- **Given** un `PushSender` de prueba inyectado en el worker
+- **When** el worker entrega un recordatorio
+- **Then** el sender de prueba registra la llamada de envío
+
+#### Scenario: El worker no falla si el sender devuelve error
+
+- **Given** un `PushSender` de prueba que devuelve un error
+- **When** el worker intenta entregar un recordatorio
+- **Then** el worker no se cae
+- **And** registra el error
+
+### Requirement: El resumen del ciclo SHALL contabilizar el resultado por suscripción
+
+`TickOutcome` SHALL contar, además de sus contadores actuales de recordatorios (`delivered`,
+`skipped_old`, `pruned`, `unparseable`), el resultado de cada envío individual: cuántos envíos se
+intentaron (`attempted`), cuántos aceptó el push service (`accepted`) y cuántos fallaron (`failed`).
+`failed` SHALL agrupar **todo lo que no fue aceptado ni depurado**: los rechazos del push service
+(`Failed`, cualquier código que no sea 404/410) y los errores de transporte. Un envío que termina
+en `Err(PushError)` —fallo de red, timeout o respuesta ilegible— SHALL contar como **intentado**
+(`attempted`) y como **fallido** (`failed`), porque desde la perspectiva de la observabilidad es un
+envío que **no llegó**, exactamente igual que un 5xx, y SHALL NOT desaparecer del recuento ni
+contarse como aceptado. Una suscripción depurada por `Gone` (404/410) SHALL contar como
+**intentada** y como **depurada** (`pruned`), y SHALL NOT contar como fallida. La decisión de
+registrar el resumen SHALL vivir en un predicado puro sobre los contadores, `should_log_summary`,
+que SHALL ser verdadero cuando **cualquiera** de ellos sea distinto de cero —incluidos `unparseable`
+y `failed`—.
+
+#### Scenario: Una mezcla de resultados cuenta cada suscripción por separado
+
+- **Given** un recordatorio vencido y 3 suscripciones registradas
+- **When** el sender devuelve `Delivered`, `Gone` y `Failed` respectivamente
+- **Then** `attempted` es 3, `accepted` es 1, `pruned` es 1 y `failed` es 1
+- **And** `delivered` es 1, porque al menos una entrega fue aceptada y el recordatorio se marca
+
+#### Scenario: Un fallo de transporte cuenta como intentado y fallido
+
+- **Given** un recordatorio vencido y una suscripción registrada
+- **When** el sender devuelve `Err(PushError)` —un fallo de red, un timeout o una respuesta ilegible—
+- **Then** `attempted` es 1, `failed` es 1, `accepted` es 0 y `pruned` es 0
+- **And** `delivered` es 0 y el recordatorio NO se marca
+- **And** `should_log_summary()` es verdadero
+
+#### Scenario: Todos los envíos fallan pide resumen aunque no haya entrega
+
+- **Given** un recordatorio vencido y 2 suscripciones registradas
+- **When** el sender devuelve `Failed` en ambas
+- **Then** `failed` es 2, `accepted` es 0 y `delivered` es 0
+- **And** el recordatorio NO se marca
+- **And** `should_log_summary()` es verdadero
+
+#### Scenario: Un ciclo sin nada que hacer no registra resumen
+
+- **Given** ninguna suscripción registrada y ningún recordatorio vencido
+- **When** el worker ejecuta un ciclo
+- **Then** todos los contadores son 0
+- **And** `should_log_summary()` es falso
+
+#### Scenario: Un datetime no parseable se cuenta y pide resumen
+
+- **Given** un recordatorio pendiente sin notificar cuyo `datetime` no parsea
+- **When** el worker ejecuta un ciclo
+- **Then** `unparseable` es 1 y `delivered` es 0
+- **And** el recordatorio NO se marca
+- **And** `should_log_summary()` es verdadero
+
+#### Scenario: Sin suscripciones no hay envíos intentados
+
+- **Given** un recordatorio vencido y ninguna suscripción registrada
+- **When** el worker ejecuta un ciclo
+- **Then** `attempted` es 0 y `accepted` es 0
+- **And** `delivered` es 0 y el recordatorio NO se marca
+
+### Requirement: Los registros SHALL NOT exponer el endpoint completo de una suscripción
+
+Un endpoint de suscripción es una URL de capacidad. Los registros del `ReminderPushWorker` SHALL
+incluir solo el **host** del endpoint y el identificador de la suscripción, y SHALL NOT incluir la
+URL completa del endpoint. La extracción del host SHALL ser un ayudante puro que devuelva el host de
+una URL normal y un marcador (`(endpoint no parseable)`) cuando el valor no rinda un host
+reconocible, sin devolver nunca la cadena original.
+
+#### Scenario: Un fallo de envío redacta el endpoint
+
+- **Given** una suscripción cuyo endpoint es `https://fcm.googleapis.com/fcm/send/<identificador-largo>`
+- **When** el sender devuelve `Failed`
+- **Then** el registro incluye `fcm.googleapis.com`
+- **And** el registro NO incluye la ruta `/fcm/send/<identificador-largo>`
+
+#### Scenario: El ayudante devuelve el host de una URL normal
+
+- **Given** el endpoint `https://fcm.googleapis.com/fcm/send/abc`
+- **When** se extrae el host
+- **Then** devuelve `fcm.googleapis.com`
+
+#### Scenario: El ayudante marca lo que no puede interpretar
+
+- **Given** un endpoint sin host reconocible, como una cadena vacía
+- **When** se extrae el host
+- **Then** devuelve el marcador `(endpoint no parseable)`
+- **And** NO devuelve la cadena original
+
+### Requirement: La petición del consolidador SHALL incluir un turno de usuario además del de sistema
+
+La llamada de consolidación SHALL enviar `ChatRequest.messages` con, al menos, un mensaje de rol
+`user` **además** del mensaje de rol `system` que porta el prompt. El turno de usuario SHALL ser no
+vacío. La forma de un único mensaje `system` SHALL NOT usarse para la consolidación: el modelo
+configurado devuelve contenido vacío con `finish_reason = "stop"` ante esa forma, y un contenido
+vacío no es un error de transporte, de modo que la avería pasa inadvertida. El mensaje de sistema
+SHALL seguir llevando el prompt configurable por el usuario.
+
+#### Scenario: La petición de consolidación lleva turno de usuario
+- **Given** una consolidación en curso
+- **When** el worker construye el `ChatRequest`
+- **Then** `messages` contiene un mensaje de rol `user` no vacío
+- **And** contiene el mensaje de rol `system` con el prompt de consolidación
+
+#### Scenario: El prompt configurable no cambia de rol
+- **Given** un `consolidator_prompt` personalizado en `settings`
+- **When** el worker construye la petición de consolidación
+- **Then** el mensaje de rol `system` es ese valor
+- **And** el turno de usuario es independiente del prompt

@@ -59,6 +59,16 @@ vi.mock("../api/client", () => ({
   },
 }));
 
+// react-chartjs-2 monta un canvas real que jsdom no puede resolver: chart.js
+// revienta al adquirir el contexto y tumba el test. Los gráficos no son lo que
+// aquí se verifica (lo que importa es el título del panel y los datos), así que
+// se sustituyen por un stub sin canvas.
+vi.mock("react-chartjs-2", () => ({
+  Bar: () => <div data-testid="chart-stub" />,
+  Line: () => <div data-testid="chart-stub" />,
+  Doughnut: () => <div data-testid="chart-stub" />,
+}));
+
 // antd `App.useApp()` exige un `<App>` ancestro. Sin él el contexto por defecto
 // son objetos vacíos: `messageApi.success` sería `undefined` y lanzaría un
 // TypeError (fallo ruidoso, no un fallback silencioso a la API estática).
@@ -119,7 +129,7 @@ describe("StatsDashboard", () => {
 
     // Click "Modelos" tab and verify its content
     fireEvent.click(screen.getByText("🤖 Modelos"));
-    expect(await screen.findByText("Cost by Model")).toBeInTheDocument();
+    expect(await screen.findByText(/cost by model/i)).toBeInTheDocument();
     expect(await screen.findByText("Daily Activity")).toBeInTheDocument();
 
     // Click "Sistema" tab and verify its content
@@ -139,12 +149,15 @@ describe("StatsDashboard", () => {
     vi.mocked(api.getStatsBackground).mockResolvedValue([
       {
         kind: "router",
+        model: "gpt-4o",
         calls: 5,
         input_tokens: 100,
         output_tokens: 50,
         total_tokens: 150,
         total_cost: 0.001234,
         total_errors: 0,
+        suspicious_calls: 0,
+        last_call_at: null,
         avg_duration_ms: 120,
       },
     ]);
@@ -155,6 +168,42 @@ describe("StatsDashboard", () => {
     fireEvent.click(await screen.findByText("🤖 Modelos"));
 
     expect(await screen.findByText("Procesos de fondo")).toBeInTheDocument();
+  });
+
+  it("parte de 7 días y la ventana gobierna las tres consultas", async () => {
+    vi.mocked(api.getStatsSummary).mockResolvedValue(mockSummary);
+    vi.mocked(api.getStatsByModel).mockResolvedValue(mockByModel);
+    vi.mocked(api.getStatsByDay).mockResolvedValue(mockByDay);
+    vi.mocked(api.getStatsTools).mockResolvedValue(mockTools);
+    vi.mocked(api.getDbSizes).mockResolvedValue(mockDbSizes);
+    vi.mocked(api.getMemoryStats).mockResolvedValue(mockMemory);
+    vi.mocked(api.getStatsBackground).mockResolvedValue([]);
+    vi.mocked(api.getLastApiCall).mockResolvedValue(null);
+
+    renderDashboard(<StatsDashboard />);
+
+    await screen.findByText("LLM Usage Summary");
+
+    // Valor por defecto: 7 días, propagado a las tres consultas.
+    await waitFor(() => {
+      expect(api.getStatsByDay).toHaveBeenCalledWith(7);
+      expect(api.getStatsByModel).toHaveBeenCalledWith(7);
+      expect(api.getStatsBackground).toHaveBeenCalledWith(7);
+    });
+
+    vi.mocked(api.getStatsByDay).mockClear();
+    vi.mocked(api.getStatsByModel).mockClear();
+    vi.mocked(api.getStatsBackground).mockClear();
+
+    // Cambiar la ventana repite las tres consultas con el nuevo valor.
+    fireEvent.click(screen.getByText("🤖 Modelos"));
+    fireEvent.click(await screen.findByRole("button", { name: "30d" }));
+
+    await waitFor(() => {
+      expect(api.getStatsByDay).toHaveBeenCalledWith(30);
+      expect(api.getStatsByModel).toHaveBeenCalledWith(30);
+      expect(api.getStatsBackground).toHaveBeenCalledWith(30);
+    });
   });
 
   it("renders empty state when no data", async () => {

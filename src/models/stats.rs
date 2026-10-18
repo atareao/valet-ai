@@ -42,17 +42,29 @@ pub struct StatsSummary {
     pub avg_duration_ms: Option<f64>,
 }
 
-/// Aggregate LLM usage for a single background origin (non-chat).
+/// Aggregate LLM usage for a single (background origin, model) pair.
+///
+/// One row per pair of a non-chat origin and the model that served it. A
+/// canonical origin with no rows is reported with the counters at zero and
+/// `model: None`, so the absence of a role is visible rather than silent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackgroundStats {
     pub kind: String,
+    /// The model that served the pair; `None` for a canonical origin with no
+    /// rows.
+    pub model: Option<String>,
     pub calls: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub total_cost: f64,
     pub total_errors: u64,
+    /// Successful calls with `completion_tokens <= SUSPICIOUS_MAX_COMPLETION_TOKENS`:
+    /// an empty response recorded as a success, invisible to `total_errors`.
+    pub suspicious_calls: u64,
     pub avg_duration_ms: Option<f64>,
+    /// `MAX(created_at)` of the pair; `None` if the origin has no rows.
+    pub last_call_at: Option<String>,
 }
 
 /// Per-model breakdown of LLM usage.

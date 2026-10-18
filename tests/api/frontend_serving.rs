@@ -224,3 +224,49 @@ async fn test_manifest_is_served() {
         "Expected manifest JSON to contain a \"name\" field, got: {body_str}"
     );
 }
+
+/// Asserts that GET /sw.js serves the real service worker as JavaScript and NOT
+/// the SPA fallback.
+///
+/// Regression guard: if `static/sw.js` were missing, the SPA fallback would serve
+/// `static/index.html` (`text/html`) at `/sw.js`. The browser would then reject
+/// the service-worker registration, leaving the Notifications tab waiting forever.
+#[tokio::test]
+async fn test_sw_js_is_served_as_javascript() {
+    let app = valet::app().await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/sw.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        content_type.contains("javascript"),
+        "Expected a JavaScript content-type, got: {content_type}"
+    );
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_str = String::from_utf8_lossy(&body_bytes);
+    assert!(
+        body_str.contains("addEventListener"),
+        "Expected the service worker source to contain 'addEventListener', got: {body_str}"
+    );
+    assert!(
+        !body_str.to_ascii_lowercase().contains("<html"),
+        "Expected the service worker source, but body looked like the SPA fallback HTML"
+    );
+}

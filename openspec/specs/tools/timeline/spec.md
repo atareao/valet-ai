@@ -14,7 +14,7 @@ de un rango de fechas, opcionalmente acotados por categoría. Los parámetros `s
 fechas ISO 8601 e inclusivas; `category` SHALL ser uno de los siete valores del conjunto cerrado y
 `limit` SHALL acotar el número de filas devueltas, con 50 por defecto. El resultado SHALL venir
 ordenado de más reciente a más antiguo y cada hecho SHALL llevar su `id`, su `timestamp`, su
-`category` y su `fact`.
+`category`, su `fact` y su `location`, que SHALL ser `null` cuando el hecho no tenga lugar.
 
 #### Scenario: Un rango devuelve los hechos del periodo
 - **Given** un timeline con hechos de varios días
@@ -39,12 +39,21 @@ ordenado de más reciente a más antiguo y cada hecho SHALL llevar su `id`, su `
 - **Then** se devuelven a lo sumo `limit` hechos
 - **And** son los más recientes
 
+#### Scenario: Cada hecho lleva su lugar, o nulo
+- **Given** un timeline con un hecho con `location` y otro sin ella
+- **When** se consultan
+- **Then** el primero la devuelve con su valor
+- **And** el segundo la devuelve a `null`
+
 ### Requirement: `timeline_add_event` SHALL registrar un hecho con la hora actual por defecto
 
 La herramienta `timeline_add_event` SHALL insertar un hecho en `timeline_events` a partir de un `fact`
-obligatorio, una `category` opcional —`lifestyle` por defecto— y un `timestamp` opcional que, si se
-omite, SHALL ser la hora actual en UTC. La herramienta SHALL validar que el `fact` no esté vacío ni en
-blanco y SHALL rechazar una `category` fuera del conjunto cerrado. Una inserción correcta SHALL
+obligatorio, una `category` opcional —`lifestyle` por defecto—, un `timestamp` opcional que, si se
+omite, SHALL ser la hora actual en UTC, y un `location` opcional que SHALL quedar a `NULL` cuando falte,
+esté en blanco o pase de 120 caracteres. La herramienta SHALL validar que el `fact` no esté vacío ni en
+blanco y SHALL rechazar una `category` fuera del conjunto cerrado. Cuando el hecho ya exista en el
+timeline para ese mismo día, la inserción SHALL ignorarse sin fallar y la herramienta SHALL informar de
+que el hecho ya estaba registrado, sin devolver un identificador nuevo. Una inserción correcta SHALL
 devolver el identificador del hecho creado.
 
 #### Scenario: Sin timestamp se usa la hora actual
@@ -59,11 +68,28 @@ devolver el identificador del hecho creado.
 - **When** se ejecuta
 - **Then** el hecho se guarda con esa fecha y esa categoría
 
+#### Scenario: El lugar se guarda cuando viene
+- **Given** una llamada con `fact` y `location`
+- **When** se ejecuta
+- **Then** el hecho se guarda con ese lugar
+
+#### Scenario: Un lugar inservible queda a nulo
+- **Given** una llamada cuyo `location` está en blanco o pasa de 120 caracteres
+- **When** se ejecuta
+- **Then** el hecho se guarda con `location` a `NULL`
+- **And** el hecho no se pierde
+
 #### Scenario: Un fact vacío es un argumento inválido
 - **Given** una llamada cuyo `fact` está vacío o solo tiene espacios
 - **When** se ejecuta
 - **Then** devuelve un error de argumentos inválidos
 - **And** no inserta ninguna fila
+
+#### Scenario: Un hecho repetido el mismo día no se duplica
+- **Given** un hecho ya registrado hoy
+- **When** se llama a `timeline_add_event` con el mismo `fact` y el mismo día
+- **Then** no se inserta una segunda fila
+- **And** la herramienta informa de que el hecho ya estaba registrado
 
 ### Requirement: `timeline_delete_event` SHALL borrar un hecho por su id exigiendo aprobación
 
