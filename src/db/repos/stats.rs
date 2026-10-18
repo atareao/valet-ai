@@ -19,12 +19,13 @@ const SUSPICIOUS_MAX_COMPLETION_TOKENS: i64 = 1;
 ///
 /// The order is deliberate, not alphabetical; it is fixed here in Rust because
 /// the database cannot know it.
-const CANONICAL_BACKGROUND_KINDS: [&str; 5] = [
+const CANONICAL_BACKGROUND_KINDS: [&str; 6] = [
     "router",
     "archivist",
     "consolidator",
     "collapse",
     "timeline",
+    "journal",
 ];
 
 /// Repository for LLM usage statistics and administrative operations.
@@ -357,12 +358,12 @@ impl StatsRepo {
     /// Aggregate LLM usage per (non-chat origin, model) pair.
     ///
     /// Returns one [`BackgroundStats`] per pair of a canonical background
-    /// origin (`router`, `archivist`, `consolidator`, `collapse`, `timeline`)
-    /// and the model that served it. A canonical origin with no rows is still
-    /// reported — counters at zero, `model: None` — so a role that never runs
-    /// stays visible. Rows are ordered by canonical origin and, within an
-    /// origin, by total cost descending. The `days` window filters
-    /// `created_at >= datetime('now', '-N days')`.
+    /// origin (`router`, `archivist`, `consolidator`, `collapse`, `timeline`,
+    /// `journal`) and the model that served it. A canonical origin with no
+    /// rows is still reported — counters at zero, `model: None` — so a role
+    /// that never runs stays visible. Rows are ordered by canonical origin
+    /// and, within an origin, by total cost descending. The `days` window
+    /// filters `created_at >= datetime('now', '-N days')`.
     ///
     /// A window smaller than one day is clamped to one day (`days.max(1)`), so
     /// `days = 0` means "at least the last 24 hours" instead of collapsing to
@@ -1649,7 +1650,7 @@ mod tests {
         .await;
 
         let bg = StatsRepo::background_summary(&pool, 30).await.unwrap();
-        assert_eq!(bg.len(), 5, "one entry per non-chat origin");
+        assert_eq!(bg.len(), 6, "one entry per non-chat origin");
 
         let find = |kind: &str| {
             bg.iter()
@@ -1682,9 +1683,14 @@ mod tests {
         assert_eq!(consolidator.calls, 0);
         assert_eq!(consolidator.total_tokens, 0);
         assert!(consolidator.avg_duration_ms.is_none());
+
+        let journal = find("journal");
+        assert_eq!(journal.calls, 0);
+        assert_eq!(journal.total_tokens, 0);
+        assert!(journal.avg_duration_ms.is_none());
     }
 
-    /// With only chat rows the five background origins are still returned, all
+    /// With only chat rows the six background origins are still returned, all
     /// at zero.
     #[tokio::test]
     async fn test_background_summary_no_background_calls() {
@@ -1707,7 +1713,7 @@ mod tests {
         .await;
 
         let bg = StatsRepo::background_summary(&pool, 30).await.unwrap();
-        assert_eq!(bg.len(), 5, "one entry per non-chat origin");
+        assert_eq!(bg.len(), 6, "one entry per non-chat origin");
 
         for kind in [
             "router",
@@ -1715,6 +1721,7 @@ mod tests {
             "consolidator",
             "collapse",
             "timeline",
+            "journal",
         ] {
             let entry = bg
                 .iter()
@@ -1885,14 +1892,14 @@ mod tests {
         assert_eq!(consolidator[1].calls, 2);
     }
 
-    /// The five canonical origins are always present. Those with no rows keep
+    /// The six canonical origins are always present. Those with no rows keep
     /// zeroed counters, `model: None` and `last_call_at: None`.
     #[tokio::test]
     async fn test_background_summary_zero_fill_and_model_none() {
         let pool = setup().await;
 
         let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
-        assert_eq!(bg.len(), 5, "one zero-filled entry per canonical origin");
+        assert_eq!(bg.len(), 6, "one zero-filled entry per canonical origin");
 
         let kinds: Vec<&str> = bg.iter().map(|b| b.kind.as_str()).collect();
         assert_eq!(
@@ -1902,7 +1909,8 @@ mod tests {
                 "archivist",
                 "consolidator",
                 "collapse",
-                "timeline"
+                "timeline",
+                "journal"
             ]
         );
 
@@ -1937,7 +1945,8 @@ mod tests {
                 "archivist",
                 "consolidator",
                 "collapse",
-                "timeline"
+                "timeline",
+                "journal"
             ]
         );
     }
@@ -2325,7 +2334,7 @@ mod tests {
     // ── 19. background_summary descarta kinds no canónicos ─────────────────
 
     /// A row whose `kind` is not in the canonical list is silently discarded: it
-    /// never appears in the output and it neither shifts nor corrupts the five
+    /// never appears in the output and it neither shifts nor corrupts the six
     /// canonical entries. The table's CHECK would reject `'weird'`, so
     /// check-constraint enforcement is disabled for the two inserts that
     /// deliberately plant the out-of-band row.
@@ -2380,7 +2389,7 @@ mod tests {
 
         let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
 
-        assert_eq!(bg.len(), 5, "a non-canonical kind must not add an entry");
+        assert_eq!(bg.len(), 6, "a non-canonical kind must not add an entry");
         assert!(
             bg.iter().all(|b| b.kind != "weird"),
             "the non-canonical kind must be discarded"
@@ -2393,9 +2402,10 @@ mod tests {
                 "archivist",
                 "consolidator",
                 "collapse",
-                "timeline"
+                "timeline",
+                "journal"
             ],
-            "the five canonical entries must be intact and in order"
+            "the six canonical entries must be intact and in order"
         );
 
         // The discarded row must not have leaked into the canonical router entry.
@@ -2417,15 +2427,48 @@ mod tests {
         let pool = setup().await;
 
         insert_request_with_kind(
-            &pool, "j-1", "journal", "m", 10, 5, 15, 0.001, Some(50), "success", None, None,
+            &pool,
+            "j-1",
+            "journal",
+            "m",
+            10,
+            5,
+            15,
+            0.001,
+            Some(50),
+            "success",
+            None,
+            None,
         )
         .await;
         insert_request_with_kind(
-            &pool, "j-2", "journal", "m", 20, 10, 30, 0.002, Some(60), "error", None, None,
+            &pool,
+            "j-2",
+            "journal",
+            "m",
+            20,
+            10,
+            30,
+            0.002,
+            Some(60),
+            "error",
+            None,
+            None,
         )
         .await;
         insert_request_with_kind(
-            &pool, "j-3", "journal", "m", 20, 10, 30, 0.002, Some(60), "error", None, None,
+            &pool,
+            "j-3",
+            "journal",
+            "m",
+            20,
+            10,
+            30,
+            0.002,
+            Some(60),
+            "error",
+            None,
+            None,
         )
         .await;
 

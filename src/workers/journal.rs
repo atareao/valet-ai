@@ -1518,9 +1518,17 @@ mod tests {
     // ════════════════════════════════════════════════════════════════════════
 
     /// Scenario: Un prompt ausente usa el respaldo mínimo.
+    ///
+    /// En una base recién migrada `journal_prompt` ya viene sembrado (grupos 7/8
+    /// de `tasks.md`): para ejercitar el camino de «ausente» —una base previa a
+    /// la siembra o una clave borrada— el test retira la clave sembrada.
     #[tokio::test]
     async fn test_journal_prompt_absent_uses_the_code_fallback_with_a_warning() {
         let db = test_db().await;
+        sqlx::query("DELETE FROM settings WHERE key = 'journal_prompt'")
+            .execute(&db)
+            .await
+            .unwrap();
 
         let settings = JournalSettings::load(&db).await;
         assert_eq!(settings.prompt, DEFAULT_JOURNAL_PROMPT_FALLBACK);

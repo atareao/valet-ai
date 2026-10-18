@@ -136,10 +136,11 @@ async fn test_llm_requests_kind_check_accepts_journal_and_timeline() {
     assert_eq!(count, 2, "the two rows must exist side by side");
 
     // An origin outside the closed set is still rejected by the CHECK.
-    let invalid =
-        sqlx::query("INSERT INTO llm_requests (id, model, kind) VALUES ('row-bad', 'm', 'invalid_kind')")
-            .execute(&pool)
-            .await;
+    let invalid = sqlx::query(
+        "INSERT INTO llm_requests (id, model, kind) VALUES ('row-bad', 'm', 'invalid_kind')",
+    )
+    .execute(&pool)
+    .await;
     assert!(
         invalid.is_err(),
         "kind='invalid_kind' must be rejected by the widened CHECK"
@@ -214,7 +215,10 @@ async fn test_llm_requests_migration_rebuild_is_idempotent() {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(count, 2, "the journal row must insert after the second rebuild");
+    assert_eq!(
+        count, 2,
+        "the journal row must insert after the second rebuild"
+    );
 }
 
 // ── 7.2: the seeded settings ────────────────────────────────────────────────
@@ -326,4 +330,59 @@ async fn test_journal_progress_mark_is_not_seeded() {
         None,
         "journal_last_judged_day must NOT be seeded by the migration"
     );
+}
+
+// ── 3.1–3.3 (reordenadas al grupo 8): el texto sembrado del prompt ──────────
+//
+// Las tareas 3.1–3.3 prueban el texto **sembrado** de `journal_prompt`, que
+// nace aquí, en la migración (grupo 7/8): por eso se escriben y verifican en
+// verde junto a la siembra, no en el RED original del grupo 3.
+
+/// Scenario: el prompt sembrado pide la lectura del día (cómo fue, qué costó,
+/// qué ilusionó) y el relato en primera persona.
+#[tokio::test]
+async fn test_seeded_journal_prompt_reads_the_day_in_first_person() {
+    let pool = setup().await;
+
+    let prompt = setting_value(&pool, "journal_prompt").await;
+    for needle in ["primera persona", "cómo fue", "costó", "ilusionó"] {
+        assert!(
+            prompt.contains(needle),
+            "el prompt sembrado debe pedir la lectura del día; le falta «{needle}»"
+        );
+    }
+}
+
+/// Scenario: el prompt sembrado prohíbe el recuento de los hechos ya
+/// registrados y pide describir en vez de diagnosticar.
+#[tokio::test]
+async fn test_seeded_journal_prompt_forbids_recounting_facts() {
+    let pool = setup().await;
+
+    let prompt = setting_value(&pool, "journal_prompt").await;
+    for needle in [
+        "no los enumeres",
+        "descríbelos",
+        "Describe en vez de diagnosticar",
+    ] {
+        assert!(
+            prompt.contains(needle),
+            "el prompt sembrado debe prohibir el recuento; le falta «{needle}»"
+        );
+    }
+}
+
+/// Scenario: el prompt sembrado define el contrato de salida: el objeto JSON
+/// con `write`, el relato y los campos opcionales, y el `{ "write": false }`.
+#[tokio::test]
+async fn test_seeded_journal_prompt_declares_the_output_contract() {
+    let pool = setup().await;
+
+    let prompt = setting_value(&pool, "journal_prompt").await;
+    for needle in ["\"write\"", "\"content\"", "\"mood\"", "\"write\": false"] {
+        assert!(
+            prompt.contains(needle),
+            "el prompt sembrado debe definir el contrato de salida; le falta {needle}"
+        );
+    }
 }

@@ -410,7 +410,7 @@ mod tests {
 
     // ── background_handler ─────────────────────────────────────────────────
 
-    /// With no query params the handler still returns the five canonical
+    /// With no query params the handler still returns the six canonical
     /// origins (the repository default of 7 days applies).
     #[tokio::test]
     async fn test_background_handler_lists_canonical_origins() {
@@ -419,7 +419,7 @@ mod tests {
         let res = background_handler(State(state), Query(DayParams { days: None }))
             .await
             .unwrap();
-        assert_eq!(res.0.len(), 5);
+        assert_eq!(res.0.len(), 6);
         assert!(res.0.iter().all(|b| b.calls == 0));
     }
 
