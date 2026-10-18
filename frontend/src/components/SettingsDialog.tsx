@@ -99,6 +99,7 @@ export interface SettingsFormValues {
   collapse_prompt: string;
   consolidator_prompt: string;
   timeline_prompt: string;
+  journal_prompt: string;
   message_page_size: number;
   openweather_api_key: string;
   google_places_api_key: string;
@@ -176,6 +177,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         collapse_prompt: settings.collapse_prompt || "",
         consolidator_prompt: settings.consolidator_prompt || "",
         timeline_prompt: settings.timeline_prompt || "",
+        journal_prompt: settings.journal_prompt || "",
         message_page_size: parseInt(settings.message_page_size || "50"),
         openweather_api_key: settings.openweather_api_key || "",
         google_places_api_key: settings.google_places_api_key || "",
@@ -284,6 +286,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         consolidator_prompt:
           values.consolidator_prompt ?? settings?.consolidator_prompt ?? "",
         timeline_prompt: values.timeline_prompt ?? settings?.timeline_prompt ?? "",
+        journal_prompt: values.journal_prompt ?? settings?.journal_prompt ?? "",
         message_page_size: (
           values.message_page_size ?? parseInt(settings?.message_page_size || "50")
         ).toString(),
@@ -604,6 +607,19 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                         <Form.Item
                           label="Timeline Prompt"
                           name="timeline_prompt"
+                        >
+                          <TextArea rows={10} />
+                        </Form.Item>
+                      ),
+                    },
+                    {
+                      key: "journal",
+                      label: "Journal",
+                      forceRender: true,
+                      children: (
+                        <Form.Item
+                          label="Journal Prompt"
+                          name="journal_prompt"
                         >
                           <TextArea rows={10} />
                         </Form.Item>

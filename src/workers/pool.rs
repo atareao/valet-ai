@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::db::DbPool;
 use crate::embeddings::EmbeddingProvider;
 use crate::workers::episodic_memory::{EpisodicMemoryConfig, EpisodicMemoryWorker};
+use crate::workers::journal::JournalWorker;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -23,6 +24,7 @@ pub struct WorkerPool {
     pub collapse_tx: Option<mpsc::Sender<String>>,
     pub memory: Option<JoinHandle<()>>,
     pub memory_tx: Option<mpsc::Sender<()>>,
+    pub journal: Option<JoinHandle<()>>,
     pub reminder_push: Option<JoinHandle<()>>,
     pub shutdown_tx: Option<broadcast::Sender<()>>,
 }
@@ -35,7 +37,7 @@ impl WorkerPool {
     /// stopped.
     pub fn start(
         db: DbPool,
-        _config: &Config,
+        config: &Config,
         llm_provider: Arc<dyn LLMProvider>,
         embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     ) -> Self {
@@ -46,7 +48,7 @@ impl WorkerPool {
         let collapse = {
             let db = db.clone();
             let llm_provider = llm_provider.clone();
-            let collapse_model = _config.collapse_model.clone();
+            let collapse_model = config.collapse_model.clone();
 
             let collapse_prompt = {
                 // Read collapse_prompt from settings synchronously for now.
@@ -109,13 +111,13 @@ impl WorkerPool {
                 let db = db.clone();
                 let llm_provider = llm_provider.clone();
                 let memory_config = EpisodicMemoryConfig {
-                    batch_tokens: _config.memory_batch_tokens,
-                    inactivity_minutes: _config.memory_inactivity_minutes as i64,
-                    overlap: _config.memory_overlap,
-                    poll_interval_minutes: _config.memory_poll_interval_minutes,
-                    model: _config.memory_model.clone(),
-                    semantic_model: _config.semantic_model.clone(),
-                    timeline_model: _config.timeline_model.clone(),
+                    batch_tokens: config.memory_batch_tokens,
+                    inactivity_minutes: config.memory_inactivity_minutes as i64,
+                    overlap: config.memory_overlap,
+                    poll_interval_minutes: config.memory_poll_interval_minutes,
+                    model: config.memory_model.clone(),
+                    semantic_model: config.semantic_model.clone(),
+                    timeline_model: config.timeline_model.clone(),
                 };
                 let handle = EpisodicMemoryWorker::start(
                     db,
@@ -133,6 +135,23 @@ impl WorkerPool {
             }
         };
 
+        // ── Journal worker (bitácora autónoma) ─────────────────────────
+        // A diferencia del episódico, no necesita proveedor de embeddings:
+        // su único requisito es la base de datos y el proveedor LLM. Comparte
+        // el intervalo de sondeo de la memoria.
+        let journal = {
+            let db = db.clone();
+            let llm_provider = llm_provider.clone();
+            let shutdown_rx = shutdown_tx.subscribe();
+            Some(JournalWorker::start(
+                db,
+                llm_provider,
+                shutdown_rx,
+                config.memory_poll_interval_minutes,
+                config.journal_model.clone(),
+            ))
+        };
+
         // ── Reminder push worker ──
         let reminder_push = {
             let db = db.clone();
@@ -148,6 +167,7 @@ impl WorkerPool {
             collapse_tx: Some(collapse_tx),
             memory,
             memory_tx,
+            journal,
             reminder_push,
             shutdown_tx: Some(shutdown_tx),
         }
@@ -172,6 +192,9 @@ impl WorkerPool {
             handle.abort();
         }
         self.memory_tx.take();
+        if let Some(handle) = self.journal.take() {
+            handle.abort();
+        }
         if let Some(handle) = self.reminder_push.take() {
             handle.abort();
         }
@@ -303,6 +326,7 @@ mod tests {
             memory_model: "mistralai/mistral-small".into(),
             semantic_model: "mistralai/mistral-small".into(),
             timeline_model: "mistralai/mistral-small".into(),
+            journal_model: "mistralai/mistral-small".into(),
             rag_budget_tokens: 2000,
             embedding_provider: None,
             embedding_model: None,

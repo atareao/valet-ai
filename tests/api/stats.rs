@@ -568,8 +568,8 @@ async fn test_background_summary() {
         .expect("the background summary must be a JSON array");
     assert_eq!(
         origins.len(),
-        5,
-        "one entry per non-chat origin (router, archivist, consolidator, collapse, timeline)"
+        6,
+        "one entry per non-chat origin (router, archivist, consolidator, collapse, timeline, journal)"
     );
 
     let mut kinds: Vec<&str> = origins
@@ -583,6 +583,7 @@ async fn test_background_summary() {
             "archivist",
             "collapse",
             "consolidator",
+            "journal",
             "router",
             "timeline"
         ],

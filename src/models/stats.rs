@@ -12,6 +12,7 @@ pub enum CallKind {
     Consolidator,
     Collapse,
     Timeline,
+    Journal,
 }
 
 impl CallKind {
@@ -24,6 +25,7 @@ impl CallKind {
             CallKind::Consolidator => "consolidator",
             CallKind::Collapse => "collapse",
             CallKind::Timeline => "timeline",
+            CallKind::Journal => "journal",
         }
     }
 }

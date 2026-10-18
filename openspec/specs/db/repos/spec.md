@@ -540,7 +540,7 @@ sobre la tabla `tasks`. `list` SHALL aceptar filtros opcionales (`status`, `prio
 
 ### Requirement: StatsRepo SHALL provide background LLM usage aggregation
 
-El repositorio SHALL exponer `StatsRepo::background_summary(pool, days)` devolviendo un `BackgroundStats` por cada **pareja (origen, modelo)** de los orígenes no-chat (`router`, `archivist`, `consolidator`, `collapse`, `timeline`). Los orígenes canónicos sin ninguna fila SHALL aparecer con los contadores a cero y `model: null`. El parámetro `days` SHALL acotar la ventana a `created_at >= datetime('now', '-' || ?1 || ' days')`. Una ventana menor que un día SHALL tratarse como un día, de modo que `days = 0` signifique las últimas 24 horas y no una ventana vacía. Las filas SHALL ordenarse por `kind` canónico y, dentro de cada `kind`, por coste descendente.
+El repositorio SHALL exponer `StatsRepo::background_summary(pool, days)` devolviendo un `BackgroundStats` por cada **pareja (origen, modelo)** de los orígenes no-chat (`router`, `archivist`, `consolidator`, `collapse`, `timeline`, `journal`). Los orígenes canónicos sin ninguna fila SHALL aparecer con los contadores a cero y `model: null`. El parámetro `days` SHALL acotar la ventana a `created_at >= datetime('now', '-' || ?1 || ' days')`. Una ventana menor que un día SHALL tratarse como un día, de modo que `days = 0` signifique las últimas 24 horas y no una ventana vacía. Las filas SHALL ordenarse por `kind` canónico y, dentro de cada `kind`, por coste descendente.
 
 **Given** una tabla `llm_requests` con filas de varios orígenes y modelos
 **When** se llama a `StatsRepo::background_summary(pool, days)`
@@ -558,10 +558,10 @@ El repositorio SHALL exponer `StatsRepo::background_summary(pool, days)` devolvi
 **And** las parejas fuera de la ventana `days` no se cuentan.
 
 #### Scenario: Una entrada por origen
-**Given** 2 llamadas `router` al modelo "A", 1 `collapse` al modelo "B" y ninguna `archivist`, `consolidator` ni `timeline`
+**Given** 2 llamadas `router` al modelo "A", 1 `collapse` al modelo "B" y ninguna `archivist`, `consolidator`, `timeline` ni `journal`
 **When** `StatsRepo::background_summary(pool, 7)`
 **Then** devuelve una fila por pareja (origen, modelo) más una fila por cada origen canónico sin filas
-**And** `router` tiene `calls=2`, `collapse` tiene `calls=1`, y `archivist`, `consolidator` y `timeline` tienen `calls=0` con `model=null`
+**And** `router` tiene `calls=2`, `collapse` tiene `calls=1`, y `archivist`, `consolidator`, `timeline` y `journal` tienen `calls=0` con `model=null`
 
 #### Scenario: El extractor de timeline se cuenta como un origen más
 **Given** 3 llamadas con `kind='timeline'` al mismo modelo, una de ellas con `status='error'`
@@ -572,7 +572,7 @@ El repositorio SHALL exponer `StatsRepo::background_summary(pool, days)` devolvi
 #### Scenario: Sin procesos de fondo
 **Given** una tabla `llm_requests` solo con filas de chat
 **When** `StatsRepo::background_summary(pool, 7)`
-**Then** los cinco orígenes canónicos tienen `calls=0`, `model=null` y `total_cost=0.0`
+**Then** los seis orígenes canónicos tienen `calls=0`, `model=null` y `total_cost=0.0`
 
 #### Scenario: Varios modelos dentro del mismo origen
 **Given** 2 llamadas `consolidator` al modelo "deepseek/deepseek-v4.1-flash" y 3 al modelo "qwen/qwen3-235b-a22b-2507"
@@ -596,14 +596,21 @@ El repositorio SHALL exponer `StatsRepo::background_summary(pool, days)` devolvi
 **When** `StatsRepo::background_summary(pool, 7)`
 **Then** `last_call_at` de la pareja es la fecha mayor de las dos
 
+#### Scenario: La bitácora se cuenta como un origen más
+**Given** 3 llamadas con `kind='journal'` al mismo modelo, dos de ellas con `status='error'`
+**When** `StatsRepo::background_summary(pool, 7)`
+**Then** el origen `journal` aparece entre las parejas
+**And** tiene `calls=3` y `total_errors=2`
+**And** sus tokens y su coste se suman igual que en los demás orígenes
+
 ### Requirement: StatsRepo SHALL flag suspiciously empty successful calls
 
 `BackgroundStats` SHALL exponer `suspicious_calls: u64`, el recuento de llamadas con
 `status = 'success'` **y** `completion_tokens <= 1`. La condición SHALL aplicar **solo** a los
-orígenes estructurados canónicos (`router`, `archivist`, `consolidator`, `collapse`, `timeline`) y
-**SHALL NOT** aplicar a `chat`, donde una respuesta de un token puede ser legítima. El umbral SHALL
-vivir en una constante con nombre (no un literal suelto), para que su valor quede documentado y
-cambiable en un solo sitio.
+orígenes estructurados canónicos (`router`, `archivist`, `consolidator`, `collapse`, `timeline`,
+`journal`) y **SHALL NOT** aplicar a `chat`, donde una respuesta de un token puede ser legítima. El
+umbral SHALL vivir en una constante con nombre (no un literal suelto), para que su valor quede
+documentado y cambiable en un solo sitio.
 
 La razón del umbral y del filtro por `status` está en el `design.md`: un contenido vacío no es un
 error de transporte, así que la avería —respuestas con `completion_tokens = 1` y `status = 'success'`
@@ -625,6 +632,11 @@ día.
 **Given** una llamada de chat con `status='success'` y `completion_tokens=1`
 **When** se agrega la estadística
 **Then** esa llamada no cuenta como sospechosa
+
+#### Scenario: La bitácora es un origen estructurado más
+**Given** una llamada `journal` con `status='success'` y `completion_tokens=1`
+**When** se agrega ese origen
+**Then** `suspicious_calls` del origen `journal` se incrementa en uno
 
 ### Requirement: El modelo `JournalEntry` y `Mood` SHALL definir el contrato de la bitácora
 

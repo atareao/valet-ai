@@ -55,6 +55,9 @@ pub struct Config {
     /// `TIMELINE_MODEL` and falls back to `MEMORY_MODEL` (and, in turn, to its
     /// default).
     pub timeline_model: String,
+    /// Model used by the journal worker (bitácora). Reads `JOURNAL_MODEL` and
+    /// falls back to `MEMORY_MODEL` (and, in turn, to its default).
+    pub journal_model: String,
     pub rag_budget_tokens: usize,
 
     // Embeddings (RAG)
@@ -76,6 +79,9 @@ impl Config {
         // is not set it falls back to `MEMORY_MODEL` (and, in turn, to its
         // default).
         let timeline_model = env::var("TIMELINE_MODEL").unwrap_or_else(|_| memory_model.clone());
+        // `JOURNAL_MODEL` is the journal worker's model; when it is not set it
+        // falls back to `MEMORY_MODEL` (and, in turn, to its default).
+        let journal_model = env::var("JOURNAL_MODEL").unwrap_or_else(|_| memory_model.clone());
 
         Self {
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into()),
@@ -141,6 +147,7 @@ impl Config {
             memory_model,
             semantic_model,
             timeline_model,
+            journal_model,
             rag_budget_tokens: env::var("RAG_BUDGET_TOKENS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -581,6 +588,51 @@ mod tests {
         let cfg = Config::from_env();
         assert_eq!(
             cfg.timeline_model,
+            "mistralai/mistral-small-24b-instruct-2501"
+        );
+    }
+
+    /// `JOURNAL_MODEL` overrides `MEMORY_MODEL` when both are set.
+    #[test]
+    #[serial]
+    fn test_config_journal_model_overrides_memory_model() {
+        env::set_var("MEMORY_MODEL", "memory/model");
+        env::set_var("JOURNAL_MODEL", "journal/model");
+
+        let cfg = Config::from_env();
+        assert_eq!(
+            cfg.journal_model, "journal/model",
+            "JOURNAL_MODEL es el modelo del diario cuando está definido"
+        );
+        assert_eq!(cfg.memory_model, "memory/model");
+
+        env::remove_var("MEMORY_MODEL");
+        env::remove_var("JOURNAL_MODEL");
+    }
+
+    /// Without `JOURNAL_MODEL`, `journal_model` falls back to `MEMORY_MODEL`.
+    #[test]
+    #[serial]
+    fn test_config_journal_model_falls_back_to_memory_model() {
+        env::remove_var("JOURNAL_MODEL");
+        env::set_var("MEMORY_MODEL", "memory/only");
+
+        let cfg = Config::from_env();
+        assert_eq!(cfg.journal_model, "memory/only");
+
+        env::remove_var("MEMORY_MODEL");
+    }
+
+    /// With neither set, `journal_model` uses the shared default.
+    #[test]
+    #[serial]
+    fn test_config_journal_model_default() {
+        env::remove_var("MEMORY_MODEL");
+        env::remove_var("JOURNAL_MODEL");
+
+        let cfg = Config::from_env();
+        assert_eq!(
+            cfg.journal_model,
             "mistralai/mistral-small-24b-instruct-2501"
         );
     }
