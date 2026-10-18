@@ -148,7 +148,10 @@ fn compression_prompt() -> String {
 ///
 /// A request made of a single `system` message is not a conversation: the
 /// configured model (DeepSeek v4.1-flash) answers it with `content: null` and
-/// `completion_tokens: 1` **without error**, which aborts the pass silently.
+/// `completion_tokens: 1` **without error**, which leaves the consolidation
+/// without a JSON object to validate — the pass then degrades, it does not
+/// abort.
+///
 /// This turn is a code constant, independent of the user-editable
 /// `consolidator_prompt`.
 const CONSOLIDATOR_USER_TURN: &str = "Consolida el estado de memoria persistente según las instrucciones y devuelve únicamente el objeto JSON del esquema.";
@@ -1608,8 +1611,9 @@ impl EpisodicMemoryWorker {
             .replace("{{ ESTADO_ACTUAL }}", &current_json)
             .replace("{{ BLOQUE_DE_MENSAJES }}", message_block);
 
-        // Initial consolidation: a failure here aborts the pass. It gets a
-        // single retry when the model returns no valid state.
+        // Initial consolidation: a failure here degrades the pass — the card
+        // and the mark are still written and the previous Layer C state is
+        // kept. It gets a single retry when the model returns no valid state.
         let validated =
             Self::initial_consolidation(db, llm_provider, config, &system_content).await?;
 
@@ -3698,9 +3702,9 @@ mod tests {
 
     // ─── Change `llm-worker-resilience` — RED (2.1, 2.2, 2.3) ─────────────
     //
-    // RED: describen el comportamiento esperado tras la fase GREEN. Hoy la
-    // pasada aborta, el reintento repite el presupuesto y el diagnóstico no
-    // lleva el motivo de finalización.
+    // RED: fijaron el comportamiento esperado. Ya en GREEN, la pasada degrada
+    // en vez de abortar, el reintento amplía el presupuesto al truncar y el
+    // diagnóstico lleva el motivo de finalización.
 
     /// 2.1 — Un corte por presupuesto (`finish_reason = length`) hace que el
     /// reintento de la consolidación lleve `max_tokens` al **doble**; un fallo
@@ -4500,7 +4504,8 @@ mod tests {
         .unwrap();
 
         // Empty content: the transport succeeds, the validation does not. The
-        // initial consolidation retries once and then aborts the pass.
+        // initial consolidation retries once and then fails; the caller would
+        // degrade the pass.
         let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).semantic("");
         EpisodicMemoryWorker::consolidate_state(
             &db,
@@ -4509,7 +4514,7 @@ mod tests {
             "BLOQUE123",
         )
         .await
-        .expect_err("a state that does not validate must abort the pass");
+        .expect_err("a state that does not validate must fail the consolidation");
 
         let successes: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM llm_requests
