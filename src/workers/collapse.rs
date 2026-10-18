@@ -129,9 +129,7 @@ impl CollapseWorker {
                         Ok(response) => {
                             let duration_ms = start.elapsed().as_millis() as i64;
                             let collapsed = response.message.content;
-                            let collapsed_tokens = estimate_markdown_tokens_heuristic(&collapsed);
 
-                            // Record stats
                             let prompt_tokens = response
                                 .usage
                                 .as_ref()
@@ -143,48 +141,87 @@ impl CollapseWorker {
                                 .map(|u| u.completion_tokens as i64)
                                 .unwrap_or(0);
                             let total_tokens = prompt_tokens + completion_tokens;
-                            let _ = StatsRepo::record_request(
-                                &db,
-                                CallKind::Collapse,
-                                &uuid::Uuid::new_v4().to_string(),
-                                &model,
-                                None,
-                                prompt_tokens,
-                                completion_tokens,
-                                total_tokens,
-                                response
-                                    .usage
-                                    .as_ref()
-                                    .map(|u| u.cached_tokens as i64)
-                                    .unwrap_or(0),
-                                response
-                                    .usage
-                                    .as_ref()
-                                    .map(|u| u.reasoning_tokens as i64)
-                                    .unwrap_or(0),
-                                response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
-                                Some(duration_ms),
-                                "success",
-                                None,
-                                None,
-                                None,
-                            )
-                            .await;
+                            let cached_tokens = response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.cached_tokens as i64)
+                                .unwrap_or(0);
+                            let reasoning_tokens = response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.reasoning_tokens as i64)
+                                .unwrap_or(0);
+                            let cost = response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0);
 
-                            // 4. Update DB
-                            let update_result = sqlx::query(
-                                "UPDATE messages SET collapsed_content = ?1, collapsed_tokens_count = ?2 WHERE id = ?3",
-                            )
-                             .bind(&collapsed)
-                             .bind(collapsed_tokens as i64)
-                             .bind(&message_id)
-                             .execute(&db)
-                             .await;
-
-                            if let Err(e) = update_result {
-                                tracing::error!(message_id = %message_id, error = %e, "CollapseWorker failed to update DB");
+                            // Guard: an empty or whitespace-only summary is a
+                            // silent content loss. Never store it as the
+                            // collapsed content; record the failure as an error
+                            // row and leave the message un-collapsed so a later
+                            // attempt can retry it (D5).
+                            if collapsed.trim().is_empty() {
+                                let _ = StatsRepo::record_request(
+                                    &db,
+                                    CallKind::Collapse,
+                                    &uuid::Uuid::new_v4().to_string(),
+                                    &model,
+                                    None,
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    total_tokens,
+                                    cached_tokens,
+                                    reasoning_tokens,
+                                    cost,
+                                    Some(duration_ms),
+                                    "error",
+                                    Some("collapse returned an empty summary"),
+                                    None,
+                                    None,
+                                )
+                                .await;
+                                tracing::error!(
+                                    message_id = %message_id,
+                                    "CollapseWorker: empty summary; message left un-collapsed"
+                                );
                             } else {
-                                tracing::info!(message_id = %message_id, collapsed_tokens = %collapsed_tokens, "CollapseWorker completed");
+                                let collapsed_tokens =
+                                    estimate_markdown_tokens_heuristic(&collapsed);
+
+                                // Record stats
+                                let _ = StatsRepo::record_request(
+                                    &db,
+                                    CallKind::Collapse,
+                                    &uuid::Uuid::new_v4().to_string(),
+                                    &model,
+                                    None,
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    total_tokens,
+                                    cached_tokens,
+                                    reasoning_tokens,
+                                    cost,
+                                    Some(duration_ms),
+                                    "success",
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await;
+
+                                // 4. Update DB
+                                let update_result = sqlx::query(
+                                    "UPDATE messages SET collapsed_content = ?1, collapsed_tokens_count = ?2 WHERE id = ?3",
+                                )
+                                 .bind(&collapsed)
+                                 .bind(collapsed_tokens as i64)
+                                 .bind(&message_id)
+                                 .execute(&db)
+                                 .await;
+
+                                if let Err(e) = update_result {
+                                    tracing::error!(message_id = %message_id, error = %e, "CollapseWorker failed to update DB");
+                                } else {
+                                    tracing::info!(message_id = %message_id, collapsed_tokens = %collapsed_tokens, "CollapseWorker completed");
+                                }
                             }
                         }
                         Err(e) => {
