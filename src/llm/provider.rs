@@ -400,6 +400,72 @@ mod tests {
         assert_eq!(value, serde_json::json!({ "type": "json_object" }));
     }
 
+    // -----------------------------------------------------------------------
+    // Contract tests — finish reason (flat string form)
+    // -----------------------------------------------------------------------
+
+    /// The wire form of a finish reason is the flat provider string, for every
+    /// variant: `Stop` and `Length` are the two the worker names explicitly and
+    /// `Other` keeps an unknown reason verbatim.
+    #[test]
+    fn test_finish_reason_serializes_to_the_flat_string() {
+        let cases = [
+            (FinishReason::Stop, "stop"),
+            (FinishReason::Length, "length"),
+            (FinishReason::Other("tool_calls".to_string()), "tool_calls"),
+        ];
+        for (reason, expected) in cases {
+            let value = serde_json::to_value(&reason).expect("FinishReason should serialize");
+            assert_eq!(
+                value,
+                serde_json::json!(expected),
+                "a finish reason must serialize as the flat string form"
+            );
+        }
+    }
+
+    /// Deserialization mirrors it: a plain string lands on the matching variant,
+    /// and an unknown reason stays verbatim in `Other`.
+    #[test]
+    fn test_finish_reason_deserializes_from_the_flat_string() {
+        let cases = [
+            ("\"stop\"", FinishReason::Stop),
+            ("\"length\"", FinishReason::Length),
+            (
+                "\"tool_calls\"",
+                FinishReason::Other("tool_calls".to_string()),
+            ),
+            (
+                "\"content_filter\"",
+                FinishReason::Other("content_filter".to_string()),
+            ),
+        ];
+        for (raw, expected) in cases {
+            let parsed: FinishReason =
+                serde_json::from_str(raw).expect("a flat finish reason string must deserialize");
+            assert_eq!(parsed, expected);
+        }
+    }
+
+    /// The round trip must close in the flat form: the provider string
+    /// deserializes into the typed reason and re-serializes to the *same* flat
+    /// string. An asymmetric ser/de (the wire form not being a plain string)
+    /// breaks the public `ChatResponse` contract.
+    #[test]
+    fn test_finish_reason_round_trips_through_the_flat_string() {
+        for flat in ["stop", "length", "tool_calls", "content_filter"] {
+            let raw = serde_json::json!(flat).to_string();
+            let parsed: FinishReason = serde_json::from_str(&raw)
+                .unwrap_or_else(|e| panic!("a flat finish reason must deserialize: {flat}: {e}"));
+            let back = serde_json::to_value(&parsed).expect("FinishReason should serialize");
+            assert_eq!(
+                back,
+                serde_json::json!(flat),
+                "the round trip must stay flat for {flat}"
+            );
+        }
+    }
+
     /// Scenario: ChatRequest por defecto omite los campos
     #[test]
     fn test_chat_request_defaults_reasoning_and_response_format_to_none() {
