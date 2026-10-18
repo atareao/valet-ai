@@ -6,36 +6,62 @@
 //! contar, escribe una entrada ordinaria en `journal_entries` con
 //! [`crate::db::repos::journal::JournalRepo::upsert`].
 //!
-//! Este módulo fija la superficie de la parte **pura** del worker, que es la que
-//! decide *qué* día toca:
+//! El módulo fija dos superficies:
 //!
-//! - [`last_closed_day`] — el último día cerrado según la hora de corte y la
-//!   zona del usuario.
-//! - [`target_day`] — el día que toca juzgar, comparando la marca de progreso
-//!   con el último día cerrado.
-//! - [`day_window`] — la ventana UTC `[inicio, fin)` de un día local, que cubre
-//!   el día entero aunque dure 23 o 25 horas por un cambio de hora.
-//! - [`JournalSettings`] — los ajustes de la bitácora leídos **en cada vuelta**.
+//! - La parte **pura** del worker, que es la que decide *qué* día toca:
+//!   [`last_closed_day`], [`target_day`], [`day_window`] y [`JournalSettings`],
+//!   la lectura de ajustes en cada vuelta.
+//! - El worker en sí: el ciclo [`JournalWorker::start`], la pasada
+//!   [`JournalWorker::evaluate`] con su material acotado por
+//!   [`JOURNAL_MATERIAL_TOKEN_BUDGET`], el contrato de salida del modelo y el
+//!   fallo con su reintento, su fila honesta en `llm_requests` (origen
+//!   `journal`) y su confinamiento.
 //!
-//! # Estado (fase GREEN — tareas 6.1–6.4)
+//! # El ciclo
 //!
-//! La parte pura del worker está implementada: el día local con su hora de
-//! corte y su zona ([`last_closed_day`]), el día objetivo ([`target_day`]), la
-//! ventana UTC del día ([`day_window`]), la lectura de ajustes en cada vuelta
-//! ([`JournalSettings::load`]) y el respaldo mínimo del prompt
-//! ([`DEFAULT_JOURNAL_PROMPT_FALLBACK`]). Nada de esto toca la base de datos ni
-//! el reloj del sistema salvo por lo que se le pasa como parámetro.
+//! El worker corre en su propia tarea de Tokio, con el mismo intervalo de
+//! sondeo que la memoria episódica (`MEMORY_POLL_INTERVAL_MINUTES`) y la misma
+//! señal de parada del [`crate::workers::pool::WorkerPool`]. En cada vuelta
+//! procesa **como mucho un día**: el día cerrado más antiguo que aún no se haya
+//! juzgado ([`JournalSettings::target`]), de modo que un parón se recupera día
+//! a día y ningún día se juzga dos veces. El progreso vive en el ajuste
+//! `journal_last_judged_day`, que se escribe **para todos los desenlaces del
+//! día**: la entrada escrita, «nada que contar», el día sin material y el fallo
+//! agotado del modelo —así un fallo marca su día y no entra en bucle—.
 //!
-//! El worker en sí (el ciclo, el material, la escritura y el fallo) llega en
-//! los grupos 4–6 de `tasks.md`, en otro encargo.
+//! Sin material (ni mensajes ni hechos: la entrada anterior sola no cuenta) la
+//! vuelta no llama al modelo y marca el día sin gastar un céntimo. Con material,
+//! la llamada pide el objeto JSON del contrato (`write`, relato, ánimo, logros,
+//! dificultades y etiquetas) y se intenta **como mucho dos veces**: el segundo
+//! intento repite los parámetros, salvo cuando el primero se cortó por
+//! presupuesto (`finish_reason = length`), en cuyo caso lleva `max_tokens` al
+//! doble del presupuesto del rol (`GENERATION_MEMORY_*`, que el diario
+//! reutiliza). Cada intento deja **una fila** en `llm_requests` con
+//! `kind = 'journal'` y `profile_id` NULL; la fila refleja la **validación**, no
+//! el transporte. Un fallo agotado marca el día, se registra como aviso y no
+//! toca ninguna otra tabla.
 
 use std::str::FromStr;
+use std::sync::Arc;
 
 use chrono::{DateTime, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
+use sqlx::Row;
 use sqlx::SqlitePool;
+use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
+use uuid::Uuid;
 
+use crate::db::repos::journal::JournalRepo;
+use crate::db::repos::profiles::ProfilesRepo;
 use crate::db::repos::settings::SettingsRepo;
+use crate::db::repos::stats::StatsRepo;
+use crate::db::repos::timeline::TimelineRepo;
+use crate::generation::{read_generation_params, GenerationParams, GenerationRole};
+use crate::llm::provider::{ChatMessage, ChatRequest, FinishReason, LLMProvider, ResponseFormat};
+use crate::models::journal::{JournalEntry, Mood};
+use crate::models::stats::CallKind;
+use crate::models::timeline::TimelineEvent;
 
 /// La hora de corte por defecto (`journal_hour`): el día anterior ya está
 /// cerrado cuando, en la zona del usuario, se ha pasado esta hora del día
@@ -286,6 +312,716 @@ pub fn day_window(date: &str, timezone: &str) -> Option<(DateTime<Utc>, DateTime
     Some((start, end))
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// El worker: el ciclo, el material, el contrato de salida, la escritura y el
+// fallo (tareas 6.5 y 6.6)
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Tope de tokens del material del día (los mensajes): cuando el día los
+/// supera, entran **los más recientes que quepan**, con el mismo criterio que
+/// `MessagesRepo::list_by_token_budget`. Los hechos del día y la entrada
+/// anterior no llevan tope propio: los hechos son atómicos (máximo 280
+/// caracteres) y la entrada anterior es una sola.
+pub const JOURNAL_MATERIAL_TOKEN_BUDGET: usize = 2000;
+
+/// Intentos de la llamada del día: uno de reintento.
+const JOURNAL_MAX_ATTEMPTS: usize = 2;
+
+/// Una decisión del modelo sobre una jornada, ya validada contra el contrato.
+#[derive(Debug, Clone, PartialEq)]
+enum JournalDecision {
+    /// `{ "write": false }`: esa jornada no tiene nada que contar. Es una
+    /// respuesta **válida y definitiva**: marca el día y no escribe nada.
+    NothingToTell,
+    /// `{ "write": true, … }`: el relato a escribir.
+    Write(JournalDraft),
+}
+
+/// El relato validado que el modelo quiere escribir.
+#[derive(Debug, Clone, PartialEq)]
+struct JournalDraft {
+    content: String,
+    mood: Option<Mood>,
+    achievements: Vec<String>,
+    struggles: Vec<String>,
+    tags: Vec<String>,
+}
+
+/// Por qué un contenido no es usable como decisión. Nunca revienta la vuelta:
+/// es un fallo de forma, y como tal se reintenta una vez y luego marca el día.
+#[derive(Debug, thiserror::Error, PartialEq)]
+enum JournalShapeError {
+    /// El contenido está vacío o es solo espacios.
+    #[error("empty or blank content")]
+    Empty,
+    /// No hay ningún objeto JSON en el contenido.
+    #[error("no JSON object found")]
+    NotJson,
+    /// `write` falta o no es booleano.
+    #[error("missing or non-boolean 'write' field")]
+    BadWrite,
+    /// `write = true` con el relato vacío o en blanco: nunca una entrada en
+    /// blanco.
+    #[error("blank content with write=true")]
+    BlankContent,
+}
+
+/// Un mensaje del día, con su contenido efectivo (colapsado o no).
+struct DayMessage {
+    role: String,
+    content: String,
+}
+
+/// El resultado de un intento de llamada, con todo lo que necesita la fila de
+/// `llm_requests` y la decisión del reintento.
+struct JournalChatOutcome {
+    /// El contenido crudo del modelo, aún sin validar.
+    content: String,
+    /// El motivo de finalización, cuando el proveedor lo reporta.
+    finish_reason: Option<FinishReason>,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    total_tokens: i64,
+    cached_tokens: i64,
+    reasoning_tokens: i64,
+    cost: f64,
+    duration_ms: i64,
+}
+
+/// Un fallo de transporte de la llamada del día. Se registra como su propia
+/// fila de error antes de devolverse.
+#[derive(Debug, thiserror::Error)]
+enum JournalCallError {
+    #[error("journal LLM call failed: {0}")]
+    Llm(String),
+}
+
+/// El worker de la bitácora.
+pub struct JournalWorker;
+
+impl JournalWorker {
+    /// Arranca el worker en su propia tarea de Tokio.
+    ///
+    /// El ciclo usa el mismo intervalo de sondeo que la memoria episódica
+    /// (`poll_interval_minutes`, del `WorkerPool`) y la misma señal de parada
+    /// por broadcast. El primer tick es inmediato; después, una vuelta por
+    /// intervalo. Cada vuelta juzga **como mucho un día** y, sin días pendientes
+    /// o con la bitácora apagada, termina sin llamar al modelo y sin escribir
+    /// nada.
+    pub fn start(
+        db: SqlitePool,
+        llm_provider: Arc<dyn LLMProvider>,
+        mut shutdown_rx: broadcast::Receiver<()>,
+        poll_interval_minutes: u64,
+        journal_model: String,
+    ) -> JoinHandle<()> {
+        let poll_interval = std::time::Duration::from_secs(poll_interval_minutes * 60);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(poll_interval);
+            // Tick inmediato al arrancar.
+            interval.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        Self::evaluate(&db, llm_provider.clone(), Utc::now(), &journal_model).await;
+                    }
+                    _ = shutdown_rx.recv() => {
+                        tracing::info!("JournalWorker shutting down");
+                        break;
+                    }
+                }
+            }
+        })
+    }
+
+    /// Una pasada: juzga **como mucho un día**.
+    ///
+    /// Lee los ajustes en cada vuelta ([`JournalSettings::load`]), calcula el
+    /// día objetivo con el instante recibido (`now_utc`, para poder probarlo),
+    /// reúne el material del día y, según el desenlace, escribe la entrada, no
+    /// escribe nada o deja la fila honesta del fallo. Marca el día en **los
+    /// cuatro desenlaces**: entrada escrita, «nada que contar», día sin material
+    /// y fallo agotado del modelo.
+    pub(crate) async fn evaluate(
+        db: &SqlitePool,
+        llm_provider: Arc<dyn LLMProvider>,
+        now_utc: DateTime<Utc>,
+        journal_model: &str,
+    ) {
+        let settings = JournalSettings::load(db).await;
+        for warning in &settings.warnings {
+            tracing::warn!(warning = %warning, "JournalWorker: settings warning");
+        }
+
+        if !settings.enabled {
+            tracing::debug!("JournalWorker: the journal is disabled; the pass does nothing");
+            return;
+        }
+
+        let Some(target) = settings.target(now_utc) else {
+            tracing::debug!("JournalWorker: no day to judge");
+            return;
+        };
+
+        let Some(window) = day_window(&target, &settings.timezone) else {
+            tracing::warn!(day = %target, "JournalWorker: the target day has no window; skipping");
+            return;
+        };
+
+        let profile = match ProfilesRepo::get_or_create(db).await {
+            Ok(profile) => profile,
+            Err(error) => {
+                tracing::error!(error = %error, "JournalWorker: failed to load the default profile");
+                return;
+            }
+        };
+
+        // 1. La entrada anterior: la más reciente anterior a ese día, si existe.
+        let previous = match previous_entry(db, &profile.id, &target).await {
+            Ok(entry) => entry,
+            Err(error) => {
+                tracing::error!(error = %error, "JournalWorker: failed to read the previous entry");
+                return;
+            }
+        };
+        // 2. Los hechos del timeline de ese día.
+        let facts = match day_facts(db, window).await {
+            Ok(facts) => facts,
+            Err(error) => {
+                tracing::error!(error = %error, "JournalWorker: failed to read the day's facts");
+                return;
+            }
+        };
+        // 3. Los mensajes de ese día, acotados por el tope de tokens.
+        let messages = match day_messages(db, window).await {
+            Ok(messages) => messages,
+            Err(error) => {
+                tracing::error!(error = %error, "JournalWorker: failed to read the day's messages");
+                return;
+            }
+        };
+
+        // Sin mensajes ni hechos no hay material (la entrada anterior sola no
+        // cuenta): se marca el día sin llamar al modelo y sin escribir nada.
+        if messages.is_empty() && facts.is_empty() {
+            if let Err(error) = SettingsRepo::set(db, "journal_last_judged_day", &target).await {
+                tracing::error!(error = %error, "JournalWorker: failed to mark the empty day");
+            }
+            tracing::info!(day = %target, "JournalWorker: no material; the day is marked without a model call");
+            return;
+        }
+
+        let material = build_material_block(&target, &messages, &facts, previous.as_ref());
+
+        match Self::judge_day(db, &llm_provider, &settings, &material, journal_model).await {
+            Ok(JournalDecision::NothingToTell) => {
+                // «Nada que contar» es válida y definitiva: marca el día, no
+                // escribe nada. La llamada ya quedó registrada.
+                if let Err(error) = SettingsRepo::set(db, "journal_last_judged_day", &target).await
+                {
+                    tracing::error!(error = %error, "JournalWorker: failed to mark the day");
+                }
+            }
+            Ok(JournalDecision::Write(draft)) => {
+                let entry = JournalEntry {
+                    id: Uuid::new_v4().to_string(),
+                    profile_id: profile.id.clone(),
+                    date: target.clone(),
+                    mood: draft.mood,
+                    content: draft.content,
+                    achievements: draft.achievements,
+                    struggles: draft.struggles,
+                    tags: draft.tags,
+                    // `created_at` y `updated_at` los pone la base de datos.
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                };
+                match JournalRepo::upsert(db, &entry).await {
+                    Ok(_) => {
+                        if let Err(error) =
+                            SettingsRepo::set(db, "journal_last_judged_day", &target).await
+                        {
+                            tracing::error!(error = %error, "JournalWorker: failed to mark the day");
+                        }
+                        tracing::info!(day = %target, "JournalWorker: entry written");
+                    }
+                    Err(error) => {
+                        // La entrada no se escribió: el día no se marca, la
+                        // vuelta siguiente lo reintenta.
+                        tracing::error!(error = %error, day = %target, "JournalWorker: failed to write the entry");
+                    }
+                }
+            }
+            Err(error) => {
+                // Fallo agotado: la fila honesta ya está en `llm_requests`. El
+                // día se marca para no entrar en bucle; el worker sigue vivo y
+                // no ha tocado ninguna otra tabla.
+                tracing::warn!(error = %error, day = %target, "JournalWorker: exhausted failure; the day is lost");
+                if let Err(error) = SettingsRepo::set(db, "journal_last_judged_day", &target).await
+                {
+                    tracing::error!(error = %error, "JournalWorker: failed to mark the day");
+                }
+            }
+        }
+    }
+
+    // ─── El fallo: dos intentos, presupuesto doblado al truncar ────────────
+
+    /// Juzga el día con el modelo: **como mucho dos intentos**.
+    ///
+    /// Cada intento deja exactamente una fila en `llm_requests` con
+    /// `kind = 'journal'` y `profile_id` NULL. Un fallo de transporte registra
+    /// su fila de error en el sitio; un transporte que llega registra la fila
+    /// **después de la validación**, con `success` solo cuando el contenido
+    /// cumple el contrato. El segundo intento repite los parámetros, salvo
+    /// cuando el primero se cortó por presupuesto (`finish_reason = length`),
+    /// en cuyo caso lleva `max_tokens` al doble del presupuesto del rol.
+    async fn judge_day(
+        db: &SqlitePool,
+        llm_provider: &Arc<dyn LLMProvider>,
+        settings: &JournalSettings,
+        material: &str,
+        journal_model: &str,
+    ) -> Result<JournalDecision, String> {
+        let generation = read_generation_params(db, GenerationRole::Memory).await;
+        let mut last_error = String::new();
+        let mut doubled = false;
+
+        for attempt in 0..JOURNAL_MAX_ATTEMPTS {
+            let max_tokens_override = if attempt == 1 && doubled {
+                // El primer intento se cortó por presupuesto: el doble del
+                // presupuesto del rol, como la consolidación de la memoria.
+                Some(generation.max_tokens.saturating_mul(2))
+            } else {
+                None
+            };
+
+            let outcome = match Self::call_journal_chat(
+                db,
+                llm_provider,
+                &settings.prompt,
+                material,
+                journal_model,
+                &generation,
+                max_tokens_override,
+            )
+            .await
+            {
+                Ok(outcome) => outcome,
+                // El transporte ya registró su propia fila de error.
+                Err(error) => {
+                    last_error = error.to_string();
+                    continue;
+                }
+            };
+
+            match parse_journal_decision(&outcome.content) {
+                Ok(decision) => {
+                    // Solo una respuesta que cumple el contrato es `success`.
+                    Self::record_journal_row(db, journal_model, &outcome, "success", None).await;
+                    return Ok(decision);
+                }
+                Err(shape_error) => {
+                    // La fila refleja la validación, no el transporte: el
+                    // diagnóstico lleva el motivo de finalización, el uso y un
+                    // preview del contenido.
+                    let finish = outcome
+                        .finish_reason
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "none".to_string());
+                    let preview = outcome.content.chars().take(200).collect::<String>();
+                    let error_message = format!(
+                        "journal shape failure: {shape_error} (finish_reason={finish}); preview: {preview}"
+                    );
+                    Self::record_journal_row(
+                        db,
+                        journal_model,
+                        &outcome,
+                        "error",
+                        Some(&error_message),
+                    )
+                    .await;
+                    last_error = error_message;
+                    if !doubled && outcome.finish_reason == Some(FinishReason::Length) {
+                        doubled = true;
+                    }
+                }
+            }
+        }
+
+        Err(last_error)
+    }
+
+    // ─── Helpers privados ──────────────────────────────────────────────────
+
+    /// Un intento de la llamada del día.
+    ///
+    /// Lee los parámetros de generación del rol mecánico de la memoria
+    /// (`GENERATION_MEMORY_*`, que el diario reutiliza y del que hereda
+    /// temperatura, razonamiento y presupuesto) y pide el objeto JSON del
+    /// contrato. El material viaja como turno `user` aparte del prompt de
+    /// sistema. Un fallo de transporte se registra aquí como su fila de error;
+    /// un transporte que llega NO se registra aquí: la validación decide el
+    /// `status` de la fila, que escribe el llamador.
+    #[allow(clippy::too_many_arguments)]
+    async fn call_journal_chat(
+        db: &SqlitePool,
+        llm_provider: &Arc<dyn LLMProvider>,
+        prompt: &str,
+        material: &str,
+        journal_model: &str,
+        generation: &GenerationParams,
+        max_tokens_override: Option<u32>,
+    ) -> Result<JournalChatOutcome, JournalCallError> {
+        let max_tokens = max_tokens_override.unwrap_or(generation.max_tokens);
+
+        let request = ChatRequest {
+            model: journal_model.to_string(),
+            messages: vec![
+                ChatMessage {
+                    role: "system".into(),
+                    content: prompt.to_string(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                ChatMessage {
+                    role: "user".into(),
+                    content: material.to_string(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+            ],
+            tools: None,
+            temperature: Some(generation.temperature),
+            max_tokens: Some(max_tokens),
+            stream: false,
+            reasoning: generation.reasoning.clone(),
+            response_format: Some(ResponseFormat::JsonObject),
+        };
+
+        let start = std::time::Instant::now();
+        let response = match llm_provider.chat(request).await {
+            Ok(response) => response,
+            Err(error) => {
+                let duration_ms = start.elapsed().as_millis() as i64;
+                // Fila del fallo de transporte: uso a cero y el motivo del
+                // proveedor. Cada intento deja exactamente una fila.
+                let _ = StatsRepo::record_request(
+                    db,
+                    CallKind::Journal,
+                    &Uuid::new_v4().to_string(),
+                    journal_model,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0.0,
+                    Some(duration_ms),
+                    "error",
+                    Some(&error.to_string()),
+                    None,
+                    None,
+                )
+                .await;
+                return Err(JournalCallError::Llm(error.to_string()));
+            }
+        };
+
+        let duration_ms = start.elapsed().as_millis() as i64;
+        let prompt_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.prompt_tokens as i64)
+            .unwrap_or(0);
+        let completion_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.completion_tokens as i64)
+            .unwrap_or(0);
+
+        Ok(JournalChatOutcome {
+            content: response.message.content,
+            finish_reason: response.finish_reason,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens + completion_tokens,
+            cached_tokens: response
+                .usage
+                .as_ref()
+                .map(|u| u.cached_tokens as i64)
+                .unwrap_or(0),
+            reasoning_tokens: response
+                .usage
+                .as_ref()
+                .map(|u| u.reasoning_tokens as i64)
+                .unwrap_or(0),
+            cost: response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
+            duration_ms,
+        })
+    }
+
+    /// La fila única de `llm_requests` de un intento cuyo transporte llegó:
+    /// la escribe el llamador ahora que se sabe si el contenido validó.
+    async fn record_journal_row(
+        db: &SqlitePool,
+        model: &str,
+        outcome: &JournalChatOutcome,
+        status: &str,
+        error_message: Option<&str>,
+    ) {
+        let _ = StatsRepo::record_request(
+            db,
+            CallKind::Journal,
+            &Uuid::new_v4().to_string(),
+            model,
+            None,
+            outcome.prompt_tokens,
+            outcome.completion_tokens,
+            outcome.total_tokens,
+            outcome.cached_tokens,
+            outcome.reasoning_tokens,
+            outcome.cost,
+            Some(outcome.duration_ms),
+            status,
+            error_message,
+            None,
+            None,
+        )
+        .await;
+    }
+}
+
+/// El día anterior a una fecha ISO, o `None` si la fecha no es válida.
+fn day_before(date: &str) -> Option<String> {
+    parse_iso_date(date)?
+        .pred_opt()
+        .map(|day| day.format(ISO_DATE).to_string())
+}
+
+/// Los mensajes del día, de más antiguo a más reciente, acotados por
+/// [`JOURNAL_MATERIAL_TOKEN_BUDGET`]: cuando el día los supera, entran los más
+/// recientes que quepan (el mismo criterio que `MessagesRepo::list_by_token_budget`,
+/// pero limitado a la ventana del día).
+async fn day_messages(
+    db: &SqlitePool,
+    window: (DateTime<Utc>, DateTime<Utc>),
+) -> Result<Vec<DayMessage>, sqlx::Error> {
+    let (start, end) = window;
+    let actual = sqlx::query(
+        "WITH Ranked AS (
+            SELECT role,
+                   CASE WHEN collapsed_content IS NOT NULL THEN collapsed_content ELSE content END AS effective_content,
+                   CASE WHEN collapsed_content IS NOT NULL THEN collapsed_tokens_count ELSE tokens_count END AS effective_tokens,
+                   created_at,
+                   SUM(CASE WHEN collapsed_content IS NOT NULL THEN collapsed_tokens_count ELSE tokens_count END)
+                       OVER (ORDER BY created_at DESC ROWS UNBOUNDED PRECEDING) AS cumulative_tokens
+            FROM messages
+            WHERE created_at >= ?1 AND created_at < ?2
+         )
+         SELECT role, effective_content
+         FROM Ranked
+         WHERE cumulative_tokens <= ?3
+         ORDER BY created_at ASC",
+    )
+    .bind(start.to_rfc3339())
+    .bind(end.to_rfc3339())
+    .bind(JOURNAL_MATERIAL_TOKEN_BUDGET as i64)
+    .fetch_all(db)
+    .await?;
+
+    Ok(actual
+        .iter()
+        .map(|row| DayMessage {
+            role: row.get(0),
+            content: row.get(1),
+        })
+        .collect())
+}
+
+/// Los hechos del timeline de ese día: los que caen en la ventana `[inicio, fin)`.
+async fn day_facts(
+    db: &SqlitePool,
+    window: (DateTime<Utc>, DateTime<Utc>),
+) -> Result<Vec<TimelineEvent>, sqlx::Error> {
+    let (start, end) = window;
+    // El repositorio filtra con ambos extremos inclusivos y en orden inverso a
+    // la ventana `[inicio, fin)`: el filtro fino se hace aquí, en UTC.
+    let events = TimelineRepo::list(
+        db,
+        Some(&start.to_rfc3339()),
+        Some(&end.to_rfc3339()),
+        None,
+        1000,
+    )
+    .await?;
+    Ok(events
+        .into_iter()
+        .filter(|event| {
+            chrono::DateTime::parse_from_rfc3339(&event.timestamp)
+                .map(|instant| {
+                    let instant = instant.with_timezone(&Utc);
+                    instant >= start && instant < end
+                })
+                .unwrap_or(false)
+        })
+        .collect())
+}
+
+/// La entrada de la bitácora más reciente **anterior** a `target`, si existe.
+async fn previous_entry(
+    db: &SqlitePool,
+    profile_id: &str,
+    target: &str,
+) -> Result<Option<JournalEntry>, sqlx::Error> {
+    let Some(before) = day_before(target) else {
+        return Ok(None);
+    };
+    // `JournalRepo::list` ordena de más reciente a más antigua: la primera es
+    // la entrada anterior más cercana.
+    let mut entries = JournalRepo::list(db, profile_id, "0000-01-01", &before, 1).await?;
+    Ok(entries.pop())
+}
+
+/// El bloque de material de la llamada: declara el día y monta los tres
+/// materiales en orden —la entrada anterior, los hechos del timeline y los
+/// mensajes, de más antiguo a más reciente—.
+fn build_material_block(
+    target: &str,
+    messages: &[DayMessage],
+    facts: &[TimelineEvent],
+    previous: Option<&JournalEntry>,
+) -> String {
+    let mut block = format!("DÍA: {target}\n");
+
+    block.push_str("\nENTRADA ANTERIOR:\n");
+    match previous {
+        Some(entry) => block.push_str(&entry.content),
+        None => block.push_str("(ninguna)"),
+    }
+    block.push('\n');
+
+    block.push_str("\nHECHOS DEL DÍA:\n");
+    if facts.is_empty() {
+        block.push_str("(ninguno)\n");
+    } else {
+        for fact in facts {
+            block.push_str(&format!("- {}\n", fact.fact));
+        }
+    }
+
+    block.push_str("\nMENSAJES DEL DÍA:\n");
+    for message in messages {
+        block.push_str(&format!("[{}] {}\n", message.role, message.content));
+    }
+
+    block
+}
+
+/// Tolera extraer un objeto JSON del contenido (puede venir envuelto en prosa
+/// o en cercas de markdown). `None` cuando no hay ningún objeto.
+fn extract_json_object(content: &str) -> Option<serde_json::Value> {
+    let trimmed = content.trim();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if value.is_object() {
+            return Some(value);
+        }
+    }
+    let start = trimmed.find('{')?;
+    let end = trimmed.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(&trimmed[start..=end])
+        .ok()
+        .filter(serde_json::Value::is_object)
+}
+
+/// Valida el contenido del modelo contra el contrato de salida:
+///
+/// ```json
+/// { "write": false }
+/// { "write": true, "content": "…", "mood": "great|good|neutral|bad|terrible",
+///   "achievements": ["…"], "struggles": ["…"], "tags": ["…"] }
+/// ```
+///
+/// - `write` es obligatorio y booleano; cualquier otra forma es un fallo de forma.
+/// - `write = false` es «nada que contar»: válido y definitivo.
+/// - `write = true` exige `content` no vacío ni en blanco; si no, fallo de forma.
+/// - Un `mood` fuera del conjunto cerrado se trata como **ausente** (con aviso),
+///   y no impide que el relato se escriba.
+/// - `achievements`, `struggles` y `tags` opcionales: un campo que no sea una
+///   lista es una lista vacía; un elemento vacío o no textual se descarta.
+fn parse_journal_decision(content: &str) -> Result<JournalDecision, JournalShapeError> {
+    if content.trim().is_empty() {
+        return Err(JournalShapeError::Empty);
+    }
+
+    let value = extract_json_object(content).ok_or(JournalShapeError::NotJson)?;
+    let write = value
+        .get("write")
+        .and_then(serde_json::Value::as_bool)
+        .ok_or(JournalShapeError::BadWrite)?;
+    if !write {
+        return Ok(JournalDecision::NothingToTell);
+    }
+
+    let content = value
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|content| !content.is_empty())
+        .ok_or(JournalShapeError::BlankContent)?;
+
+    Ok(JournalDecision::Write(JournalDraft {
+        content: content.to_string(),
+        mood: parse_mood(value.get("mood")),
+        achievements: parse_list(value.get("achievements")),
+        struggles: parse_list(value.get("struggles")),
+        tags: parse_list(value.get("tags")),
+    }))
+}
+
+/// Un ánimo del conjunto cerrado, o `None` si falta o no es reconocible (con
+/// aviso: un ánimo inventado nunca se persiste tal cual ni bloquea el relato).
+fn parse_mood(raw: Option<&serde_json::Value>) -> Option<Mood> {
+    let raw = raw.and_then(serde_json::Value::as_str)?;
+    match raw.trim() {
+        "great" => Some(Mood::Great),
+        "good" => Some(Mood::Good),
+        "neutral" => Some(Mood::Neutral),
+        "bad" => Some(Mood::Bad),
+        "terrible" => Some(Mood::Terrible),
+        other => {
+            tracing::warn!(
+                mood = %other,
+                "journal mood outside the closed set; treating it as absent"
+            );
+            None
+        }
+    }
+}
+
+/// Una lista opcional del contrato: un campo que no es una lista es una lista
+/// vacía, y un elemento vacío o no textual se descarta sin fallar.
+fn parse_list(raw: Option<&serde_json::Value>) -> Vec<String> {
+    match raw {
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,8 +1039,8 @@ mod tests {
     use crate::workers::pool::WorkerPool;
     use async_trait::async_trait;
     use chrono::TimeZone;
-    use sqlx::Row;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::Row;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
@@ -1144,7 +1880,12 @@ mod tests {
             "2026-10-18T09:00:00Z",
         )
         .await;
-        insert_fact(&db, "2026-10-18T09:30:00+00:00", "Corrí 8 km por la vía verde").await;
+        insert_fact(
+            &db,
+            "2026-10-18T09:30:00+00:00",
+            "Corrí 8 km por la vía verde",
+        )
+        .await;
 
         let mock = MockJournalLLM::new(valid_entry_json());
         let calls = mock.chat_calls.clone();
@@ -1152,13 +1893,18 @@ mod tests {
 
         JournalWorker::evaluate(&db, provider, now, TEST_JOURNAL_MODEL).await;
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         let entry = JournalRepo::get(&db, &profile.id, "2026-10-18")
             .await
             .expect("read the entry")
             .expect("the worker must have written the entry");
         assert_eq!(entry.date, "2026-10-18", "the entry carries the day's date");
-        assert_eq!(entry.content, "El relato del día.", "the entry carries the model's story");
+        assert_eq!(
+            entry.content, "El relato del día.",
+            "the entry carries the model's story"
+        );
         assert_eq!(entry.mood, Some(Mood::Good), "a valid mood is stored");
 
         let mark = SettingsRepo::get(&db, "journal_last_judged_day")
@@ -1192,7 +1938,9 @@ mod tests {
             "sin mensajes ni hechos no se llama al modelo"
         );
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         assert!(
             JournalRepo::get(&db, &profile.id, "2026-10-18")
                 .await
@@ -1204,7 +1952,11 @@ mod tests {
         let mark = SettingsRepo::get(&db, "journal_last_judged_day")
             .await
             .unwrap();
-        assert_eq!(mark.as_deref(), Some("2026-10-18"), "the day is still marked");
+        assert_eq!(
+            mark.as_deref(),
+            Some("2026-10-18"),
+            "the day is still marked"
+        );
     }
 
     // ─── 4.3 — la entrada anterior sola no es material ──────────────────────
@@ -1216,10 +1968,15 @@ mod tests {
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
-        JournalRepo::upsert(&db, &entry_for(&profile.id, "2026-10-17", "Ayer tocó la guitarra."))
+        let profile = ProfilesRepo::get_or_create(&db)
             .await
-            .expect("previous entry");
+            .expect("default profile");
+        JournalRepo::upsert(
+            &db,
+            &entry_for(&profile.id, "2026-10-17", "Ayer tocó la guitarra."),
+        )
+        .await
+        .expect("previous entry");
 
         let mock = MockJournalLLM::new(valid_entry_json());
         let calls = mock.chat_calls.clone();
@@ -1242,7 +1999,11 @@ mod tests {
         let mark = SettingsRepo::get(&db, "journal_last_judged_day")
             .await
             .unwrap();
-        assert_eq!(mark.as_deref(), Some("2026-10-18"), "the empty day is marked");
+        assert_eq!(
+            mark.as_deref(),
+            Some("2026-10-18"),
+            "the empty day is marked"
+        );
     }
 
     // ─── 4.4 — «nada que contar» ────────────────────────────────────────────
@@ -1253,8 +2014,14 @@ mod tests {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
-        insert_message(&db, "user", "Solo di buenos días y ya.", 100, "2026-10-18T09:00:00Z")
-            .await;
+        insert_message(
+            &db,
+            "user",
+            "Solo di buenos días y ya.",
+            100,
+            "2026-10-18T09:00:00Z",
+        )
+        .await;
 
         let mock = MockJournalLLM::new(r#"{"write": false}"#);
         let calls = mock.chat_calls.clone();
@@ -1262,7 +2029,9 @@ mod tests {
 
         JournalWorker::evaluate(&db, provider, now, TEST_JOURNAL_MODEL).await;
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         assert!(
             JournalRepo::get(&db, &profile.id, "2026-10-18")
                 .await
@@ -1274,7 +2043,11 @@ mod tests {
         let mark = SettingsRepo::get(&db, "journal_last_judged_day")
             .await
             .unwrap();
-        assert_eq!(mark.as_deref(), Some("2026-10-18"), "the day is marked as judged");
+        assert_eq!(
+            mark.as_deref(),
+            Some("2026-10-18"),
+            "the day is marked as judged"
+        );
         assert_eq!(
             calls.lock().unwrap().len(),
             1,
@@ -1290,8 +2063,14 @@ mod tests {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
-        insert_message(&db, "user", "Un día intenso de trabajo.", 100, "2026-10-18T09:00:00Z")
-            .await;
+        insert_message(
+            &db,
+            "user",
+            "Un día intenso de trabajo.",
+            100,
+            "2026-10-18T09:00:00Z",
+        )
+        .await;
 
         let mock = MockJournalLLM::new(
             r#"{"write": true, "content": "El relato del día.", "mood": "genial", "achievements": "no es lista", "struggles": [""], "tags": [42, "ok"]}"#,
@@ -1300,7 +2079,9 @@ mod tests {
 
         JournalWorker::evaluate(&db, provider, now, TEST_JOURNAL_MODEL).await;
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         let entry = JournalRepo::get(&db, &profile.id, "2026-10-18")
             .await
             .unwrap()
@@ -1350,7 +2131,9 @@ mod tests {
 
         JournalWorker::evaluate(&db, provider, now, TEST_JOURNAL_MODEL).await;
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         assert!(
             JournalRepo::get(&db, &profile.id, "2026-10-18")
                 .await
@@ -1378,15 +2161,21 @@ mod tests {
 
     /// Scenario: El bloque lleva los tres materiales y el día.
     #[tokio::test]
-    async fn test_journal_worker_the_material_block_declares_the_day_and_carries_the_three_sources() {
+    async fn test_journal_worker_the_material_block_declares_the_day_and_carries_the_three_sources()
+    {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
-        JournalRepo::upsert(&db, &entry_for(&profile.id, "2026-10-17", "Ayer toqué la guitarra."))
+        let profile = ProfilesRepo::get_or_create(&db)
             .await
-            .expect("previous entry");
+            .expect("default profile");
+        JournalRepo::upsert(
+            &db,
+            &entry_for(&profile.id, "2026-10-17", "Ayer toqué la guitarra."),
+        )
+        .await
+        .expect("previous entry");
 
         insert_fact(&db, "2026-10-18T08:00:00+00:00", "Fui al supermercado").await;
         insert_message(
@@ -1488,20 +2277,35 @@ mod tests {
 
     /// Scenario: La entrada se escribe con el perfil por defecto y por upsert.
     #[tokio::test]
-    async fn test_journal_worker_entries_are_upserted_with_the_default_profile_and_a_marked_day_is_not_rejudged() {
+    async fn test_journal_worker_entries_are_upserted_with_the_default_profile_and_a_marked_day_is_not_rejudged(
+    ) {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
-        insert_message(&db, "user", "Material del día 18.", 100, "2026-10-18T09:00:00Z").await;
+        insert_message(
+            &db,
+            "user",
+            "Material del día 18.",
+            100,
+            "2026-10-18T09:00:00Z",
+        )
+        .await;
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         // Una entrada ya escrita a mano para el mismo día: el upsert la
         // reemplaza, no duplica.
-        JournalRepo::upsert(&db, &entry_for(&profile.id, "2026-10-18", "Entrada escrita a mano."))
-            .await
-            .expect("manual entry");
+        JournalRepo::upsert(
+            &db,
+            &entry_for(&profile.id, "2026-10-18", "Entrada escrita a mano."),
+        )
+        .await
+        .expect("manual entry");
 
-        let mock = MockJournalLLM::new(r#"{"write": true, "content": "La entrada del worker.", "mood": "neutral"}"#);
+        let mock = MockJournalLLM::new(
+            r#"{"write": true, "content": "La entrada del worker.", "mood": "neutral"}"#,
+        );
         let calls = mock.chat_calls.clone();
         let provider = mock.wrap();
 
@@ -1515,7 +2319,10 @@ mod tests {
             entry.profile_id, profile.id,
             "la entrada va con el perfil por defecto"
         );
-        assert_eq!(entry.content, "La entrada del worker.", "el upsert reemplaza la fila");
+        assert_eq!(
+            entry.content, "La entrada del worker.",
+            "el upsert reemplaza la fila"
+        );
         let rows: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM journal_entries WHERE profile_id = ?1 AND date = ?2",
         )
@@ -1567,7 +2374,9 @@ mod tests {
             JournalWorker::evaluate(&db, provider.clone(), now, TEST_JOURNAL_MODEL).await;
         }
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         assert_eq!(
             calls.lock().unwrap().len(),
             3,
@@ -1623,7 +2432,9 @@ mod tests {
 
         JournalWorker::evaluate(&db, provider, now, TEST_JOURNAL_MODEL).await;
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         assert_eq!(
             calls.lock().unwrap().len(),
             1,
@@ -1658,7 +2469,14 @@ mod tests {
         put(&db, "timezone", "Europe/Madrid").await;
         put(&db, "journal_enabled", "false").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
-        insert_message(&db, "user", "Material del día 18.", 100, "2026-10-18T09:00:00Z").await;
+        insert_message(
+            &db,
+            "user",
+            "Material del día 18.",
+            100,
+            "2026-10-18T09:00:00Z",
+        )
+        .await;
 
         let mock = MockJournalLLM::new(valid_entry_json());
         let calls = mock.chat_calls.clone();
@@ -1670,7 +2488,9 @@ mod tests {
             calls.lock().unwrap().is_empty(),
             "apagada: no se llama al modelo"
         );
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         assert!(
             JournalRepo::get(&db, &profile.id, "2026-10-18")
                 .await
@@ -1715,7 +2535,14 @@ mod tests {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
-        insert_message(&db, "user", "Material del día.", 100, "2026-10-18T09:00:00Z").await;
+        insert_message(
+            &db,
+            "user",
+            "Material del día.",
+            100,
+            "2026-10-18T09:00:00Z",
+        )
+        .await;
 
         // El primer intento se corta por presupuesto y no cumple el contrato; el
         // segundo (respaldo) es válido.
@@ -1727,21 +2554,25 @@ mod tests {
 
         JournalWorker::evaluate(&db, provider, now, TEST_JOURNAL_MODEL).await;
 
-        let calls = calls.lock().unwrap();
-        assert_eq!(calls.len(), 2, "el truncamiento se reintenta una vez");
-        let first = calls[0]
-            .max_tokens
-            .expect("the attempt carries the role's budget");
-        let second = calls[1]
-            .max_tokens
-            .expect("the retry carries a budget");
+        let (first, second) = {
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 2, "el truncamiento se reintenta una vez");
+            (
+                calls[0]
+                    .max_tokens
+                    .expect("the attempt carries the role's budget"),
+                calls[1].max_tokens.expect("the retry carries a budget"),
+            )
+        };
         assert_eq!(
             second,
             first * 2,
             "un corte por presupuesto dobla el max_tokens del reintento"
         );
 
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         assert!(
             JournalRepo::get(&db, &profile.id, "2026-10-18")
                 .await
@@ -1757,7 +2588,14 @@ mod tests {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
-        insert_message(&db, "user", "Material del día.", 100, "2026-10-18T09:00:00Z").await;
+        insert_message(
+            &db,
+            "user",
+            "Material del día.",
+            100,
+            "2026-10-18T09:00:00Z",
+        )
+        .await;
 
         // El primer intento devuelve un contrato inválido sin truncarse.
         let mock = MockJournalLLM::new(valid_entry_json())
@@ -1769,7 +2607,11 @@ mod tests {
         JournalWorker::evaluate(&db, provider, now, TEST_JOURNAL_MODEL).await;
 
         let calls = calls.lock().unwrap();
-        assert_eq!(calls.len(), 2, "un fallo de forma también se reintenta una vez");
+        assert_eq!(
+            calls.len(),
+            2,
+            "un fallo de forma también se reintenta una vez"
+        );
         assert_eq!(
             calls[1].max_tokens, calls[0].max_tokens,
             "un fallo que no es un truncamiento repite los parámetros, sin doblar"
@@ -1780,11 +2622,19 @@ mod tests {
 
     /// Scenario: Dos fallos dejan la fila honesta y no se reintenta el día.
     #[tokio::test]
-    async fn test_journal_worker_two_failed_attempts_leave_an_honest_row_per_attempt_and_mark_the_day() {
+    async fn test_journal_worker_two_failed_attempts_leave_an_honest_row_per_attempt_and_mark_the_day(
+    ) {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
-        insert_message(&db, "user", "Material del día.", 100, "2026-10-18T09:00:00Z").await;
+        insert_message(
+            &db,
+            "user",
+            "Material del día.",
+            100,
+            "2026-10-18T09:00:00Z",
+        )
+        .await;
 
         let mock = MockJournalLLM::new("esto no es un JSON válido")
             .responses(vec!["esto tampoco"])
@@ -1822,9 +2672,13 @@ mod tests {
                 "el motivo de finalización está en error_message: {error}"
             );
             assert_eq!(row.get::<i64, _>(2), 500, "el uso de prompt se registra");
-            assert_eq!(row.get::<i64, _>(3), 200, "el uso de completado se registra");
+            assert_eq!(
+                row.get::<i64, _>(3),
+                200,
+                "el uso de completado se registra"
+            );
             assert!(
-                Option::<String>::from(row.get(4)).is_none(),
+                row.get::<Option<String>, _>(4).is_none(),
                 "profile_id es NULL: es una operación del sistema"
             );
         }
@@ -1833,8 +2687,14 @@ mod tests {
         let mark = SettingsRepo::get(&db, "journal_last_judged_day")
             .await
             .unwrap();
-        assert_eq!(mark.as_deref(), Some("2026-10-18"), "el día agotado queda marcado");
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        assert_eq!(
+            mark.as_deref(),
+            Some("2026-10-18"),
+            "el día agotado queda marcado"
+        );
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         assert!(
             JournalRepo::get(&db, &profile.id, "2026-10-18")
                 .await
@@ -1859,7 +2719,14 @@ mod tests {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
-        insert_message(&db, "user", "Material del día.", 100, "2026-10-18T09:00:00Z").await;
+        insert_message(
+            &db,
+            "user",
+            "Material del día.",
+            100,
+            "2026-10-18T09:00:00Z",
+        )
+        .await;
 
         // El transporte llega bien, pero el contenido no cumple el contrato.
         let provider = MockJournalLLM::new("no es un objeto JSON").wrap();
@@ -1871,7 +2738,7 @@ mod tests {
         .fetch_all(&db)
         .await
         .expect("journal rows exist");
-        assert!(rows.len() >= 1, "el intento (y su reintento) se registran");
+        assert!(!rows.is_empty(), "el intento (y su reintento) se registran");
         for row in &rows {
             let status: String = row.get(0);
             assert_eq!(
@@ -1884,7 +2751,7 @@ mod tests {
                 "el motivo del fallo de validación está en error_message"
             );
             assert!(
-                Option::<String>::from(row.get(2)).is_none(),
+                row.get::<Option<String>, _>(2).is_none(),
                 "profile_id es NULL"
             );
         }
@@ -1896,7 +2763,14 @@ mod tests {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         let now = madrid_at(2026, 10, 19, 4, 5);
-        insert_message(&db, "user", "Material del día.", 100, "2026-10-18T09:00:00Z").await;
+        insert_message(
+            &db,
+            "user",
+            "Material del día.",
+            100,
+            "2026-10-18T09:00:00Z",
+        )
+        .await;
 
         let provider = MockJournalLLM::new(valid_entry_json()).wrap();
         JournalWorker::evaluate(&db, provider, now, TEST_JOURNAL_MODEL).await;
@@ -1907,19 +2781,21 @@ mod tests {
             "el origen canónico de la bitácora es 'journal'"
         );
 
-        let rows = sqlx::query(
-            "SELECT status, kind, profile_id FROM llm_requests WHERE kind = 'journal'",
-        )
-        .fetch_all(&db)
-        .await
-        .expect("journal rows exist");
+        let rows =
+            sqlx::query("SELECT status, kind, profile_id FROM llm_requests WHERE kind = 'journal'")
+                .fetch_all(&db)
+                .await
+                .expect("journal rows exist");
         assert_eq!(rows.len(), 1, "un solo intento válido es una sola fila");
         let status: String = rows[0].get(0);
-        assert_eq!(status, "success", "una respuesta que cumple el contrato es éxito");
+        assert_eq!(
+            status, "success",
+            "una respuesta que cumple el contrato es éxito"
+        );
         let kind: String = rows[0].get(1);
         assert_eq!(kind, "journal", "la fila lleva kind = 'journal'");
         assert!(
-            Option::<String>::from(rows[0].get(2)).is_none(),
+            rows[0].get::<Option<String>, _>(2).is_none(),
             "profile_id es NULL"
         );
     }
@@ -1928,7 +2804,8 @@ mod tests {
 
     /// Scenario: El fallo no toca nada más.
     #[tokio::test]
-    async fn test_journal_worker_an_exhausted_failure_touches_nothing_and_the_next_day_writes_normally() {
+    async fn test_journal_worker_an_exhausted_failure_touches_nothing_and_the_next_day_writes_normally(
+    ) {
         let db = test_db().await;
         put(&db, "timezone", "Europe/Madrid").await;
         put(&db, "journal_last_judged_day", "2026-10-15").await;
@@ -1954,9 +2831,15 @@ mod tests {
             messages_before,
             "messages no cambia"
         );
-        assert_eq!(count_facts(&db).await, facts_before, "timeline_events no cambia");
+        assert_eq!(
+            count_facts(&db).await,
+            facts_before,
+            "timeline_events no cambia"
+        );
         assert_eq!(count_memory(&db).await, 0, "memory no cambia");
-        let profile = ProfilesRepo::get_or_create(&db).await.expect("default profile");
+        let profile = ProfilesRepo::get_or_create(&db)
+            .await
+            .expect("default profile");
         assert!(
             JournalRepo::get(&db, &profile.id, "2026-10-16")
                 .await
@@ -2000,7 +2883,12 @@ mod tests {
     async fn test_pool_starts_and_stops_the_journal_worker_even_without_embeddings() {
         let db = test_db().await;
         let config = test_config();
-        let mut pool = WorkerPool::start(db, &config, MockJournalLLM::new(valid_entry_json()).wrap(), None);
+        let mut pool = WorkerPool::start(
+            db,
+            &config,
+            MockJournalLLM::new(valid_entry_json()).wrap(),
+            None,
+        );
 
         assert!(
             pool.journal.is_some(),
