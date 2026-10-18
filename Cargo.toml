@@ -196,3 +196,11 @@ path = "tests/api/notifications.rs"
 [[test]]
 name = "ingest_keys"
 path = "tests/api/ingest_keys.rs"
+
+[[test]]
+name = "journal-migration"
+path = "tests/db/journal_migration.rs"
+
+[[test]]
+name = "journal-repo"
+path = "tests/db/journal_repo.rs"
