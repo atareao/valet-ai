@@ -204,3 +204,7 @@ path = "tests/db/journal_migration.rs"
 [[test]]
 name = "journal-repo"
 path = "tests/db/journal_repo.rs"
+
+[[test]]
+name = "journal-tool"
+path = "tests/tools/journal_tool.rs"
