@@ -4023,8 +4023,15 @@ mod tests {
     /// consolidation failure does not poison the worker: a **new** batch, with a
     /// consolidation that succeeds, still updates the persistent state normally.
     ///
-    /// The same rate limiter is carried across both passes, so this also proves
-    /// the degraded pass cleared it instead of leaving the worker stuck.
+    /// The degraded pass marks its own batch, so the second batch is a **new**
+    /// one, not a retry of the degraded one. That is also why the rate limiter is
+    /// *not* part of what this test proves: only a failed episodic call arms
+    /// `last_llm_attempt`, and here the card succeeds — it is the consolidation
+    /// that fails — so the limiter both passes share never leaves `0`. In the real
+    /// flow it could not fire either, because it is only read while messages
+    /// remain unindexed and the degraded pass has just marked them all. What this
+    /// test pins down is the state transition: the next batch consolidates and
+    /// writes normally instead of inheriting the failure.
     #[tokio::test]
     async fn test_pass_after_a_degraded_one_updates_the_state_normally() {
         let db = test_db().await;
