@@ -21,26 +21,29 @@ pub fn init_tracing(log_level: &str) {
 mod tests {
     use super::*;
 
+    /// Instala el suscriptor **por hilo** en vez de en el slot global.
+    ///
+    /// Este binario de test comparte proceso con tests que capturan trazas con su
+    /// propio suscriptor global (p. ej. `tools::blog_comments`): un `try_init`
+    /// global aquí dejaría a aquellos sin suscriptor y su captura fallaría de
+    /// forma intermitente según el orden de ejecución. Un suscriptor por hilo no
+    /// contamina el slot global y mantiene el test aislado.
+    fn scoped(log_level: &str) -> tracing::subscriber::DefaultGuard {
+        tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_env_filter(EnvFilter::new(log_level))
+                .with_test_writer()
+                .finish(),
+        )
+    }
+
     #[test]
     fn test_init_tracing_does_not_panic() {
-        // Use try_init to avoid panic from double initialization in tests
-        let result = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("info"))
-            .with_test_writer()
-            .try_init();
-
-        // ok if first init, err if already initialized (harmless in test context)
-        assert!(result.is_ok() || result.is_err());
+        let _guard = scoped("info");
     }
 
     #[test]
     fn test_init_tracing_with_custom_level() {
-        // Using try_init since tracing is likely already initialized by the previous test
-        let result = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("debug"))
-            .with_test_writer()
-            .try_init();
-
-        assert!(result.is_ok() || result.is_err());
+        let _guard = scoped("debug");
     }
 }
