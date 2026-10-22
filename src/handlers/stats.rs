@@ -454,8 +454,11 @@ mod tests {
     async fn test_by_day_handler() {
         let state = setup_state().await;
 
+        // Fechas relativas al reloj: 5 días dentro de la ventana de 30 días.
         for i in 1..=5 {
-            let date = format!("2026-09-{:02}T10:00:00", 20 + i);
+            let date = (chrono::Utc::now() - chrono::Duration::days(6 - i as i64))
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string();
             let id = format!("dh-{i}");
             insert_request(
                 &state.db,
