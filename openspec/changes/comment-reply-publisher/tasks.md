@@ -96,8 +96,48 @@ servidor de prueba con `wiremock`, como ya hacen `src/services/miniflux.rs` y
 
 ## 7. Verificación
 
-- [ ] 7.1 Anotar el recuento de tests **antes y después** y dejar la suite de Rust completa en verde con `cargo test --no-fail-fast` (0 fallos). Dejar constancia de los dos números.
-- [ ] 7.2 `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios (0 warnings).
-- [ ] 7.3 Revisar la suite contra las mutaciones ya anotadas en 4.6, 5.5, 5.6 y 6.7: cada control crítico —validación de `content`, ausencia de `author_name`/`author_email`, reserva atómica, «no se suelta lo ambiguo» y cobertura del catálogo— tiene al menos un test que **falla** al quitarlo. Dejar la lista de mutaciones y de tests que las detectan.
-- [ ] 7.4 Comprobar que no se ha tocado nada fuera del alcance: `git status --porcelain` no muestra cambios en el repositorio de WordPress ni en `src/routes/notifications.rs` (`IngestRequest` sigue con sus cinco campos y sin `deny_unknown_fields`), y `grep -rn "deny_unknown_fields" src/routes/notifications.rs` sigue sin coincidencias. Verificar con `git diff --stat`.
+- [x] 7.1 Anotar el recuento de tests **antes y después** y dejar la suite de Rust completa en verde con `cargo test --no-fail-fast` (0 fallos). Dejar constancia de los dos números.
+  - **Antes:** `development` (ya con el PR #221 mergeado) → **1558 passed; 0 failed**.
+  - **Después:** rama `feature/comment-reply-publisher` → **1626 passed; 0 failed**. La diferencia (**+68**) son los tests de este change.
+  - **Suite completa en verde:** `cargo test --no-fail-fast` → agregado de `grep -E "^test result:"` sobre la salida literal: `TOTAL passed=1626 failed=0 ignored=1`. **exit 0**, sin ningún `failures:` ni `error[` en la salida. (El único `ignored` es preexistente en el repositorio y no procede de este change.)
+- [x] 7.2 `cargo clippy --all-targets -- -D warnings` y `cargo fmt --check` limpios (0 warnings).
+  - `cargo fmt --all -- --check` → sin salida (ningún fichero desviado), **exit 0**.
+  - `cargo clippy --all-targets -- -D warnings` → `Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 0.21s`, **exit 0**, 0 warnings (ninguna línea `warning`/`error`).
+- [x] 7.3 Revisar la suite contra las mutaciones ya anotadas en 4.6, 5.5, 5.6 y 6.7: cada control crítico —validación de `content`, ausencia de `author_name`/`author_email`, reserva atómica, «no se suelta lo ambiguo» y cobertura del catálogo— tiene al menos un test que **falla** al quitarlo. Dejar la lista de mutaciones y de tests que las detectan.
+  - **Re-ejecutadas las cinco mutaciones en esta sesión** (mutar → `cargo test` → salida literal → `git checkout --` → confirmar `sha256sum`). **Ningún control quedó sin test falsable: no hay hallazgo de cobertura y no hubo que añadir ningún test.**
+
+    | Control crítico | Mutación aplicada | Test que se pone en rojo | exit | Restauración |
+    |---|---|---|---|---|
+    | (i) Validación de `content` | Quitar la comprobación de vacío **y** la de longitud en `validate_content` (`src/tools/blog_comments.rs`) | `tools::blog_comments::tests::content_validation_rejects_without_request` | **101** | `git checkout --` → sha `046c150d…` idéntico |
+    | (ii) Ausencia de `author_name`/`author_email` en el cuerpo | Añadir `"author_name": "4.6-b"` al cuerpo de `publish_comment_reply` (`src/services/wordpress.rs`) | `publishes_trimmed_content_approved_without_author_fields` | **101** | `git checkout --` → sha `2a3617ab…` idéntico |
+    | (iii) Liberar vs conservar según desenlace | Invertir `releases_reservation` a `matches!(Unavailable \| Unexpected)` (`src/tools/blog_comments.rs`) | `rate_limited_releases_reservation` + `bad_request/unauthorized/forbidden_releases_reservation` + `server_error/network_failure/timeout_leaves_reservation_uncertain` (**7 rojos**, en los dos sentidos) | **101** | `git checkout --` → sha `046c150d…` idéntico |
+    | (iv) Atomicidad de la reserva | Quitar `ON CONFLICT(comment_id) DO NOTHING` (`INSERT` a ciegas) en `src/db/repos/comment_replies.rs` | `duplicate_registration_refuses_without_request` + `concurrent_calls_publish_once` (+ de rebote `server_error_leaves_reservation_uncertain`) | **101** | `git checkout --` → sha `7f4c93c2…` idéntico |
+    | (v) Exposición en el catálogo de la skill `blog` | (M1) `blog.tools = []`; (M2) añadir `blog_comment_reply` a `pendientes` (`src/orchestrator/skills.rs`) | M1 → `every_registered_tool_is_covered_by_core_or_a_skill` («herramientas huérfanas: ["blog_comment_reply"]»); M2 → `blog_comment_reply_is_not_in_pendientes` + `blog_skill_covers_only_blog_comment_reply` | **101** (ambas) | `git checkout --` → sha `66250058…` idéntico (las dos) |
+
+  - Salidas literales (extractos de la corrida de esta sesión):
+    - (i) `test result: FAILED. 0 passed; 1 failed; … filtered out` + `error: test failed`.
+    - (ii) `test result: FAILED. 0 passed; 1 failed; … filtered out`.
+    - (iii) `test result: FAILED. 23 passed; 7 failed; … filtered out`.
+    - (iv) `test result: FAILED. 27 passed; 3 failed; … filtered out`.
+    - (v) M1 `FAILED. 0 passed; 1 failed`; M2 `FAILED. 33 passed; 2 failed`.
+  - Al terminar las seis mutaciones: `git status --porcelain` **vacío** (árbol limpio); las cuatro `sha256sum` de restauración coinciden con las de partida.
+- [x] 7.4 Comprobar que no se ha tocado nada fuera del alcance: `git status --porcelain` no muestra cambios en el repositorio de WordPress ni en `src/routes/notifications.rs` (`IngestRequest` sigue con sus cinco campos y sin `deny_unknown_fields`), y `grep -rn "deny_unknown_fields" src/routes/notifications.rs` sigue sin coincidencias. Verificar con `git diff --stat`.
+  - `git status --porcelain` → **vacío** (árbol limpio).
+  - `git diff development...HEAD --stat` → **26 ficheros**, todos del change (`Cargo.toml`, `.env.example`/`.env.j2`/`.env.prod.sample`, `migrations/20261022000001_comment_replies.sql`, `migrations/20261022000002_blog_skill.sql`, `openspec/changes/comment-reply-publisher/**`, `src/db/repos/comment_replies.rs`, `src/db/repos/mod.rs`, `src/lib.rs`, `src/orchestrator/skill_router.rs`, `src/orchestrator/skills.rs`, `src/services/mod.rs`, `src/services/wordpress.rs`, `src/telemetry.rs`, `src/tools/blog_comments.rs`, `src/tools/mod.rs`, `tests/api/tools.rs`, `tests/db/comment_reply_publisher_migration.rs`): `26 files changed, 4369 insertions(+), 30 deletions(-)`.
+  - **`src/routes/notifications.rs` NO aparece** en el diff (`git diff development...HEAD --name-only | grep notifications.rs` → sin coincidencias): el contrato de ingesta no cambia. `grep -n "deny_unknown_fields" src/routes/notifications.rs` → **sin coincidencias**.
+  - **Ningún fichero del repositorio de WordPress** (`/data/php/atareao.es`) aparece en el diff (`grep -c atareao.es` sobre `--name-only` → `0`).
 - [ ] 7.5 **Bloqueada hasta el aprovisionamiento manual** (requisito declarado en `design.md`, sección *Migration Plan*): con el usuario de servicio creado, su rol `moderate_comments` asignado y su Application Password en `BLOG_APP_PASSWORD`, aprobar un comentario real en el sitio, comprobar que el aviso llega con `metadata.comment_id` y `metadata.post_id`, pedir al asistente que responda y verificar en el panel de WordPress que la respuesta aparece **aprobada** y **una sola vez**; repetir la petición y comprobar que la herramienta responde «ya tiene respuesta registrada» sin publicar nada.
+  - **Nota de bloqueo (se conserva; es la única casilla sin marcar).** Doble motivo: (a) falta el aprovisionamiento manual en WordPress; (b) el core solo admite Application Passwords sobre **SSL** o con entorno `local`, y el sitio de desarrollo es **HTTP con entorno `production`**, así que no puede emitirse allí.
+  - **Comandos exactos para cerrarla** (los mismos de `design.md` § *Migration Plan*, paso 2; hoy no hay `wp-cli`/`just` sobre el contenedor del sitio, así que se generan desde el panel *Usuarios → Perfil → Application Passwords*):
+    ```bash
+    # 1) Usuario de servicio con rol mínimo (read + moderate_comments)
+    just wp -- user create valet-bot valet-bot@example.invalid --role=subscriber --user_pass="$(openssl rand -base64 24)"
+    just wp -- user add-role valet-bot moderate_comments
+    # 2) Application Password para ese usuario (requiere SSL o entorno `local`)
+    just wp -- user application-password create valet-bot "valet" --porcelain
+    # 3) Variables en el entorno de Valet (nunca en el repositorio)
+    BLOG_BASE_URL=https://atareao.es
+    BLOG_SERVICE_USER=valet-bot
+    BLOG_APP_PASSWORD=xxxx xxxx xxxx xxxx xxxx xxxx
+    ```
+  - Cierre: con el usuario aprovisionado, aprobar un comentario real, confirmar que el aviso trae `metadata.comment_id`/`metadata.post_id`, pedir al asistente que responda y verificar en el panel que la respuesta aparece **aprobada** y **una sola vez**; repetir y comprobar que responde «ya tiene respuesta registrada» sin publicar.
