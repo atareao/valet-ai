@@ -24,6 +24,7 @@ pub enum Skill {
     Timeline,
     Email,
     Rss,
+    Blog,
 }
 
 /// Especificación cerrada de una skill.
@@ -58,7 +59,7 @@ pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 10] = [
+static CATALOG: [SkillSpec; 11] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
@@ -191,6 +192,17 @@ static CATALOG: [SkillSpec; 10] = [
         prompt_key: "SKILL_RSS_PROMPT",
         prompt_heading: "# SKILL ACTIVA: RSS",
     },
+    SkillSpec {
+        skill: Skill::Blog,
+        id: "blog",
+        instructions: "¿La respuesta requiere responder a un comentario del blog publicando una respuesta en el sitio?",
+        criteria_true: "El mensaje pide responder a un comentario del sitio o publicar una respuesta bajo un comentario ya aprobado. Cuenta también el comentario que llega como aviso entrante de otra aplicación (por ejemplo, un aviso de comentario nuevo que se pide responder).",
+        criteria_false: "El mensaje no se refiere a ningún comentario del blog ni pide publicar una respuesta en el sitio.",
+        threshold: 0.10,
+        tools: &["blog_comment_reply"],
+        prompt_key: "SKILL_BLOG_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: BLOG",
+    },
 ];
 
 /// Catálogo cerrado de skills, en el orden canónico del sistema.
@@ -232,9 +244,9 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las diez variantes del enum, para exigir que el catálogo las cubra
+    /// Las once variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 10] = [
+    const ALL_SKILLS: [Skill; 11] = [
         Skill::Agenda,
         Skill::Pendientes,
         Skill::Recuerdos,
@@ -245,6 +257,7 @@ mod tests {
         Skill::Timeline,
         Skill::Email,
         Skill::Rss,
+        Skill::Blog,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -459,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_declares_exactly_the_ten_wide_domain_ids() {
+    fn catalog_declares_exactly_the_eleven_wide_domain_ids() {
         let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
 
         for id in [
@@ -473,6 +486,7 @@ mod tests {
             "timeline",
             "email",
             "rss",
+            "blog",
         ] {
             assert!(
                 ids.contains(&id),
@@ -481,8 +495,8 @@ mod tests {
         }
         assert_eq!(
             ids.len(),
-            10,
-            "el catálogo debe tener exactamente diez skills; tiene {ids:?}"
+            11,
+            "el catálogo debe tener exactamente once skills; tiene {ids:?}"
         );
     }
 
@@ -654,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_thirty_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_thirty_one_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -666,8 +680,12 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            30,
-            "el core más las diez skills deben cubrir las treinta herramientas: {covered:?}"
+            31,
+            "el core más las once skills deben cubrir las treinta y una herramientas: {covered:?}"
+        );
+        assert!(
+            covered.iter().any(|t| t == "blog_comment_reply"),
+            "la cobertura debe incluir `blog_comment_reply`: {covered:?}"
         );
         for spec in catalog() {
             assert!(
@@ -679,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_keys_are_the_ten_canonical_keys() {
+    fn prompt_keys_are_the_eleven_canonical_keys() {
         let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
 
         for key in [
@@ -693,6 +711,7 @@ mod tests {
             "SKILL_TIMELINE_PROMPT",
             "SKILL_EMAIL_PROMPT",
             "SKILL_RSS_PROMPT",
+            "SKILL_BLOG_PROMPT",
         ] {
             assert!(
                 keys.contains(&key),
@@ -701,8 +720,16 @@ mod tests {
         }
         assert_eq!(
             keys.len(),
-            10,
-            "el catálogo debe declarar exactamente diez claves de fragmento; tiene {keys:?}"
+            11,
+            "el catálogo debe declarar exactamente once claves de fragmento; tiene {keys:?}"
+        );
+        let mut unique = keys.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            keys.len(),
+            "las claves de fragmento deben ser únicas; tiene {keys:?}"
         );
         for legacy in [
             "SKILL_TAREAS_PROMPT",
@@ -881,5 +908,91 @@ mod tests {
                 "las criteria de `recuerdos` deben incluir «{marker}»; tienen: {criteria:?}"
             );
         }
+    }
+
+    // ─── RED: la skill del blog (comment-reply-publisher, 6.3) ──────────────
+    //
+    // Publicar en el blog es una skill propia —`blog`— y no una herramienta de
+    // `pendientes`: si viviera allí, un turno sobre tareas o recordatorios
+    // ganaría capacidad de publicar en el sitio. Estas pruebas describen ese
+    // contrato y **fallan** con el catálogo actual.
+
+    /// La entrada del catálogo con el id dado, o `None` si aún no existe (para
+    /// que el test falle por aserción y no por pánico).
+    fn spec_of(id: &str) -> Option<&'static SkillSpec> {
+        catalog().iter().find(|spec| spec.id == id)
+    }
+
+    #[test]
+    fn blog_skill_covers_only_blog_comment_reply() {
+        let blog = spec_of("blog").expect("el catálogo debe declarar la skill `blog`");
+        assert_eq!(
+            blog.tools,
+            &["blog_comment_reply"][..],
+            "blog debe cubrir `blog_comment_reply` y ninguna otra herramienta: {:?}",
+            blog.tools
+        );
+
+        let owners: Vec<&str> = catalog()
+            .iter()
+            .filter(|spec| spec.tools.contains(&"blog_comment_reply"))
+            .map(|spec| spec.id)
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["blog"],
+            "`blog_comment_reply` no puede repartirse entre skills distintas; lo cubren: {owners:?}"
+        );
+    }
+
+    #[test]
+    fn blog_comment_reply_is_not_in_pendientes() {
+        let pendientes = spec_of("pendientes").expect("pendientes debe estar en el catálogo");
+        assert!(
+            !pendientes.tools.contains(&"blog_comment_reply"),
+            "una capacidad de escritura no ensancha `pendientes`: {:?}",
+            pendientes.tools
+        );
+        assert!(
+            pendientes.tools.contains(&"notifications"),
+            "`notifications` (solo lectura de avisos) permanece en pendientes: {:?}",
+            pendientes.tools
+        );
+    }
+
+    #[test]
+    fn blog_skill_is_a_domain_skill_with_threshold_010() {
+        let blog = spec_of("blog").expect("el catálogo debe declarar la skill `blog`");
+        assert_eq!(
+            pct(blog.threshold),
+            10,
+            "blog debe declarar el umbral 0.10 de las skills de dominio"
+        );
+        assert!(
+            !CORE_TOOLS.contains(&"blog_comment_reply"),
+            "blog_comment_reply es enrutable: no pertenece al core"
+        );
+    }
+
+    #[test]
+    fn blog_criteria_cover_responding_to_a_comment_and_incoming_notice() {
+        let blog = spec_of("blog").expect("el catálogo debe declarar la skill `blog`");
+        assert!(
+            !blog.instructions.trim().is_empty(),
+            "blog debe declarar una pregunta"
+        );
+        assert!(
+            !blog.criteria_false.trim().is_empty(),
+            "blog debe declarar un criteria_false"
+        );
+        let criteria = blog.criteria_true.to_lowercase();
+        assert!(
+            criteria.contains("comentario"),
+            "el criteria_true debe cubrir responder a un comentario del blog: {criteria:?}"
+        );
+        assert!(
+            criteria.contains("aviso"),
+            "el criteria_true debe cubrir el comentario que llega como aviso entrante: {criteria:?}"
+        );
     }
 }

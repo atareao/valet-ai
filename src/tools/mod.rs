@@ -1,3 +1,4 @@
+pub mod blog_comments;
 pub mod calendar;
 pub mod current_location;
 pub mod current_time;
