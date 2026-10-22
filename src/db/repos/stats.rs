@@ -1077,9 +1077,13 @@ mod tests {
     async fn test_by_day() {
         let pool = setup().await;
 
-        // Insert one request per day for 7 days, ending yesterday
+        // Insert one request per day for 7 days, ending yesterday.
+        // Fechas relativas al reloj: el test no debe caducar con la ventana
+        // de 30 días de `by_day` (antes eran literales con fecha fija).
         for i in 1..=7 {
-            let date = format!("2026-09-{:02}T10:00:00", 18 + i); // Sep 19..Sep 25
+            let date = (chrono::Utc::now() - chrono::Duration::days(8 - i as i64))
+                .format("%Y-%m-%dT%H:%M:%S")
+                .to_string();
             let id = format!("day-req-{i}");
             insert_request(
                 &pool,
