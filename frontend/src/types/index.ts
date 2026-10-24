@@ -86,7 +86,58 @@ export interface MessageQuery {
   content: string;
   browser_context?: BrowserContext;
   override?: string;
+  /**
+   * Identificador de mensaje propuesto por el cliente (`POST /api/chat/stream`).
+   * El servidor lo usa si es una cadena no vacía de hasta 64 caracteres que no
+   * corresponda a un mensaje ya persistido; si no, genera uno propio sin fallar
+   * el turno. Permite que la burbuja optimista se sustituya por id.
+   */
+  client_message_id?: string;
 }
+
+/**
+ * Cursor **opaco** del bus de eventos del chat. Su forma de cable es
+ * `"<created_at>|<id>"`; el cliente nunca lo interpreta, solo lo devuelve tal
+ * cual en `?since=`.
+ */
+export type ChatCursor = string;
+
+/** Estado del turno en el instante de abrir la suscripción. Siempre el primero. */
+export interface ChatSnapshotEvent {
+  type: "snapshot";
+  busy: boolean;
+}
+
+/** Fila completa y persistida de un mensaje, con su cursor. */
+export interface ChatMessageCreatedEvent {
+  type: "message_created";
+  message: Message;
+  cursor: ChatCursor;
+}
+
+export interface ChatTurnStartedEvent {
+  type: "turn_started";
+}
+
+export interface ChatTurnFinishedEvent {
+  type: "turn_finished";
+}
+
+/**
+ * El suscriptor se quedó atrás y el servidor cierra el stream: hay que
+ * reconectar con el último cursor conocido para no perder mensajes en silencio.
+ */
+export interface ChatResyncEvent {
+  type: "resync";
+}
+
+/** Evento del bus de eventos (`GET /api/chat/events`), discriminado por `type`. */
+export type ChatEvent =
+  | ChatSnapshotEvent
+  | ChatMessageCreatedEvent
+  | ChatTurnStartedEvent
+  | ChatTurnFinishedEvent
+  | ChatResyncEvent;
 
 export type SSEEventType =
   | "chunk"

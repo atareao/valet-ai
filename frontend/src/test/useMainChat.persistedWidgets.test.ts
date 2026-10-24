@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { useMainChat } from "../hooks/useMainChat";
 import { api } from "../api/client";
@@ -16,6 +16,9 @@ vi.mock("../api/client", () => ({
     approveAction: vi.fn().mockResolvedValue(undefined),
   },
   BASE_URL: "http://localhost:3000",
+  UNAUTHORIZED_EVENT: "valet:unauthorized",
+  chatEventsUrl: (since?: string | null) =>
+    `http://localhost:3000/chat/events${since ? `?since=${since}` : ""}`,
 }));
 
 vi.mock("../hooks/useSSE", () => ({
@@ -42,6 +45,16 @@ async function mountChat() {
 describe("useMainChat — widgets persistidos", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // La suscripción al bus de eventos queda colgada: estas pruebas no hablan
+    // con la red.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("reconstruye widgetsByMessage desde message.widgets del historial", async () => {
