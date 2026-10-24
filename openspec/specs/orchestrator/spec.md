@@ -220,3 +220,51 @@ La recuperación de memoria episódica SHALL ser ortogonal a `ContextStrategy`: 
 **Given** `MEMORY_KNN_CANDIDATES = 20` y la primera candidata por distancia supera la similitud mínima  
 **When** se construye el contexto  
 **Then** `rag_memories` NO SHALL ser vacío
+
+### Requirement: El orquestador SHALL publicar en el bus cada mensaje que persiste
+
+Tras persistir el mensaje de usuario y tras persistir el mensaje del asistente, el orquestador SHALL publicar en el bus de eventos del chat un evento con la **fila persistida completa** del mensaje (identificador, rol, contenido, marca temporal del servidor, ubicación, `tools_used` y widgets). La publicación SHALL ocurrir **después** de la escritura en base de datos, de modo que cualquier cliente que reaccione al evento pueda leer la misma fila. El orquestador SHALL NOT publicar fragmentos de texto del turno en curso.
+
+#### Scenario: El mensaje de usuario se publica tras persistirse
+**Given** un turno que empieza
+**When** el orquestador persiste el mensaje de usuario
+**Then** publica un evento con la fila persistida de ese mensaje
+**And** el evento lleva la marca temporal que quedó en la base de datos
+
+#### Scenario: El mensaje del asistente se publica tras persistirse
+**Given** un turno que completa con respuesta
+**When** el orquestador persiste el mensaje del asistente
+**Then** publica un evento con la fila persistida de ese mensaje
+**And** el evento incluye `tools_used` cuando el turno usó herramientas
+
+#### Scenario: Un turno que falla no publica un mensaje del asistente inexistente
+**Given** un turno que termina con error del proveedor
+**When** el orquestador no llega a persistir el mensaje del asistente
+**Then** no publica ningún evento de mensaje del asistente
+
+#### Scenario: Los fragmentos del turno no viajan por el bus
+**Given** un turno que produce varios fragmentos de texto
+**When** el orquestador los emite al cliente del turno
+**Then** publica en el bus únicamente los mensajes que persiste
+**And** ningún evento del bus contiene el texto parcial del turno
+
+---
+
+### Requirement: El orquestador SHALL preservar el texto parcial cuando el stream falla a mitad
+
+Cuando el stream del modelo falla después de haber emitido fragmentos de texto, el orquestador SHALL incluir en el evento de error enviado al cliente el **texto parcial acumulado** hasta ese punto, en vez de descartarlo. Si el fallo ocurre antes de emitir ningún fragmento, el evento de error SHALL NOT llevar texto parcial. El texto parcial SHALL NOT persistirse en `messages`.
+
+#### Scenario: Fallo tras algunos fragmentos conserva el texto
+**Given** un turno cuyo stream emite "Hola, esto es una resp" y después falla
+**When** el orquestador emite el evento de error al cliente
+**Then** el evento incluye el texto parcial "Hola, esto es una resp"
+
+#### Scenario: Fallo sin fragmentos no lleva texto
+**Given** un turno cuyo stream falla antes de emitir ningún fragmento
+**When** el orquestador emite el evento de error
+**Then** el evento no lleva texto parcial
+
+#### Scenario: El parcial no se persiste
+**Given** un turno cuyo stream falla tras emitir fragmentos
+**When** el turno termina
+**Then** NO se persiste ningún mensaje de asistente con el texto parcial

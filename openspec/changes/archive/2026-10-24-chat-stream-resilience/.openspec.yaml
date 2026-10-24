@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-24
+goal: Que una respuesta larga y lenta no se corte ni desaparezca de la UI, con
+  timeout configurable por entorno
