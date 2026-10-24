@@ -1,4 +1,18 @@
 # Changelog
+## [0.17.0] - 2026-10-24
+
+### Documentation
+
+- *(openspec)* Redacta el change chat-cross-device-sync y su plan
+
+### Features
+
+- *(chat)* Bus de eventos y cursor de orden total para sincronizar el chat
+- *(chat)* El frontend se suscribe al bus y recupera la sincronía
+
+### Miscellaneous Tasks
+
+- *(frontend)* Resincroniza static con el build actual
 ## [0.16.0] - 2026-10-24
 
 ### Bug Fixes
