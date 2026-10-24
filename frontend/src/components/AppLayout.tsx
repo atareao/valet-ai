@@ -186,6 +186,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             onResolveApproval={mainChat.resolveApproval}
             widgetsByMessage={mainChat.widgetsByMessage}
             onWidgetAction={mainChat.sendWidgetAction}
+            remoteBusy={mainChat.remoteBusy}
+            error={mainChat.error}
+            rejectedDraft={mainChat.rejectedDraft}
           />
         )}
       </Content>

@@ -6,8 +6,10 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use crate::models::stats::{CallKind, LastApiCall};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
+use crate::chat_events::ChatEvent;
+use crate::db::repos::messages::CLIENT_MESSAGE_ID_MAX_LEN;
 use crate::db::repos::stats::StatsRepo;
 use crate::llm::decisions::DecisionsProvider;
 use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider, StreamEvent, ToolCall};
@@ -456,6 +458,25 @@ pub struct Orchestrator {
     /// el enrutado queda apagado salvo que se adjunte con
     /// [`Orchestrator::with_decisions`].
     pub decisions: Option<Arc<dyn DecisionsProvider>>,
+    /// Bus de eventos del chat. Cada mensaje que el turno persiste se publica
+    /// aquí, con la fila completa y su cursor (design D2), de modo que todos los
+    /// clientes suscritos a `GET /api/chat/events` lo vean. Nace a `None` en
+    /// [`Orchestrator::new`] —publicar es un no-op— y se adjunta con
+    /// [`Orchestrator::with_event_bus`].
+    pub events: Option<broadcast::Sender<ChatEvent>>,
+}
+
+/// ¿El fallo es una violación de clave única?
+///
+/// Se usa para que un `client_message_id` que se ocupe en la ventana entre el
+/// chequeo previo y el `INSERT` no tumbe el turno (design D5). sqlx traduce
+/// tanto `SQLITE_CONSTRAINT_UNIQUE` como `SQLITE_CONSTRAINT_PRIMARYKEY` a
+/// [`sqlx::error::ErrorKind::UniqueViolation`], que es lo que `messages.id`
+/// produce al chocar.
+fn is_unique_violation(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .is_some_and(|db| db.is_unique_violation())
 }
 
 impl Orchestrator {
@@ -483,6 +504,7 @@ impl Orchestrator {
             memory_tx,
             last_api_call,
             decisions: None,
+            events: None,
         }
     }
 
@@ -491,6 +513,127 @@ impl Orchestrator {
     pub fn with_decisions(mut self, decisions: Option<Arc<dyn DecisionsProvider>>) -> Self {
         self.decisions = decisions;
         self
+    }
+
+    /// Builder: adjunta el bus de eventos del chat. `None` deja las
+    /// publicaciones como no-op, que es lo que quieren los turnos que no
+    /// difunden nada.
+    pub fn with_event_bus(mut self, events: Option<broadcast::Sender<ChatEvent>>) -> Self {
+        self.events = events;
+        self
+    }
+
+    /// Publica en el bus la fila **ya persistida** de un mensaje.
+    ///
+    /// Se llama **después** de escribir en base de datos, de modo que cualquier
+    /// cliente que reaccione al evento ya puede leer la misma fila (design D2).
+    /// Solo viajan filas completas: nunca fragmentos del turno en curso. Un
+    /// fallo de envío únicamente significa que no hay suscriptores, así que no
+    /// puede hacer fallar el turno.
+    fn publish_persisted_message(&self, message: &crate::models::Message) {
+        if let Some(events) = &self.events {
+            let _ = events.send(ChatEvent::message_created(message));
+        }
+    }
+
+    /// Resuelve el identificador del mensaje de usuario del turno (design D5).
+    ///
+    /// Se respeta el `client_message_id` propuesto por el cliente cuando es una
+    /// cadena no vacía de cómo mucho [`CLIENT_MESSAGE_ID_MAX_LEN`] caracteres que
+    /// no corresponda a ningún mensaje ya persistido. En cualquier otro caso
+    /// —ausente, vacío, demasiado largo o ya usado— devuelve `None` y quien
+    /// llama deja que el repositorio genere el identificador. Un fallo al
+    /// comprobar la existencia tampoco rompe el turno: se genera uno propio.
+    async fn resolve_client_message_id(&self, requested: Option<&str>) -> Option<String> {
+        let requested = requested?;
+        if requested.is_empty() || requested.chars().count() > CLIENT_MESSAGE_ID_MAX_LEN {
+            return None;
+        }
+        match crate::db::repos::messages::MessagesRepo::find_by_id(&self.db, requested).await {
+            // Already taken: the turn proceeds with a server-generated id.
+            Ok(Some(_)) => None,
+            Ok(None) => Some(requested.to_string()),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "failed to check the requested client_message_id; generating one"
+                );
+                None
+            }
+        }
+    }
+
+    /// Persiste el mensaje de usuario del turno con el `id` propuesto, si lo
+    /// hay (design D5), y devuelve la fila **realmente persistida**.
+    ///
+    /// [`Self::resolve_client_message_id`] ya descarta los ids inservibles con
+    /// un chequeo previo, pero entre ese chequeo y el `INSERT` media una
+    /// ventana: un id que se ocupe en ese hueco haría saltar la clave única y,
+    /// con un `?`, tumbaría el turno. Aquí la garantía es local —si la
+    /// escritura con el id propuesto choca con la clave única, se reintenta con
+    /// un id generado por el servidor— de modo que la promesa de la spec no
+    /// depende de que otro cerrojo serialice los turnos. La fila preexistente
+    /// **no** se toca: nada de `INSERT OR REPLACE`.
+    ///
+    /// `requested_id == None` (id ausente, vacío, demasiado largo, ya usado o
+    /// no comprobable) escribe directamente con un id generado por el servidor,
+    /// como antes.
+    async fn persist_user_message(
+        &self,
+        requested_id: Option<&str>,
+        content: &str,
+        location: Option<&str>,
+    ) -> Result<crate::models::Message, AgentError> {
+        if let Some(id) = requested_id {
+            // El callback se consume en cada intento, así que se construye uno
+            // nuevo por llamada.
+            let collapse_callback = self
+                .collapse_tx
+                .clone()
+                .map(crate::workers::collapse::collapse_forwarder);
+            match crate::db::repos::messages::MessagesRepo::create_with_id(
+                &self.db,
+                id,
+                "user",
+                content,
+                None,
+                None,
+                location,
+                None, // tools_used (user messages don't have this)
+                self.config.collapse_threshold_tokens,
+                collapse_callback,
+            )
+            .await
+            {
+                Ok(message) => return Ok(message),
+                Err(error) if is_unique_violation(&error) => {
+                    tracing::warn!(
+                        %error,
+                        client_message_id = %id,
+                        "client_message_id already taken; generating one instead"
+                    );
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let collapse_callback = self
+            .collapse_tx
+            .clone()
+            .map(crate::workers::collapse::collapse_forwarder);
+        crate::db::repos::messages::MessagesRepo::create(
+            &self.db,
+            "user",
+            content,
+            None,
+            None,
+            location,
+            None, // tools_used (user messages don't have this)
+            self.config.collapse_threshold_tokens,
+            collapse_callback,
+        )
+        .await
+        .map_err(AgentError::from)
     }
 
     /// Persist the classifier call as a `kind='router'` row. Never touches
@@ -637,11 +780,17 @@ impl Orchestrator {
 
     /// Streaming entry point: runs the ReAct loop and emits [`SSEEvent`] values
     /// over the provided channel so the frontend can receive them incrementally.
+    ///
+    /// `client_message_id` es el identificador que el cliente propone para su
+    /// mensaje de usuario (design D5). Solo se usa si sirve —no vacío, de 64
+    /// caracteres o menos y sin colisión con un mensaje ya persistido—; en
+    /// cualquier otro caso se genera uno propio y el turno sigue igual.
     pub async fn process_message_stream(
         &self,
         profile_id: &str,
         user_message: &str,
         browser_context: Option<BrowserContext>,
+        client_message_id: Option<String>,
         tx: mpsc::Sender<SSEEvent>,
     ) -> Result<(), AgentError> {
         tracing::info!(
@@ -917,22 +1066,18 @@ impl Orchestrator {
         // Persist user message to DB
         let location = self.resolve_location().await;
         let user_message_id = {
-            let collapse_callback = self
-                .collapse_tx
-                .clone()
-                .map(crate::workers::collapse::collapse_forwarder);
-            let msg = crate::db::repos::messages::MessagesRepo::create(
-                &self.db,
-                "user",
-                user_message,
-                None,
-                None,
-                location.as_deref(),
-                None, // tools_used (user messages don't have this)
-                self.config.collapse_threshold_tokens,
-                collapse_callback,
-            )
-            .await?;
+            // The client may propose the identifier of its own message (D5);
+            // anything unusable falls back to a server-generated id, and a
+            // collision on write does too (never fails the turn).
+            let requested_id = self
+                .resolve_client_message_id(client_message_id.as_deref())
+                .await;
+            let msg = self
+                .persist_user_message(requested_id.as_deref(), user_message, location.as_deref())
+                .await?;
+            // Published only once the row is in the database, so any client that
+            // reacts to the event can read the very same row (D2).
+            self.publish_persisted_message(&msg);
             msg.id
         };
 
@@ -1381,12 +1526,12 @@ impl Orchestrator {
 
                             // Persist assistant message to DB (capture the real UUID)
                             let location = self.resolve_location().await;
-                            let assistant_message_id = {
+                            let mut assistant_message = {
                                 let collapse_callback = self
                                     .collapse_tx
                                     .clone()
                                     .map(crate::workers::collapse::collapse_forwarder);
-                                let msg = crate::db::repos::messages::MessagesRepo::create(
+                                crate::db::repos::messages::MessagesRepo::create(
                                     &self.db,
                                     "assistant",
                                     &content_buffer,
@@ -1397,20 +1542,31 @@ impl Orchestrator {
                                     self.config.collapse_threshold_tokens,
                                     collapse_callback,
                                 )
-                                .await?;
-                                msg.id
+                                .await?
                             };
 
                             // Persist the widgets emitted during this turn, if any,
                             // so the frontend can rebuild them on reload.
                             if !rendered_widgets.is_empty() {
+                                let widgets = serde_json::json!(rendered_widgets.clone());
                                 crate::db::repos::messages::MessagesRepo::set_widgets(
                                     &self.db,
-                                    &assistant_message_id,
-                                    &serde_json::json!(rendered_widgets.clone()),
+                                    &assistant_message.id,
+                                    &widgets,
                                 )
                                 .await?;
+                                // Mirror exactly what the row now holds, so the
+                                // published row is indistinguishable from a
+                                // re-read of the database (D2).
+                                assistant_message.widgets = Some(widgets);
                             }
+
+                            let assistant_message_id = assistant_message.id.clone();
+
+                            // The turn only publishes the assistant message once
+                            // it exists in the database, widgets included. A turn
+                            // that fails before this point publishes nothing.
+                            self.publish_persisted_message(&assistant_message);
 
                             // Notify the episodic memory worker about the new assistant message
                             if let Some(ref tx) = self.memory_tx {
@@ -1889,6 +2045,94 @@ mod tests {
         )
     }
 
+    // ─── chat-cross-device-sync (D5): la colisión de client_message_id no ───
+    // ─── puede tumbar el turno, ni depender del chequeo previo            ───
+
+    /// Un `id` propuesto que ya existe **a nivel de escritura** (se ocupó
+    /// después del chequeo previo de `resolve_client_message_id`) no debe
+    /// hacer fallar el turno: el helper reintenta con un id del servidor y
+    /// devuelve la fila realmente persistida, dejando intacta la preexistente.
+    #[tokio::test]
+    async fn test_persist_user_message_falls_back_when_requested_id_is_taken(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let orchestrator =
+            build_orchestrator_with_capture(pool.clone(), Arc::new(Mutex::new(None)), false).await;
+
+        // Se ocupa `cli-abc` directamente por repositorio: así la colisión se
+        // produce en el `INSERT` del helper, no en su chequeo previo.
+        let preexisting = crate::db::repos::messages::MessagesRepo::create_with_id(
+            &pool,
+            "cli-abc",
+            "user",
+            "pre-existing row",
+            None,
+            None,
+            None,
+            None,
+            orchestrator.config.collapse_threshold_tokens,
+            None,
+        )
+        .await?;
+
+        let persisted = orchestrator
+            .persist_user_message(Some("cli-abc"), "hello", None)
+            .await?;
+
+        // El turno no falla y el mensaje acaba con un id distinto del propuesto.
+        assert_ne!(persisted.id, "cli-abc");
+        assert_eq!(persisted.role, "user");
+        assert_eq!(persisted.content, "hello");
+
+        // La fila preexistente queda intacta (nada de INSERT OR REPLACE).
+        let untouched = crate::db::repos::messages::MessagesRepo::find_by_id(&pool, "cli-abc")
+            .await?
+            .expect("the pre-existing row must survive untouched");
+        assert_eq!(untouched.id, preexisting.id);
+        assert_eq!(untouched.content, "pre-existing row");
+
+        Ok(())
+    }
+
+    /// Camino feliz: un id propuesto válido y libre se respeta tal cual.
+    #[tokio::test]
+    async fn test_persist_user_message_respects_free_requested_id(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let orchestrator =
+            build_orchestrator_with_capture(pool.clone(), Arc::new(Mutex::new(None)), false).await;
+
+        let persisted = orchestrator
+            .persist_user_message(Some("cli-free"), "hello", None)
+            .await?;
+
+        assert_eq!(persisted.id, "cli-free");
+        assert_eq!(persisted.role, "user");
+        assert_eq!(persisted.content, "hello");
+
+        Ok(())
+    }
+
+    /// Sin id propuesto el servidor genera uno propio.
+    #[tokio::test]
+    async fn test_persist_user_message_generates_id_when_none_proposed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let orchestrator =
+            build_orchestrator_with_capture(pool.clone(), Arc::new(Mutex::new(None)), false).await;
+
+        let persisted = orchestrator
+            .persist_user_message(None, "hello", None)
+            .await?;
+
+        assert!(!persisted.id.is_empty());
+        assert_ne!(persisted.id, "cli-free");
+        assert_eq!(persisted.role, "user");
+        assert_eq!(persisted.content, "hello");
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_system_prompt_fallback_when_missing_in_stream(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -1903,7 +2147,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -1960,7 +2204,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", Some(browser), tx)
+            .process_message_stream("profile-1", "Hola", Some(browser), None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2032,7 +2276,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2097,7 +2341,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2149,7 +2393,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", Some(browser), tx)
+            .process_message_stream("profile-1", "Hola", Some(browser), None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2222,7 +2466,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2459,7 +2703,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2520,7 +2764,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2566,7 +2810,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", Some(browser), tx)
+            .process_message_stream("profile-1", "Hola", Some(browser), None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2658,7 +2902,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2714,7 +2958,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2778,7 +3022,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "what does the user like", None, tx)
+            .process_message_stream("profile-1", "what does the user like", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -2832,7 +3076,7 @@ mod tests {
         .await;
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await?;
         while rx.recv().await.is_some() {}
 
@@ -3090,7 +3334,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await
             .expect("process_message_stream must succeed");
         while rx.recv().await.is_some() {}
@@ -3333,7 +3577,7 @@ mod tests {
         // 4. Call process_message_stream (no conversation_id needed)
         let (tx, _rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-id", "What's the weather?", None, tx)
+            .process_message_stream("profile-id", "What's the weather?", None, None, tx)
             .await?;
 
         // 5. Query the DB for the assistant message and verify footer
@@ -3548,7 +3792,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-id", "Quiero un widget", None, tx)
+            .process_message_stream("profile-id", "Quiero un widget", None, None, tx)
             .await?;
 
         let mut events = Vec::new();
@@ -3830,7 +4074,7 @@ mod tests {
         let long_msg = "x ".repeat(2000);
         let (tx, _rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-id", &long_msg, None, tx)
+            .process_message_stream("profile-id", &long_msg, None, None, tx)
             .await?;
 
         // 6. Verify that the collapse channel received the message_id
@@ -3940,7 +4184,7 @@ mod tests {
         // 4. Call process_message_stream
         let (tx, _rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("test-profile", "Hello", None, tx)
+            .process_message_stream("test-profile", "Hello", None, None, tx)
             .await?;
 
         // 5. Verify that memory_rx receives at least one signal
@@ -4049,7 +4293,7 @@ mod tests {
         // 4. Call process_message_stream
         let (tx, _rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("test-profile", "Hello", None, tx)
+            .process_message_stream("test-profile", "Hello", None, None, tx)
             .await?;
 
         // 5. Verify that memory_rx receives at least TWO signals
@@ -4246,7 +4490,7 @@ mod tests {
         // 4. Call process_message_stream and capture SSE events
         let (tx, mut rx) = mpsc::channel(100);
         let result = orchestrator
-            .process_message_stream("profile-id", "Look something up", None, tx)
+            .process_message_stream("profile-id", "Look something up", None, None, tx)
             .await;
 
         // 5. Collect all SSE events with a timeout
@@ -4497,7 +4741,7 @@ mod tests {
 
         // 4. Execute
         let result = orchestrator
-            .process_message_stream("profile-id", "test", None, tx)
+            .process_message_stream("profile-id", "test", None, None, tx)
             .await;
 
         // 5. Verify: orchestrator should complete successfully
@@ -4682,7 +4926,7 @@ mod tests {
         // 4. Call process_message_stream (streaming path)
         let (tx, _rx) = mpsc::channel(100);
         let result = orchestrator
-            .process_message_stream("profile-id", "gestiona mi agenda", None, tx)
+            .process_message_stream("profile-id", "gestiona mi agenda", None, None, tx)
             .await;
 
         // 5. Verify: streaming completes successfully
@@ -4851,7 +5095,7 @@ mod tests {
         // 5. Call process_message_stream
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("test-profile", "Hola", None, tx)
+            .process_message_stream("test-profile", "Hola", None, None, tx)
             .await?;
 
         // Drain rx to ensure processing completed
@@ -5018,7 +5262,7 @@ mod tests {
 
         let (tx, _rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "hello", None, tx)
+            .process_message_stream("profile-1", "hello", None, None, tx)
             .await?;
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_requests")
@@ -5057,7 +5301,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         let result = orchestrator
-            .process_message_stream("profile-1", "hello", None, tx)
+            .process_message_stream("profile-1", "hello", None, None, tx)
             .await;
         while rx.recv().await.is_some() {}
         assert!(
@@ -5505,7 +5749,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(100);
         let orch = orchestrator.clone();
         let handle = tokio::spawn(async move {
-            orch.process_message_stream("profile-1", "delete something", None, tx)
+            orch.process_message_stream("profile-1", "delete something", None, None, tx)
                 .await
         });
 
@@ -5675,7 +5919,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "Hola", None, tx)
+            .process_message_stream("profile-1", "Hola", None, None, tx)
             .await
             .expect("process_message_stream must succeed");
         while rx.recv().await.is_some() {}
@@ -5866,7 +6110,7 @@ mod tests {
 
         let (tx, mut rx) = mpsc::channel(100);
         orchestrator
-            .process_message_stream("profile-1", "¿Qué tiempo hace?", None, tx)
+            .process_message_stream("profile-1", "¿Qué tiempo hace?", None, None, tx)
             .await
             .expect("process_message_stream must succeed");
         while rx.recv().await.is_some() {}
@@ -6134,5 +6378,284 @@ mod tests {
             orchestrator.last_api_call.read().unwrap().is_none(),
             "persisting the router call must not touch last_api_call"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Chat event bus: the orchestrator publishes every message it persists
+    // (design D2; spec `orchestrator`, `stream-route`)
+    // -----------------------------------------------------------------------
+
+    use crate::chat_events::{ChatEvent, CHAT_EVENT_BUS_CAPACITY};
+    use tokio::sync::broadcast;
+
+    /// Build an orchestrator over `pool` with an empty tool registry, so a turn
+    /// runs end to end without touching the network.
+    fn orchestrator_for_tests(pool: SqlitePool, llm: Arc<dyn LLMProvider>) -> Orchestrator {
+        let registry = Arc::new(ToolRegistry::new());
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            OrchestratorConfig::default(),
+            pool,
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        )
+    }
+
+    /// A bus with the production capacity, plus a receiver subscribed before the
+    /// turn starts (so no published event can be missed).
+    fn chat_event_bus() -> (broadcast::Sender<ChatEvent>, broadcast::Receiver<ChatEvent>) {
+        broadcast::channel(CHAT_EVENT_BUS_CAPACITY)
+    }
+
+    /// Everything already queued on the bus, in order. Deterministic: by the
+    /// time a turn has returned, its publications are already queued.
+    fn drain_events(rx: &mut broadcast::Receiver<ChatEvent>) -> Vec<ChatEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    /// The message rows carried by the queued `message_created` events.
+    fn published_messages(events: &[ChatEvent]) -> Vec<crate::models::Message> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                ChatEvent::MessageCreated { message, .. } => Some(message.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Scenario: el mensaje de usuario se publica tras persistirse.
+    #[tokio::test]
+    async fn test_chat_bus_publishes_the_persisted_user_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let (events, mut bus_rx) = chat_event_bus();
+        let orchestrator = orchestrator_for_tests(pool.clone(), Arc::new(SimpleTextLLM))
+            .with_event_bus(Some(events));
+
+        let (tx, mut sse_rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, None, tx)
+            .await?;
+        while sse_rx.recv().await.is_some() {}
+
+        let published = published_messages(&drain_events(&mut bus_rx));
+        let user = published
+            .iter()
+            .find(|message| message.role == "user")
+            .expect("the persisted user message must be published");
+        let stored = crate::db::repos::messages::MessagesRepo::find_by_id(&pool, &user.id)
+            .await?
+            .expect("the published row must exist in the database");
+        assert_eq!(user.content, "Hola");
+        assert_eq!(
+            user.created_at, stored.created_at,
+            "the event must carry the timestamp that reached the database"
+        );
+        assert_eq!(user.location, stored.location);
+        assert_eq!(user.tools_used, stored.tools_used);
+
+        Ok(())
+    }
+
+    /// Scenario: el mensaje del asistente se publica tras persistirse.
+    #[tokio::test]
+    async fn test_chat_bus_publishes_the_persisted_assistant_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let (events, mut bus_rx) = chat_event_bus();
+        let orchestrator = orchestrator_for_tests(pool.clone(), Arc::new(SimpleTextLLM))
+            .with_event_bus(Some(events));
+
+        let (tx, mut sse_rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, None, tx)
+            .await?;
+        while sse_rx.recv().await.is_some() {}
+
+        let published = published_messages(&drain_events(&mut bus_rx));
+        let assistant = published
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("the persisted assistant message must be published");
+        let stored = crate::db::repos::messages::MessagesRepo::find_by_id(&pool, &assistant.id)
+            .await?
+            .expect("the published row must exist in the database");
+        assert_eq!(assistant.content, "Simple response.");
+        assert_eq!(
+            assistant.created_at, stored.created_at,
+            "the event must carry the timestamp that reached the database"
+        );
+        assert_eq!(assistant.tools_used, stored.tools_used);
+
+        Ok(())
+    }
+
+    /// Scenario: el evento del asistente lleva `tools_used` cuando el turno usó
+    /// herramientas (spec `orchestrator`: el evento publica la fila persistida
+    /// completa, `tools_used` incluido).
+    ///
+    /// El test hermano de arriba —`test_chat_bus_publishes_the_persisted_assistant_message`—
+    /// usa un LLM que no invoca ninguna herramienta, así que allí `tools_used`
+    /// es `None` en ambos lados y la comparación pasa por vacuidad. Este caso
+    /// obliga al turno a usar una herramienta de verdad para que el aserto
+    /// discrimine.
+    #[tokio::test]
+    async fn test_chat_bus_publishes_tools_used_of_the_persisted_assistant_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let (events, mut bus_rx) = chat_event_bus();
+
+        // A registry with a real (mock) tool, so the turn actually uses one.
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MockWeatherTool));
+        let registry = Arc::new(registry);
+        let llm = Arc::new(MockLLMWithToolThenAnswer {
+            call_count: Arc::new(Mutex::new(0)),
+        });
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            OrchestratorConfig::default(),
+            pool.clone(),
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        )
+        .with_event_bus(Some(events));
+
+        let (tx, mut sse_rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "What's the weather?", None, None, tx)
+            .await?;
+        while sse_rx.recv().await.is_some() {}
+
+        let published = published_messages(&drain_events(&mut bus_rx));
+        let assistant = published
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("the persisted assistant message must be published");
+
+        assert!(
+            assistant.tools_used.is_some(),
+            "the published assistant event must carry `tools_used` when the turn \
+             used a tool, got: {:?}",
+            assistant.tools_used
+        );
+        assert!(
+            assistant
+                .tools_used
+                .as_deref()
+                .unwrap_or_default()
+                .contains("weather"),
+            "`tools_used` must name the tool the turn used, got: {:?}",
+            assistant.tools_used
+        );
+
+        let stored = crate::db::repos::messages::MessagesRepo::find_by_id(&pool, &assistant.id)
+            .await?
+            .expect("the published row must exist in the database");
+        assert_eq!(
+            assistant.tools_used, stored.tools_used,
+            "the event must carry the `tools_used` that reached the database"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: un turno que falla no publica un mensaje del asistente
+    /// inexistente.
+    #[tokio::test]
+    async fn test_a_failed_turn_publishes_no_assistant_message(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let (events, mut bus_rx) = chat_event_bus();
+        let orchestrator = orchestrator_for_tests(pool.clone(), Arc::new(AlwaysFailingLLM))
+            .with_event_bus(Some(events));
+
+        let (tx, _sse_rx) = mpsc::channel(100);
+        let result = orchestrator
+            .process_message_stream("profile-1", "Hola", None, None, tx)
+            .await;
+        assert!(
+            result.is_err(),
+            "the turn must fail when the provider always fails"
+        );
+
+        let published = published_messages(&drain_events(&mut bus_rx));
+        assert!(
+            published.iter().all(|message| message.role != "assistant"),
+            "a turn that never persisted an assistant message must not publish one"
+        );
+        let assistants: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE role = 'assistant'")
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(
+            assistants, 0,
+            "the failed turn must not have persisted an assistant message either"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: los fragmentos del turno no viajan por el bus.
+    #[tokio::test]
+    async fn test_the_bus_never_carries_turn_fragments() -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let (events, mut bus_rx) = chat_event_bus();
+        let orchestrator = orchestrator_for_tests(pool.clone(), Arc::new(SimpleTextLLM))
+            .with_event_bus(Some(events));
+
+        let (tx, mut sse_rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Hola", None, None, tx)
+            .await?;
+
+        // The client's own channel DID see the answer arriving in fragments.
+        let mut fragments = 0usize;
+        while let Some(event) = sse_rx.recv().await {
+            if matches!(event, SSEEvent::Chunk { .. }) {
+                fragments += 1;
+            }
+        }
+        assert!(
+            fragments >= 2,
+            "the mock streams its answer in several fragments, saw {fragments}"
+        );
+
+        // The bus, in contrast, carries exactly the two persisted messages and
+        // nothing else: no fragment ever reaches it.
+        let events = drain_events(&mut bus_rx);
+        assert_eq!(
+            events.len(),
+            2,
+            "the bus must carry only the two persisted messages: {events:?}"
+        );
+        let published = published_messages(&events);
+        let assistant = published
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("the assistant message must be published");
+        assert_eq!(
+            assistant.content, "Simple response.",
+            "the published row carries the complete content, not a fragment"
+        );
+
+        Ok(())
     }
 }

@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useMemo } from "react";
 import { Modal, Button, Typography } from "antd";
+import { LoadingOutlined } from "@ant-design/icons";
 import type { Message } from "../types";
 import { MessageBubble } from "./MessageBubble";
 import { DateSeparator } from "./DateSeparator";
@@ -27,6 +28,19 @@ interface ChatViewProps {
     action: string,
     payload?: unknown,
   ) => void;
+  /**
+   * `true` cuando el bus de eventos informa de un turno en curso que **no** es
+   * de este cliente: Valet está respondiendo en otro dispositivo.
+   */
+  remoteBusy?: boolean;
+  /** Aviso legible del servidor (p. ej. un envío rechazado con `409`). */
+  error?: string | null;
+  /**
+   * Texto de un envío rechazado con `409` (turno ocupado en otro dispositivo).
+   * Cuando llega, se repone en el campo de entrada para poder reenviarlo: el
+   * aviso no debe costarle al usuario el párrafo que había escrito.
+   */
+  rejectedDraft?: string | null;
 }
 
 function isSameDay(date1: string, date2: string): boolean {
@@ -52,6 +66,9 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
     onResolveApproval,
     widgetsByMessage,
     onWidgetAction,
+    remoteBusy,
+    error,
+    rejectedDraft,
   } = props;
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<MessageInputHandle>(null);
@@ -83,6 +100,16 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
       inputRef.current?.focus();
     }
   }, [streaming]);
+
+  // Un envío rechazado (turno ocupado en otro dispositivo) devuelve el texto al
+  // campo: el aviso informa, pero no se cobra el párrafo ya escrito. El hook
+  // emite `null` al empezar cualquier envío, de modo que dos rechazos seguidos
+  // del mismo texto también lo reponen (el valor cambia dos veces).
+  useEffect(() => {
+    if (rejectedDraft != null) {
+      inputRef.current?.setValue(rejectedDraft);
+    }
+  }, [rejectedDraft]);
 
   return (
     <div
@@ -162,6 +189,51 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
           <span style={{ marginLeft: "auto", fontSize: 11 }}>
             ejecutando...
           </span>
+        </div>
+      )}
+      {/*
+        La región viva existe **siempre**, vacía cuando no hay turno ajeno. Un
+        `role="status"` insertado junto con su contenido no se anuncia de forma
+        fiable en NVDA/JAWS: son las mutaciones dentro de una región ya presente
+        las que se leen. Por eso aquí solo cambia el texto de dentro.
+      */}
+      <div role="status" aria-live="polite">
+        {remoteBusy && (
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              padding: "8px 24px",
+              background: "rgba(22, 119, 255, 0.12)",
+              borderTop: "1px solid rgba(22, 119, 255, 0.35)",
+              color: "rgba(255,255,255,0.85)",
+              fontSize: 13,
+            }}
+          >
+            {/* El icono de antd trae su propio `aria-label` («loading»): se
+                oculta para que no ensucie el anuncio de la región. */}
+            <LoadingOutlined aria-hidden="true" />
+            <span>Valet está respondiendo en otro dispositivo…</span>
+          </div>
+        )}
+      </div>
+      {error && (
+        <div
+          role="alert"
+          style={{
+            display: "flex",
+            gap: 8,
+            alignItems: "center",
+            padding: "8px 24px",
+            background: "rgba(255, 77, 79, 0.12)",
+            borderTop: "1px solid rgba(255, 77, 79, 0.35)",
+            color: "#ffccc7",
+            fontSize: 13,
+          }}
+        >
+          <span aria-hidden="true">⚠️</span>
+          <span>{error}</span>
         </div>
       )}
       <div

@@ -1,5 +1,6 @@
 import type {
   CalendarEvent,
+  ChatCursor,
   ChatInitResponse,
   CreateMessage,
   JournalEntry,
@@ -30,6 +31,20 @@ export const BASE_URL = "/api";
 
 /** Evento global que emite el cliente al recibir un 401 en una ruta no-auth. */
 export const UNAUTHORIZED_EVENT = "valet:unauthorized";
+
+/**
+ * URL del bus de eventos del chat (`GET /api/chat/events`).
+ *
+ * `since` es el cursor **opaco** del último mensaje visto y va **codificado**:
+ * su forma de cable contiene `|` (inválido en un request-target) y `+` (que el
+ * servidor decodifica como espacio). Sin codificar, el stream responde `400`.
+ */
+export function chatEventsUrl(since?: ChatCursor | null): string {
+  const qs = new URLSearchParams();
+  if (since) qs.set("since", since);
+  const suffix = qs.toString();
+  return `${BASE_URL}/chat/events${suffix ? `?${suffix}` : ""}`;
+}
 
 /**
  * Las rutas de autenticación (`/auth/*`) quedan exentas de la detección global
@@ -86,10 +101,14 @@ export const api = {
 
   chatInit: () => request<ChatInitResponse>("/chat/init"),
 
-  listMessages: (limit = 50, cursor?: string) =>
-    request<PaginatedResponse<Message>>(
-      `/messages?limit=${limit}${cursor ? `&cursor=${cursor}` : ""}`,
-    ),
+  // El `cursor` es opaco (su forma de cable lleva `|` y `+`): va codificado o
+  // la paginación se rompe en silencio o el backend responde `400`.
+  listMessages: (limit = 50, cursor?: string) => {
+    const qs = new URLSearchParams();
+    qs.set("limit", String(limit));
+    if (cursor) qs.set("cursor", cursor);
+    return request<PaginatedResponse<Message>>(`/messages?${qs.toString()}`);
+  },
 
   createMessage: (data: CreateMessage) =>
     request<Message>("/messages", {

@@ -11,21 +11,28 @@ interface MessageInputProps {
 
 export interface MessageInputHandle {
   focus: () => void;
+  /**
+   * Repone el contenido del campo desde fuera. Lo usa `ChatView` para devolver
+   * al usuario el texto de un envío que el servidor rechazó (un `409` por
+   * turno ocupado) en vez de darlo por perdido.
+   */
+  setValue: (value: string) => void;
 }
 
 export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
   ({ onSend, disabled }, ref) => {
-    const [value, setValue] = useState("");
+    const [draft, setDraft] = useState("");
     const inputRef = React.useRef<React.ComponentRef<typeof TextArea>>(null);
 
     useImperativeHandle(ref, () => ({
       focus: () => inputRef.current?.focus(),
+      setValue: (value: string) => setDraft(value),
     }));
 
     const handleSend = () => {
-      if (value.trim() && !disabled) {
-        onSend(value.trim());
-        setValue("");
+      if (draft.trim() && !disabled) {
+        onSend(draft.trim());
+        setDraft("");
       }
     };
 
@@ -40,8 +47,8 @@ export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
       <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
         <TextArea
           ref={inputRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Escribe un mensaje a Valet..."
           autoSize={{ minRows: 2, maxRows: 6 }}
@@ -52,7 +59,7 @@ export const MessageInput = forwardRef<MessageInputHandle, MessageInputProps>(
           type="primary"
           icon={disabled ? <LoadingOutlined /> : <SendOutlined />}
           onClick={handleSend}
-          disabled={disabled || !value.trim()}
+          disabled={disabled || !draft.trim()}
           loading={disabled}
         />
       </div>

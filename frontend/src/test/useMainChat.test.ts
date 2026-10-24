@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useMainChat } from "../hooks/useMainChat";
 import { api } from "../api/client";
@@ -13,6 +13,9 @@ const { sseCallbacks } = vi.hoisted(() => ({
 const { capturedBrowserContext } = vi.hoisted(() => ({
   capturedBrowserContext: { current: undefined as unknown },
 }));
+const { capturedClientMessageId } = vi.hoisted(() => ({
+  capturedClientMessageId: { current: undefined as string | undefined },
+}));
 
 vi.mock("../api/client", () => ({
   api: {
@@ -22,6 +25,9 @@ vi.mock("../api/client", () => ({
     approveAction: vi.fn().mockResolvedValue(undefined),
   },
   BASE_URL: "http://localhost:3000",
+  UNAUTHORIZED_EVENT: "valet:unauthorized",
+  chatEventsUrl: (since?: string | null) =>
+    `http://localhost:3000/chat/events${since ? `?since=${since}` : ""}`,
 }));
 
 vi.mock("../hooks/useSSE", () => ({
@@ -43,6 +49,7 @@ vi.mock("../hooks/useSSE", () => ({
           onApprovalResult?: (requestId: string, approved: boolean) => void;
         },
         browserContext?: unknown,
+        clientMessageId?: string,
       ) => {
         sseCallbacks.onChunk = options.onChunk;
         sseCallbacks.onDone = options.onDone;
@@ -52,6 +59,7 @@ vi.mock("../hooks/useSSE", () => ({
         sseCallbacks.onApprovalRequired = options.onApprovalRequired;
         sseCallbacks.onApprovalResult = options.onApprovalResult;
         capturedBrowserContext.current = browserContext;
+        capturedClientMessageId.current = clientMessageId;
       },
     ),
     disconnect: vi.fn(),
@@ -70,6 +78,18 @@ describe("useMainChat", () => {
     sseCallbacks.onToolResult = undefined;
     sseCallbacks.onApprovalRequired = undefined;
     sseCallbacks.onApprovalResult = undefined;
+    capturedClientMessageId.current = undefined;
+    // `useMainChat` abre la suscripción al bus de eventos (useChatSync) al
+    // montar. La respuesta se deja colgada: ninguna prueba debe hablar con la
+    // red ni depender de ese stream.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   // -----------------------------------------------------------------------
@@ -141,9 +161,12 @@ describe("useMainChat", () => {
     expect(result.current.messages[0].content).toBe("Hola");
     expect(result.current.streaming).toBe(true);
 
-    // Capture the optimistic ID so we can verify it survives the onDone call
+    // Capture the optimistic ID so we can verify it survives the onDone call.
+    // El id lo propone el cliente (`client_message_id`) y es el mismo con el que
+    // el servidor persiste la fila: ya no es un marcador `temp-` local.
     const optimisticId = result.current.messages[0].id;
-    expect(optimisticId).toMatch(/^temp-/);
+    expect(optimisticId).toBe(capturedClientMessageId.current);
+    expect(optimisticId).not.toMatch(/^temp-/);
 
     // Simulate the SSE onDone callback
     await act(async () => {
