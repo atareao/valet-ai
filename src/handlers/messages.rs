@@ -2,10 +2,17 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 
+use crate::db::repos::messages::{MessagesCursor, MessagesRepo};
 use crate::errors::AppError;
 use crate::models::*;
 use crate::AppState;
 
+/// `GET /api/messages`
+///
+/// Pagina el historial hacia atrás. El `cursor` es **opaco**: se devuelve tal
+/// cual venga en `next_cursor`. Un cursor que no se pueda decodificar responde
+/// `400` con `{"error": ...}` —igual que en `/api/notifications/unread`— en vez
+/// de tratar el valor como si fuera una marca temporal.
 pub async fn list_messages(
     State(state): State<AppState>,
     Query(params): Query<PaginationParams>,
@@ -20,15 +27,16 @@ pub async fn list_messages(
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(50)
     };
-    let (data, next_cursor) = crate::db::repos::messages::MessagesRepo::list_all(
-        &state.db,
-        limit,
-        params.cursor.as_deref(),
-    )
-    .await?;
+    let cursor = params
+        .cursor
+        .as_deref()
+        .map(MessagesCursor::decode)
+        .transpose()
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    let (data, next_cursor) = MessagesRepo::list_all(&state.db, limit, cursor.as_ref()).await?;
     Ok(Json(PaginatedResponse {
         data,
-        next_cursor,
+        next_cursor: next_cursor.map(|c| c.encode()),
         total: None,
     }))
 }

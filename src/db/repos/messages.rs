@@ -1,14 +1,123 @@
 use chrono::Utc;
 use serde_json::Value;
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
 
 use crate::models::message::estimate_markdown_tokens_heuristic;
 use crate::models::Message;
 
+/// Mapea una fila de `messages` al modelo [`Message`].
+///
+/// Las consultas de este módulo proyectan las columnas en un orden fijo —el de
+/// `MESSAGE_COLUMNS` o uno equivalente, con `effective_content` y
+/// `effective_tokens` en lugar de `content` y `tokens_count`—, así que los
+/// índices son estables.
+fn message_from_row(row: &SqliteRow) -> Message {
+    let tc: Option<String> = row.get(3);
+    let tr: Option<String> = row.get(4);
+    Message {
+        id: row.get(0),
+        role: row.get(1),
+        content: row.get(2),
+        tool_calls: tc.and_then(|s| serde_json::from_str(&s).ok()),
+        tool_results: tr.and_then(|s| serde_json::from_str(&s).ok()),
+        tokens_count: row.get::<i64, _>(5) as usize,
+        collapsed_content: row.get(6),
+        collapsed_tokens_count: row.get::<i64, _>(7) as usize,
+        is_indexed: row.get(8),
+        summary_ref: row.get(9),
+        location: row.get(10),
+        tools_used: row.get(11),
+        widgets: row
+            .get::<Option<String>, _>(13)
+            .and_then(|s| serde_json::from_str(&s).ok()),
+        created_at: row.get(12),
+    }
+}
+
+/// Error al decodificar un cursor opaco recibido de un cliente, cuya forma de
+/// cable es `"<created_at>|<id>"`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CursorError {
+    /// La cadena no lleva el separador `|`.
+    #[error("invalid cursor: expected \"<created_at>|<id>\"")]
+    Malformed,
+    /// Una de las dos partes está vacía.
+    #[error("invalid cursor: empty {0}")]
+    EmptyComponent(&'static str),
+}
+
+/// Cursor opaco de paginación sobre `messages`.
+///
+/// Codifica el **orden total** de la tabla: la pareja `(created_at, id)`.
+/// `created_at` tiene resolución de segundo en las filas que usan el default
+/// `datetime('now')` del esquema, así que es la pareja —y no la marca temporal
+/// suelta— lo que garantiza que dos mensajes del mismo segundo no se pierdan ni
+/// se repitan entre páginas.
+///
+/// La forma de cable es `"<created_at>|<id>"` y es opaca para el cliente: no
+/// debe interpretarla, solo devolverla tal cual en el siguiente `?cursor=`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessagesCursor {
+    /// Marca temporal del mensaje, tal cual está en la columna `created_at`.
+    pub created_at: String,
+    /// Identificador del mensaje, que desempata dentro del mismo `created_at`.
+    pub id: String,
+}
+
+impl MessagesCursor {
+    /// Construye un cursor a partir de la pareja que define el orden total.
+    pub fn new(created_at: impl Into<String>, id: impl Into<String>) -> Self {
+        Self {
+            created_at: created_at.into(),
+            id: id.into(),
+        }
+    }
+
+    /// Cursor de una fila ya leída, con la pareja que la sitúa en el orden
+    /// total.
+    pub fn from_message(message: &Message) -> Self {
+        Self::new(message.created_at.clone(), message.id.clone())
+    }
+
+    /// Codifica el cursor a su forma de cable, `"<created_at>|<id>"`.
+    pub fn encode(&self) -> String {
+        format!("{}|{}", self.created_at, self.id)
+    }
+
+    /// Decodifica un cursor recibido de un cliente.
+    ///
+    /// Parte por el **primer** `|` y no por el último (a diferencia de
+    /// `NotificationsRepo::parse_cursor`, cuyo último componente es un `rowid`
+    /// entero): aquí el último componente es un `id` que puede ser una cadena
+    /// arbitraria —`client_message_id` lo permite— y podría contener `|`,
+    /// mientras que `created_at` es siempre una fecha y nunca lleva ese
+    /// carácter.
+    pub fn decode(raw: &str) -> Result<Self, CursorError> {
+        let (created_at, id) = raw.split_once('|').ok_or(CursorError::Malformed)?;
+        if created_at.is_empty() {
+            return Err(CursorError::EmptyComponent("created_at"));
+        }
+        if id.is_empty() {
+            return Err(CursorError::EmptyComponent("id"));
+        }
+        Ok(Self::new(created_at, id))
+    }
+}
+
+/// Longitud máxima aceptada para un `client_message_id` propuesto por el
+/// cliente al enviar un mensaje de chat.
+///
+/// Un identificador más largo —igual que uno vacío o ya usado— no falla el
+/// turno: el servidor genera el suyo.
+pub const CLIENT_MESSAGE_ID_MAX_LEN: usize = 64;
+
 pub struct MessagesRepo;
 
 impl MessagesRepo {
+    /// Persiste un mensaje con un identificador generado por el servidor
+    /// (`UUID v4`).
     #[allow(clippy::too_many_arguments)]
     pub async fn create(
         pool: &SqlitePool,
@@ -22,6 +131,42 @@ impl MessagesRepo {
         on_collapse_needed: Option<Box<dyn Fn(String) + Send>>,
     ) -> Result<Message, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
+        Self::create_with_id(
+            pool,
+            &id,
+            role,
+            content,
+            tool_calls,
+            tool_results,
+            location,
+            tools_used,
+            collapse_threshold,
+            on_collapse_needed,
+        )
+        .await
+    }
+
+    /// Persiste un mensaje con un identificador **elegido por quien llama**.
+    ///
+    /// Es la puerta del `client_message_id` (design D5): el cliente propone el
+    /// `id` de su mensaje de usuario y la fusión en su lista pasa a ser un
+    /// upsert por `id`. Validar que el valor sirve —no vacío, no demasiado
+    /// largo y no usado— es responsabilidad de quien llama, que ante un valor
+    /// inservible cae a [`MessagesRepo::create`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_with_id(
+        pool: &SqlitePool,
+        id: &str,
+        role: &str,
+        content: &str,
+        tool_calls: Option<&Value>,
+        tool_results: Option<&Value>,
+        location: Option<&str>,
+        tools_used: Option<&str>,
+        collapse_threshold: usize,
+        on_collapse_needed: Option<Box<dyn Fn(String) + Send>>,
+    ) -> Result<Message, sqlx::Error> {
+        let id = id.to_string();
         let now = Utc::now().to_rfc3339();
         let tc = tool_calls.map(|v| v.to_string());
         let tr = tool_results.map(|v| v.to_string());
@@ -78,38 +223,26 @@ impl MessagesRepo {
         .fetch_optional(pool)
         .await?;
 
-        match row {
-            Some(r) => {
-                let tc: Option<String> = r.get(3);
-                let tr: Option<String> = r.get(4);
-                Ok(Some(Message {
-                    id: r.get(0),
-                    role: r.get(1),
-                    content: r.get(2),
-                    tool_calls: tc.and_then(|s| serde_json::from_str(&s).ok()),
-                    tool_results: tr.and_then(|s| serde_json::from_str(&s).ok()),
-                    tokens_count: r.get::<i64, _>(5) as usize,
-                    collapsed_content: r.get(6),
-                    collapsed_tokens_count: r.get::<i64, _>(7) as usize,
-                    is_indexed: r.get(8),
-                    summary_ref: r.get(9),
-                    location: r.get(10),
-                    tools_used: r.get(11),
-                    widgets: r
-                        .get::<Option<String>, _>(13)
-                        .and_then(|s| serde_json::from_str(&s).ok()),
-                    created_at: r.get(12),
-                }))
-            }
-            None => Ok(None),
-        }
+        Ok(row.as_ref().map(message_from_row))
     }
 
+    /// Lista los mensajes más recientes, en orden cronológico ascendente, con
+    /// paginación hacia atrás por cursor.
+    ///
+    /// El orden total de la tabla es la pareja `(created_at, id)`, ambos
+    /// ascendentes: dos mensajes con la misma marca temporal (la columna llega
+    /// a tener resolución de segundo) quedan en un orden determinista y ninguno
+    /// se pierde entre páginas.
+    ///
+    /// Devuelve hasta `limit` mensajes (acotado a `[1, 100]`) **estrictamente
+    /// anteriores** al cursor y, solo si hay más, el cursor del mensaje más
+    /// antiguo del lote devuelto; `None` en la última página. Un `cursor` a
+    /// `None` devuelve la página más reciente.
     pub async fn list_all(
         pool: &SqlitePool,
         limit: i64,
-        cursor: Option<&str>,
-    ) -> Result<(Vec<Message>, Option<String>), sqlx::Error> {
+        cursor: Option<&MessagesCursor>,
+    ) -> Result<(Vec<Message>, Option<MessagesCursor>), sqlx::Error> {
         let actual_limit = limit.clamp(1, 100);
 
         let rows = match cursor {
@@ -117,10 +250,13 @@ impl MessagesRepo {
                 sqlx::query(
                     "SELECT id, role, content, tool_calls, tool_results, \
                      tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at, widgets \
-FROM messages WHERE created_at < ?1 \
-                      ORDER BY created_at DESC LIMIT ?2",
+                     FROM messages \
+                     WHERE created_at < ?1 OR (created_at = ?2 AND id < ?3) \
+                     ORDER BY created_at DESC, id DESC LIMIT ?4",
                 )
-                .bind(c)
+                .bind(&c.created_at)
+                .bind(&c.created_at)
+                .bind(&c.id)
                 .bind(actual_limit + 1)
                 .fetch_all(pool)
                 .await?
@@ -130,7 +266,7 @@ FROM messages WHERE created_at < ?1 \
                     "SELECT id, role, content, tool_calls, tool_results, \
                      tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at, widgets \
                      FROM messages \
-                     ORDER BY created_at DESC LIMIT ?1",
+                     ORDER BY created_at DESC, id DESC LIMIT ?1",
                 )
                 .bind(actual_limit + 1)
                 .fetch_all(pool)
@@ -138,29 +274,7 @@ FROM messages WHERE created_at < ?1 \
             }
         };
 
-        let mut items: Vec<Message> = Vec::with_capacity(rows.len());
-        for r in &rows {
-            let tc: Option<String> = r.get(3);
-            let tr: Option<String> = r.get(4);
-            items.push(Message {
-                id: r.get(0),
-                role: r.get(1),
-                content: r.get(2),
-                tool_calls: tc.and_then(|s| serde_json::from_str(&s).ok()),
-                tool_results: tr.and_then(|s| serde_json::from_str(&s).ok()),
-                tokens_count: r.get::<i64, _>(5) as usize,
-                collapsed_content: r.get(6),
-                collapsed_tokens_count: r.get::<i64, _>(7) as usize,
-                is_indexed: r.get(8),
-                summary_ref: r.get(9),
-                location: r.get(10),
-                tools_used: r.get(11),
-                widgets: r
-                    .get::<Option<String>, _>(13)
-                    .and_then(|s| serde_json::from_str(&s).ok()),
-                created_at: r.get(12),
-            });
-        }
+        let items: Vec<Message> = rows.iter().map(message_from_row).collect();
 
         let has_more = items.len() > actual_limit as usize;
         let mut data: Vec<Message> = if has_more {
@@ -170,11 +284,61 @@ FROM messages WHERE created_at < ?1 \
         };
         data.reverse();
         let next_cursor = if has_more {
-            data.first().map(|m| m.created_at.clone())
+            data.first().map(MessagesCursor::from_message)
         } else {
             None
         };
         Ok((data, next_cursor))
+    }
+
+    /// Lista hasta `limit` mensajes (acotado a `[1, 100]`) **estrictamente
+    /// posteriores** al cursor en el orden total `(created_at, id)`, en orden
+    /// ascendente, junto al cursor del último mensaje devuelto.
+    ///
+    /// Es la dirección opuesta a [`MessagesRepo::list_all`]: sirve para
+    /// reproducir lo perdido (el replay del stream de eventos) en vez de paginar
+    /// hacia atrás en el historial. Un `cursor` a `None` significa «desde el
+    /// principio». Cuando no hay mensajes posteriores devuelve una lista vacía y
+    /// `None`, de modo que quien llama conserve el cursor que ya tenía.
+    pub async fn list_after(
+        pool: &SqlitePool,
+        cursor: Option<&MessagesCursor>,
+        limit: i64,
+    ) -> Result<(Vec<Message>, Option<MessagesCursor>), sqlx::Error> {
+        let actual_limit = limit.clamp(1, 100);
+
+        let rows = match cursor {
+            Some(c) => {
+                sqlx::query(
+                    "SELECT id, role, content, tool_calls, tool_results, \
+                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at, widgets \
+                     FROM messages \
+                     WHERE created_at > ?1 OR (created_at = ?2 AND id > ?3) \
+                     ORDER BY created_at ASC, id ASC LIMIT ?4",
+                )
+                .bind(&c.created_at)
+                .bind(&c.created_at)
+                .bind(&c.id)
+                .bind(actual_limit)
+                .fetch_all(pool)
+                .await?
+            }
+            None => {
+                sqlx::query(
+                    "SELECT id, role, content, tool_calls, tool_results, \
+                     tokens_count, collapsed_content, collapsed_tokens_count, is_indexed, summary_ref, location, tools_used, created_at, widgets \
+                     FROM messages \
+                     ORDER BY created_at ASC, id ASC LIMIT ?1",
+                )
+                .bind(actual_limit)
+                .fetch_all(pool)
+                .await?
+            }
+        };
+
+        let items: Vec<Message> = rows.iter().map(message_from_row).collect();
+        let next_cursor = items.last().map(MessagesCursor::from_message);
+        Ok((items, next_cursor))
     }
 
     pub async fn list_by_token_budget(
@@ -206,30 +370,7 @@ FROM messages WHERE created_at < ?1 \
         .fetch_all(pool)
         .await?;
 
-        let mut messages = Vec::with_capacity(rows.len());
-        for r in &rows {
-            let tc: Option<String> = r.get(3);
-            let tr: Option<String> = r.get(4);
-            messages.push(Message {
-                id: r.get(0),
-                role: r.get(1),
-                content: r.get(2),
-                tool_calls: tc.and_then(|s| serde_json::from_str(&s).ok()),
-                tool_results: tr.and_then(|s| serde_json::from_str(&s).ok()),
-                tokens_count: r.get::<i64, _>(5) as usize,
-                collapsed_content: r.get(6),
-                collapsed_tokens_count: r.get::<i64, _>(7) as usize,
-                is_indexed: r.get(8),
-                summary_ref: r.get(9),
-                location: r.get(10),
-                tools_used: r.get(11),
-                widgets: r
-                    .get::<Option<String>, _>(13)
-                    .and_then(|s| serde_json::from_str(&s).ok()),
-                created_at: r.get(12),
-            });
-        }
-        Ok(messages)
+        Ok(rows.iter().map(message_from_row).collect())
     }
 
     pub async fn delete_all(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
@@ -295,6 +436,27 @@ mod tests {
         Ok(pool)
     }
 
+    /// Inserta una fila con un `created_at` explícito, saltándose
+    /// [`MessagesRepo::create`] (que estampa un `created_at` con precisión de
+    /// sub-segundo) para poder producir empates de marca temporal.
+    async fn insert_with_created_at(
+        pool: &SqlitePool,
+        id: &str,
+        content: &str,
+        created_at: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO messages (id, role, content, tokens_count, created_at) \
+             VALUES (?1, 'user', ?2, 0, ?3)",
+        )
+        .bind(id)
+        .bind(content)
+        .bind(created_at)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_create_message() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_pool().await?;
@@ -337,6 +499,22 @@ mod tests {
         Ok(())
     }
 
+    /// `list_all` sobre una tabla vacía devuelve `([], None)`: protege la rama
+    /// de `has_more`/`next_cursor` (sin filas no hay más páginas ni cursor).
+    #[tokio::test]
+    async fn test_list_all_empty_table_returns_empty_and_none(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        let (msgs, cursor) = MessagesRepo::list_all(&pool, 10, None).await?;
+        assert!(msgs.is_empty(), "una tabla vacía no tiene mensajes");
+        assert!(
+            cursor.is_none(),
+            "sin mensajes no se emite cursor: no hay página siguiente"
+        );
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_list_all() -> Result<(), Box<dyn std::error::Error>> {
         let pool = setup_pool().await?;
@@ -375,7 +553,7 @@ mod tests {
         assert_eq!(page1[1].content, "Msg 3");
         assert!(cursor.is_some());
 
-        let (page2, cursor2) = MessagesRepo::list_all(&pool, 2, cursor.as_deref()).await?;
+        let (page2, cursor2) = MessagesRepo::list_all(&pool, 2, cursor.as_ref()).await?;
         assert_eq!(page2.len(), 1);
         assert_eq!(page2[0].content, "Msg 1");
         assert!(cursor2.is_none());
@@ -416,11 +594,255 @@ mod tests {
         assert_eq!(page1[49].content, "Msg 55");
         assert!(cursor.is_some());
 
-        let (page2, cursor2) = MessagesRepo::list_all(&pool, 50, cursor.as_deref()).await?;
+        let (page2, cursor2) = MessagesRepo::list_all(&pool, 50, cursor.as_ref()).await?;
         assert_eq!(page2.len(), 5);
         assert_eq!(page2[0].content, "Msg 1");
         assert_eq!(page2[4].content, "Msg 5");
         assert!(cursor2.is_none());
+
+        Ok(())
+    }
+
+    /// Scenario: el orden es determinista a igualdad de marca temporal.
+    ///
+    /// Las tres filas comparten `created_at` (la columna llega a tener
+    /// resolución de segundo) y se insertan en un orden distinto al de su `id`,
+    /// así que solo un orden total por la pareja `(created_at, id)` las
+    /// devuelve siempre en el mismo orden.
+    #[tokio::test]
+    async fn test_list_all_orders_by_created_at_then_id() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let pool = setup_pool().await?;
+        // Formato de producción (`Utc::now().to_rfc3339()`: con `T` y offset),
+        // no el `datetime('now')` del esquema: el empate probado debe ser el real.
+        let same_second = "2026-10-24T10:00:00+00:00";
+        insert_with_created_at(&pool, "tie-c", "Tercera", same_second).await?;
+        insert_with_created_at(&pool, "tie-a", "Primera", same_second).await?;
+        insert_with_created_at(&pool, "tie-b", "Segunda", same_second).await?;
+
+        let (first_call, _) = MessagesRepo::list_all(&pool, 50, None).await?;
+        let (second_call, _) = MessagesRepo::list_all(&pool, 50, None).await?;
+
+        let ids: Vec<&str> = first_call.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["tie-a", "tie-b", "tie-c"],
+            "a igualdad de created_at, el orden total es por id ascendente \
+             (recibido: {ids:?})"
+        );
+        let repeated: Vec<&str> = second_call.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids, repeated,
+            "dos llamadas idénticas deben devolver el mismo orden"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: dos mensajes con la misma marca temporal no se pierden.
+    ///
+    /// Con `limit = 1` los dos mensajes del mismo segundo tienen que repartirse
+    /// entre las dos páginas —uno en cada una— sin repetirse. Con un cursor de
+    /// marca temporal suelta, la segunda página vuelve vacía y uno se pierde.
+    #[tokio::test]
+    async fn test_list_all_same_second_messages_span_two_pages(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        // Formato de producción (`Utc::now().to_rfc3339()`: con `T` y offset),
+        // no el `datetime('now')` del esquema: el empate probado debe ser el real.
+        let same_second = "2026-10-24T10:00:00+00:00";
+        insert_with_created_at(&pool, "dup-a", "Primera", same_second).await?;
+        insert_with_created_at(&pool, "dup-b", "Segunda", same_second).await?;
+
+        let (page1, cursor) = MessagesRepo::list_all(&pool, 1, None).await?;
+        assert_eq!(page1.len(), 1, "la primera página honra el límite");
+        let cursor = cursor.expect("con dos filas y limit = 1 debe haber cursor");
+
+        let (page2, cursor2) = MessagesRepo::list_all(&pool, 1, Some(&cursor)).await?;
+        assert_eq!(
+            page2.len(),
+            1,
+            "el segundo mensaje del mismo segundo debe aparecer en la página 2"
+        );
+        assert!(cursor2.is_none(), "la última página no emite cursor");
+
+        let mut ids: Vec<String> = page1
+            .iter()
+            .chain(page2.iter())
+            .map(|m| m.id.clone())
+            .collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["dup-a".to_string(), "dup-b".to_string()],
+            "entre las dos páginas aparecen los dos mensajes, sin repetirse"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: `list_after` devuelve los posteriores en orden ascendente y el
+    /// cursor del último mensaje devuelto.
+    #[tokio::test]
+    async fn test_list_after_returns_later_messages_ascending(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        insert_with_created_at(&pool, "m1", "Uno", "2026-10-24 10:00:01").await?;
+        insert_with_created_at(&pool, "m2", "Dos", "2026-10-24 10:00:02").await?;
+        insert_with_created_at(&pool, "m3", "Tres", "2026-10-24 10:00:03").await?;
+
+        let (all, _) = MessagesRepo::list_all(&pool, 50, None).await?;
+        let cursor_m1 = MessagesCursor::from_message(&all[0]);
+        assert_eq!(cursor_m1.id, "m1", "el primer mensaje es el más antiguo");
+
+        let (after, next) = MessagesRepo::list_after(&pool, Some(&cursor_m1), 50).await?;
+        let ids: Vec<&str> = after.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["m2", "m3"],
+            "devuelve solo los estrictamente posteriores, en orden ascendente"
+        );
+        assert_eq!(
+            next.map(|c| c.encode()),
+            Some("2026-10-24 10:00:03|m3".to_string()),
+            "el cursor devuelto es el del último mensaje devuelto"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: sin posteriores devuelve vacío y `None`.
+    #[tokio::test]
+    async fn test_list_after_without_later_messages_returns_empty_and_none(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        insert_with_created_at(&pool, "m1", "Uno", "2026-10-24 10:00:01").await?;
+        insert_with_created_at(&pool, "m2", "Dos", "2026-10-24 10:00:02").await?;
+
+        let cursor_m2 = MessagesCursor::new("2026-10-24 10:00:02", "m2");
+        let (after, next) = MessagesRepo::list_after(&pool, Some(&cursor_m2), 50).await?;
+        assert!(after.is_empty(), "no hay mensajes posteriores al último");
+        assert!(
+            next.is_none(),
+            "sin posteriores no se emite cursor: quien llama conserva el suyo"
+        );
+
+        Ok(())
+    }
+
+    /// Un `cursor` a `None` significa «desde el principio».
+    #[tokio::test]
+    async fn test_list_after_without_cursor_starts_from_the_beginning(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        insert_with_created_at(&pool, "m2", "Dos", "2026-10-24 10:00:02").await?;
+        insert_with_created_at(&pool, "m1", "Uno", "2026-10-24 10:00:01").await?;
+
+        let (after, next) = MessagesRepo::list_after(&pool, None, 50).await?;
+        let ids: Vec<&str> = after.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["m1", "m2"],
+            "reproduce desde el principio, ascendente"
+        );
+        assert_eq!(
+            next.map(|c| c.encode()),
+            Some("2026-10-24 10:00:02|m2".to_string()),
+            "el cursor devuelto es el del último mensaje devuelto"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: el límite acota el replay y el cursor devuelto encadena la
+    /// página siguiente sin perder ni repetir mensajes.
+    ///
+    /// Es el contrato que sostiene el replay del stream: quien llama avanza
+    /// página a página con el cursor y, al final, tiene que haber visto **cada**
+    /// mensaje exactamente una vez.
+    #[tokio::test]
+    async fn test_list_after_limit_bounds_replay_and_cursor_chains(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        for i in 1..=5 {
+            insert_with_created_at(
+                &pool,
+                &format!("m{i}"),
+                &format!("Mensaje {i}"),
+                &format!("2026-10-24T10:00:0{i}+00:00"),
+            )
+            .await?;
+        }
+
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<MessagesCursor> = None;
+        let mut pages = 0usize;
+        loop {
+            let (page, next) = MessagesRepo::list_after(&pool, cursor.as_ref(), 2).await?;
+            assert!(
+                page.len() <= 2,
+                "cada página honra el límite, recibido {}",
+                page.len()
+            );
+            if page.is_empty() {
+                break;
+            }
+            pages += 1;
+            for message in &page {
+                seen.push(message.id.clone());
+            }
+            match next {
+                Some(next) => cursor = Some(next),
+                None => break,
+            }
+        }
+
+        assert_eq!(pages, 3, "5 mensajes con límite 2 son 3 páginas");
+        assert_eq!(
+            seen,
+            vec!["m1", "m2", "m3", "m4", "m5"],
+            "el encadenado repone cada mensaje una sola vez, en orden"
+        );
+
+        // Más allá del último cursor no hay nada: ni página ni cursor nuevos.
+        let last = MessagesCursor::new("2026-10-24T10:00:05+00:00", "m5");
+        let (beyond, beyond_cursor) = MessagesRepo::list_after(&pool, Some(&last), 2).await?;
+        assert!(beyond.is_empty(), "no hay nada después del último mensaje");
+        assert!(beyond_cursor.is_none());
+
+        Ok(())
+    }
+
+    /// Scenario: `list_after` no pierde los empates de marca temporal.
+    ///
+    /// Es lo que justifica el SQL `created_at > ?1 OR (created_at = ?1 AND id > ?2)`:
+    /// con un cursor que solo mirara `created_at`, el segundo mensaje del mismo
+    /// instante no se repondría nunca y desaparecería del replay. Las marcas usan
+    /// el formato de **producción** (`Utc::now().to_rfc3339()`), no el
+    /// `datetime('now')` del esquema.
+    #[tokio::test]
+    async fn test_list_after_same_timestamp_messages_are_not_lost(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_pool().await?;
+        let same = "2026-10-24T10:00:00+00:00";
+        insert_with_created_at(&pool, "tie-b", "Segunda", same).await?;
+        insert_with_created_at(&pool, "tie-a", "Primera", same).await?;
+
+        // Cursor sobre el primero en el orden total: (same, "tie-a").
+        let cursor = MessagesCursor::new(same, "tie-a");
+        let (after, next) = MessagesRepo::list_after(&pool, Some(&cursor), 10).await?;
+        let ids: Vec<&str> = after.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["tie-b"],
+            "el empate de marca temporal no debe hacer desaparecer el segundo \
+             mensaje del mismo instante"
+        );
+        assert_eq!(
+            next.map(|c| c.encode()),
+            Some(format!("{same}|tie-b")),
+            "el cursor avanza al segundo mensaje del empate"
+        );
 
         Ok(())
     }

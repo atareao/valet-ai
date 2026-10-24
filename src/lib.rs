@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod chat_events;
 pub mod config;
 pub mod db;
 pub mod embeddings;
@@ -27,6 +28,7 @@ use tokio::sync::{broadcast, mpsc};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
+use crate::chat_events::{ChatEvent, TurnLock, CHAT_EVENT_BUS_CAPACITY};
 use crate::config::Config;
 use crate::orchestrator::agent::Orchestrator;
 use crate::orchestrator::context_builder::ContextBuilder;
@@ -47,6 +49,61 @@ pub struct AppState {
     pub memory_tx: Option<mpsc::Sender<()>>,
     pub shutdown_tx: Option<broadcast::Sender<()>>,
     pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
+    /// Bus de eventos del chat: por él circulan los mensajes persistidos y el
+    /// inicio y el fin de cada turno, hacia todos los suscriptores de
+    /// `GET /api/chat/events` (design D1).
+    pub chat_events: broadcast::Sender<ChatEvent>,
+    /// Cerrojo del turno único del chat, que `POST /api/chat/stream` intenta
+    /// adquirir sin bloquear (design D6).
+    pub turn_lock: Arc<TurnLock>,
+    /// Intervalo del latido (comentario SSE) del stream de eventos
+    /// (design D7). Configurable para que los tests no esperen 15 segundos.
+    pub chat_events_heartbeat: std::time::Duration,
+    /// Capacidad de la cola del bus de eventos del chat (design D1). Por defecto
+    /// [`CHAT_EVENT_BUS_CAPACITY`]; los tests la reducen para desbordar el bus y
+    /// provocar el aviso `resync` sin publicar 256 eventos.
+    pub chat_events_capacity: usize,
+}
+
+/// Crea el bus de eventos del chat —con una cola de `capacity` eventos— y el
+/// cerrojo de turno que lo acompaña.
+///
+/// El receptor inicial se descarta: el bus admite `send` sin suscriptores y los
+/// suscriptores reales son las conexiones de `GET /api/chat/events`.
+fn chat_event_bus(capacity: usize) -> (broadcast::Sender<ChatEvent>, Arc<TurnLock>) {
+    let (events, _receiver) = broadcast::channel(capacity);
+    let turn_lock = Arc::new(TurnLock::new(events.clone()));
+    (events, turn_lock)
+}
+
+/// Build the chat LLM provider from the environment: OpenRouter when
+/// `OPENROUTER_API_KEY` is set, Ollama otherwise.
+///
+/// Split out of [`AppState::new_with_orchestrator_with_llm`] so the production
+/// entry point ([`AppState::new_with_orchestrator`]) can pass it in and the
+/// end-to-end test of the chat sync can pass a deterministic mock instead.
+fn build_env_llm_provider() -> Arc<dyn crate::llm::provider::LLMProvider> {
+    if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
+        let config = crate::llm::openrouter::OpenRouterConfig {
+            api_key,
+            model: std::env::var("OPENROUTER_MODEL")
+                .unwrap_or_else(|_| "anthropic/claude-sonnet-20241022".into()),
+            base_url: std::env::var("OPENROUTER_BASE_URL")
+                .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into()),
+            max_retries: 3,
+            timeout_secs: 120,
+        };
+        Arc::new(crate::llm::openrouter::OpenRouterProvider::new(config))
+    } else {
+        let config = crate::llm::ollama::OllamaConfig {
+            base_url: std::env::var("OLLAMA_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:11434".into()),
+            model: std::env::var("LLM_MODEL").unwrap_or_else(|_| "llama3.2:3b".into()),
+            timeout_secs: 120,
+            keep_alive: "5m".into(),
+        };
+        Arc::new(crate::llm::ollama::OllamaProvider::new(config))
+    }
 }
 
 /// Build the production tool registry with all 32 built-in tools.
@@ -149,40 +206,29 @@ impl AppState {
     /// Create a new AppState with an in-memory SQLite database and no seed data.
     /// Used by integration tests that need a clean state.
     pub async fn new_in_memory_empty() -> Self {
-        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(":memory:")
-                    .create_if_missing(true),
-            )
-            .await
-            .expect("Failed to create in-memory database");
-        db::schema::run_migrations(&pool)
-            .await
-            .expect("Failed to run migrations on in-memory database");
-        let _ = db::fts::create_fts_triggers(&pool).await;
-        let registry = build_tool_registry(&pool);
-        let _ =
-            db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions()).await;
-        Self {
-            db: pool,
-            orchestrator: None,
-            guardrails: None,
-            tool_registry: Some(Arc::new(registry)),
-            auth_config: None,
-            collapse_tx: None,
-            collapse_threshold_tokens: 2000,
-            memory_tx: None,
-            shutdown_tx: None,
-            last_api_call: Arc::new(RwLock::new(None)),
-        }
+        Self::new_in_memory_inner(CHAT_EVENT_BUS_CAPACITY, false).await
+    }
+
+    /// Like [`AppState::new_in_memory_empty`], but with a chat event bus whose
+    /// queue holds `capacity` events (design D1).
+    ///
+    /// Production always uses [`CHAT_EVENT_BUS_CAPACITY`]; a test shrinks the
+    /// queue so a subscriber can fall behind —and be told to `resync`— without
+    /// publishing 256 events.
+    pub async fn new_in_memory_empty_with_event_capacity(capacity: usize) -> Self {
+        Self::new_in_memory_inner(capacity, false).await
     }
 
     /// Create a new AppState with an in-memory SQLite database.
     /// Used by integration tests.
     pub async fn new_in_memory() -> Self {
+        Self::new_in_memory_inner(CHAT_EVENT_BUS_CAPACITY, true).await
+    }
+
+    /// Shared body of the in-memory constructors: migrations, the tool registry
+    /// and the chat event bus —whose queue holds `capacity` events— plus the
+    /// seed data when `seed` is set.
+    async fn new_in_memory_inner(capacity: usize, seed: bool) -> Self {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -200,8 +246,11 @@ impl AppState {
         let registry = build_tool_registry(&pool);
         let _ =
             db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions()).await;
-        // Seed test data with known IDs expected by integration tests
-        let _ = Self::seed_test_data(&pool).await;
+        if seed {
+            // Seed test data with known IDs expected by integration tests
+            let _ = Self::seed_test_data(&pool).await;
+        }
+        let (chat_events, turn_lock) = chat_event_bus(capacity);
         Self {
             db: pool,
             orchestrator: None,
@@ -213,6 +262,12 @@ impl AppState {
             memory_tx: None,
             shutdown_tx: None,
             last_api_call: Arc::new(RwLock::new(None)),
+            chat_events,
+            turn_lock,
+            chat_events_heartbeat: std::time::Duration::from_secs(
+                crate::chat_events::DEFAULT_CHAT_EVENTS_HEARTBEAT_SECS,
+            ),
+            chat_events_capacity: capacity,
         }
     }
 
@@ -222,6 +277,22 @@ impl AppState {
     /// This is the production entry point used by `main.rs`.
     pub async fn new_with_orchestrator(
         config: &Config,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_orchestrator_with_llm(config, build_env_llm_provider()).await
+    }
+
+    /// Like [`AppState::new_with_orchestrator`], but with the chat LLM provider
+    /// supplied by the caller.
+    ///
+    /// Production builds the provider from the environment; the end-to-end test
+    /// of the cross-device sync injects a deterministic mock, so **the same**
+    /// wiring —worker pool, orchestrator, guardrails, tool registry and the chat
+    /// event bus— runs without touching the network. This is the path `main.rs`
+    /// takes, so it is the one that proves `AppState::chat_events` actually
+    /// reaches the orchestrator through `.with_event_bus`.
+    pub(crate) async fn new_with_orchestrator_with_llm(
+        config: &Config,
+        llm_provider: Arc<dyn crate::llm::provider::LLMProvider>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // 0. Fail-closed auth validation, before any side effect: an incomplete
         //    auth config (e.g. empty JWT_SECRET with auth enabled) must abort
@@ -240,29 +311,9 @@ impl AppState {
         // 3. Create guardrails
         let guardrails = Arc::new(Guardrails::new(tool_registry.clone()));
 
-        // 4. Create LLM provider (try OpenRouter first, fall back to Ollama)
-        let llm_provider: Arc<dyn crate::llm::provider::LLMProvider> =
-            if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
-                let config = crate::llm::openrouter::OpenRouterConfig {
-                    api_key,
-                    model: std::env::var("OPENROUTER_MODEL")
-                        .unwrap_or_else(|_| "anthropic/claude-sonnet-20241022".into()),
-                    base_url: std::env::var("OPENROUTER_BASE_URL")
-                        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into()),
-                    max_retries: 3,
-                    timeout_secs: 120,
-                };
-                Arc::new(crate::llm::openrouter::OpenRouterProvider::new(config))
-            } else {
-                let config = crate::llm::ollama::OllamaConfig {
-                    base_url: std::env::var("OLLAMA_BASE_URL")
-                        .unwrap_or_else(|_| "http://localhost:11434".into()),
-                    model: std::env::var("LLM_MODEL").unwrap_or_else(|_| "llama3.2:3b".into()),
-                    timeout_secs: 120,
-                    keep_alive: "5m".into(),
-                };
-                Arc::new(crate::llm::ollama::OllamaProvider::new(config))
-            };
+        // 4. The chat LLM provider arrives as an argument: `main.rs` builds it
+        //    from the environment (`build_env_llm_provider`); the end-to-end test
+        //    injects a mock. Everything below is identical either way.
 
         // 5. Create embedding provider (None disables RAG and the memory worker)
         let embedding_provider: Option<Arc<dyn crate::embeddings::EmbeddingProvider>> =
@@ -299,6 +350,11 @@ impl AppState {
         let last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>> =
             Arc::new(RwLock::new(None));
 
+        // 5.6 Chat event bus + single-turn lock. They live in the application
+        // state so the events endpoint and the turn handler share them, and so
+        // tests can inspect them without starting a server.
+        let (chat_events, turn_lock) = chat_event_bus(CHAT_EVENT_BUS_CAPACITY);
+
         // Decisions classifier for per-turn skill routing. A missing or empty
         // `OPENROUTER_API_KEY` yields `None`, so routing falls open. The client
         // timeout is a hard ceiling; the effective one is imposed per request by
@@ -326,7 +382,8 @@ impl AppState {
                 memory_tx.clone(),
                 last_api_call.clone(),
             )
-            .with_decisions(decisions),
+            .with_decisions(decisions)
+            .with_event_bus(Some(chat_events.clone())),
         );
 
         // 7. Auth config was built and validated at step 0 (`auth_config`).
@@ -341,6 +398,12 @@ impl AppState {
             memory_tx,
             shutdown_tx,
             last_api_call,
+            chat_events,
+            turn_lock,
+            chat_events_heartbeat: std::time::Duration::from_secs(
+                crate::chat_events::DEFAULT_CHAT_EVENTS_HEARTBEAT_SECS,
+            ),
+            chat_events_capacity: CHAT_EVENT_BUS_CAPACITY,
         })
     }
 
@@ -574,6 +637,7 @@ pub async fn app() -> Router {
     let registry = build_tool_registry(&pool);
     let _ = db::repos::tools::ToolsRepo::sync_from_registry(&pool, &registry.definitions()).await;
     let _ = AppState::seed_test_data(&pool).await;
+    let (chat_events, turn_lock) = chat_event_bus(CHAT_EVENT_BUS_CAPACITY);
     let state = AppState {
         db: pool,
         orchestrator: None,
@@ -585,6 +649,12 @@ pub async fn app() -> Router {
         memory_tx: None,
         shutdown_tx: None,
         last_api_call: Arc::new(RwLock::new(None)),
+        chat_events,
+        turn_lock,
+        chat_events_heartbeat: std::time::Duration::from_secs(
+            crate::chat_events::DEFAULT_CHAT_EVENTS_HEARTBEAT_SECS,
+        ),
+        chat_events_capacity: CHAT_EVENT_BUS_CAPACITY,
     };
     app_with_state(state)
 }
