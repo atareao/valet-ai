@@ -63,7 +63,7 @@ const defaultSettings: Record<string, string> = {
   RAG_BUDGET_TOKENS: "400",
   MEMORY_KNN_CANDIDATES: "10",
   GENERATION_CHAT_TEMPERATURE: "0.7",
-  GENERATION_CHAT_REASONING: "",
+  GENERATION_CHAT_REASONING: "off",
   GENERATION_CHAT_MAX_TOKENS: "4096",
   GENERATION_COLLAPSE_TEMPERATURE: "0.2",
   GENERATION_COLLAPSE_REASONING: "off",
@@ -1482,7 +1482,9 @@ describe("SettingsDialog", () => {
       expect(mockUpdateSettings).toHaveBeenCalledWith(
         expect.objectContaining({
           GENERATION_CHAT_TEMPERATURE: "0.9",
-          GENERATION_CHAT_REASONING: "",
+          // change `chat-reasoning-default-off`: con el ajuste en `off`, el
+          // formulario siembra `off` y ese valor viaja en el guardado.
+          GENERATION_CHAT_REASONING: "off",
           GENERATION_CHAT_MAX_TOKENS: "4096",
           GENERATION_COLLAPSE_TEMPERATURE: "0.2",
           GENERATION_COLLAPSE_REASONING: "off",
@@ -1502,6 +1504,93 @@ describe("SettingsDialog", () => {
     });
 
     expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED phase tests — change `chat-reasoning-default-off`
+  // Escenario: "El razonamiento del chat aparece en `off` por defecto"
+  // (openspec/changes/chat-reasoning-default-off/specs/frontend).
+  // ════════════════════════════════════════════════════════════════
+
+  it.each([
+    {
+      label: "la clave falta en GET /settings",
+      value: undefined,
+      expected: "off",
+    },
+    {
+      label: "el valor llega vacío explícito",
+      value: "",
+      expected: "default",
+    },
+  ])(
+    "muestra $expected en el razonamiento del chat cuando $label",
+    async ({ value, expected }) => {
+      const user = userEvent.setup();
+      // Réplica de la respuesta real: la clave `GENERATION_CHAT_REASONING`
+      // puede faltar (⇒ `off`) o venir vacía a propósito (⇒ `default`).
+      const next: Record<string, string> = { ...defaultSettings };
+      if (value === undefined) {
+        delete next.GENERATION_CHAT_REASONING;
+      } else {
+        next.GENERATION_CHAT_REASONING = value;
+      }
+      mockSettings = next;
+      renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+      await user.click(screen.getByText("Generación"));
+
+      // El Select pinta el valor seleccionado en `.ant-select-selection-item`.
+      const chatReasoning = screen.getByLabelText("GENERATION_CHAT_REASONING");
+      const chatSelect = chatReasoning.closest(".ant-select") as HTMLElement;
+      expect(within(chatSelect).getByText(expected)).toBeInTheDocument();
+    },
+  );
+
+  it("un `default` explícito del chat se conserva: se muestra y se guarda vacío", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    // `GET /settings` devuelve vacío: la opción `default` elegida a propósito.
+    mockSettings = { ...defaultSettings, GENERATION_CHAT_REASONING: "" };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    // El selector muestra `default`, no `off`.
+    const chatReasoning = screen.getByLabelText("GENERATION_CHAT_REASONING");
+    const chatSelect = chatReasoning.closest(".ant-select") as HTMLElement;
+    expect(within(chatSelect).getByText("default")).toBeInTheDocument();
+
+    // Guarda desde el bloque del chat sin editar el selector.
+    const chatTemperature = screen.getByLabelText("GENERATION_CHAT_TEMPERATURE");
+    const form = chatTemperature.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ GENERATION_CHAT_REASONING: "" }),
+      );
+    });
+  });
+
+  it("al guardar sin tocar el razonamiento del chat en off envía off", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    // El mock por defecto ya siembra `GENERATION_CHAT_REASONING: "off"`.
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    // Guarda desde el bloque del chat sin editar el selector de razonamiento.
+    const chatTemperature = screen.getByLabelText("GENERATION_CHAT_TEMPERATURE");
+    const form = chatTemperature.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ GENERATION_CHAT_REASONING: "off" }),
+      );
+    });
   });
 
   // ════════════════════════════════════════════════════════════════

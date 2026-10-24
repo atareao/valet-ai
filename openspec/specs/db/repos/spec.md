@@ -323,7 +323,7 @@ vacía).
 | clave | rol | qué es | inicial |
 |---|---|---|---|
 | `GENERATION_CHAT_TEMPERATURE` | chat | temperatura | `0.7` |
-| `GENERATION_CHAT_REASONING` | chat | razonamiento | `` (vacío = default del modelo) |
+| `GENERATION_CHAT_REASONING` | chat | razonamiento | `off` |
 | `GENERATION_CHAT_MAX_TOKENS` | chat | tokens máximos | `4096` |
 | `GENERATION_COLLAPSE_TEMPERATURE` | colapso | temperatura | `0.2` |
 | `GENERATION_COLLAPSE_REASONING` | colapso | razonamiento | `off` |
@@ -354,14 +354,17 @@ warning.
 **Then** SHALL leer las claves en ese momento, no al arrancar
 
 #### Scenario: Las doce claves se siembran con sus defaults
+
 **Given** una base de datos recién migrada  
 **When** se consulta `settings`  
 **Then** existe `GENERATION_CHAT_TEMPERATURE = 0.7`  
+**And** existe `GENERATION_CHAT_REASONING = off`  
 **And** existe `GENERATION_SEMANTIC_REASONING = off`  
 **And** existe `GENERATION_SEMANTIC_MAX_TOKENS = 2048`  
 **And** existen las nueve claves restantes con sus valores iniciales
 
 #### Scenario: Las tres claves del timeline se siembran con los defaults de su rol
+
 **Given** una base de datos migrada  
 **When** se consultan las claves del rol timeline  
 **Then** `GENERATION_TIMELINE_TEMPERATURE` es `0.2`  
@@ -369,43 +372,63 @@ warning.
 **And** `GENERATION_TIMELINE_MAX_TOKENS` es `2048`
 
 #### Scenario: Un valor existente se respeta
+
 **Given** `GENERATION_CHAT_TEMPERATURE = 0.9` antes de migrar  
 **When** se ejecuta la migración  
 **Then** `GENERATION_CHAT_TEMPERATURE` sigue siendo `0.9`
 
+#### Scenario: El razonamiento del chat vacío se corrige a `off`
+
+**Given** una base migrada con `GENERATION_CHAT_REASONING = ""`  
+**When** se aplica la migración del razonamiento por defecto del chat  
+**Then** `GENERATION_CHAT_REASONING` pasa a `off`
+
+#### Scenario: Un razonamiento del chat explícito se respeta
+
+**Given** una base migrada con `GENERATION_CHAT_REASONING = "high"`  
+**When** se aplica la migración del razonamiento por defecto del chat  
+**Then** `GENERATION_CHAT_REASONING` sigue siendo `high`
+
 #### Scenario: Un valor de timeline personalizado no se sobrescribe
+
 **Given** `GENERATION_TIMELINE_REASONING = low` antes de migrar  
 **When** se ejecuta la migración de defaults del timeline  
 **Then** `GENERATION_TIMELINE_REASONING` sigue siendo `low`
 
 #### Scenario: Un cambio en caliente surte efecto sin reiniciar
+
 **Given** `GENERATION_COLLAPSE_TEMPERATURE = 0.2`  
 **When** se actualiza a `0.5` y se repite una llamada de colapso sin reiniciar  
 **Then** el `temperature` del `ChatRequest` es `0.5`
 
 #### Scenario: Una temperatura no parseable cae al default con warning
+
 **Given** `GENERATION_MEMORY_TEMPERATURE = "alta"`  
 **When** una llamada de fichas lee sus parámetros  
 **Then** la temperatura es `0.3`  
 **And** se registra un warning
 
 #### Scenario: Un razonamiento desconocido cae a off con warning
+
 **Given** `GENERATION_COLLAPSE_REASONING = "super"`  
 **When** una llamada de colapso lee sus parámetros  
 **Then** el razonamiento es `Off`  
 **And** se registra un warning
 
 #### Scenario: El razonamiento vacío no se envía
+
 **Given** `GENERATION_CHAT_REASONING = ""`  
 **When** una llamada del chat lee sus parámetros  
 **Then** el `reasoning` del `ChatRequest` es `None`
 
 #### Scenario: Un `low` heredado del consolidador se corrige a `off`
+
 **Given** una base migrada con `GENERATION_SEMANTIC_REASONING = low`  
 **When** se aplica la migración de endurecimiento del consolidador  
 **Then** `GENERATION_SEMANTIC_REASONING` pasa a `off`
 
 #### Scenario: Un razonamiento del consolidador distinto de `low` se respeta
+
 **Given** una base migrada con `GENERATION_SEMANTIC_REASONING = medium`  
 **When** se aplica la migración de endurecimiento del consolidador  
 **Then** `GENERATION_SEMANTIC_REASONING` sigue siendo `medium`

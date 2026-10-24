@@ -200,7 +200,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           settings.GENERATION_CHAT_TEMPERATURE || "0.7",
         ),
         GENERATION_CHAT_REASONING:
-          settings.GENERATION_CHAT_REASONING || "",
+          settings.GENERATION_CHAT_REASONING ?? "off",
         GENERATION_CHAT_MAX_TOKENS: parseInt(
           settings.GENERATION_CHAT_MAX_TOKENS || "4096",
         ),
@@ -322,7 +322,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         GENERATION_CHAT_REASONING:
           values.GENERATION_CHAT_REASONING ??
           settings?.GENERATION_CHAT_REASONING ??
-          "",
+          "off",
         GENERATION_CHAT_MAX_TOKENS: (
           values.GENERATION_CHAT_MAX_TOKENS ??
           parseInt(settings?.GENERATION_CHAT_MAX_TOKENS || "4096")
