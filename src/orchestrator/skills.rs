@@ -24,6 +24,7 @@ pub enum Skill {
     Timeline,
     Email,
     Rss,
+    Blog,
 }
 
 /// Especificación cerrada de una skill.
@@ -58,7 +59,7 @@ pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 10] = [
+static CATALOG: [SkillSpec; 11] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
@@ -85,10 +86,10 @@ static CATALOG: [SkillSpec; 10] = [
         skill: Skill::Recuerdos,
         id: "recuerdos",
         instructions: "¿La respuesta requiere guardar o recuperar notas, apuntes o algo ya hablado?",
-        criteria_true: "El mensaje pide apuntar, guardar, recuperar o listar un texto, una idea o un diario, o pregunta por algo ya hablado.",
+        criteria_true: "El mensaje pide apuntar, guardar, recuperar o listar un texto, una idea o un diario, o pregunta por algo ya hablado. Cuenta también la bitácora personal: apuntar el día de hoy, leer una entrada o un rango de días, corregirla, borrarla o preguntar cómo fue mi día.",
         criteria_false: "El mensaje no pide guardar ni recuperar información personal del usuario ni busca en el historial.",
         threshold: 0.10,
-        tools: &["notes", "unified_search"],
+        tools: &["notes", "unified_search", "journal"],
         prompt_key: "SKILL_RECUERDOS_PROMPT",
         prompt_heading: "# SKILL ACTIVA: RECUERDOS",
     },
@@ -191,6 +192,17 @@ static CATALOG: [SkillSpec; 10] = [
         prompt_key: "SKILL_RSS_PROMPT",
         prompt_heading: "# SKILL ACTIVA: RSS",
     },
+    SkillSpec {
+        skill: Skill::Blog,
+        id: "blog",
+        instructions: "¿La respuesta requiere escribir en el blog del sitio, publicando una respuesta a un comentario o mandando a la papelera el comentario que llegó como aviso?",
+        criteria_true: "El mensaje pide responder a un comentario del sitio o publicar una respuesta bajo un comentario ya aprobado, o pide mandar a la papelera (retirar, borrar, quitar) el comentario que llegó como aviso entrante de otra aplicación. Cuenta también el comentario notificado que se pide retirar del sitio.",
+        criteria_false: "El mensaje no se refiere a ningún comentario del blog ni pide publicar una respuesta ni mandar un comentario a la papelera en el sitio.",
+        threshold: 0.10,
+        tools: &["blog_comment_reply", "blog_comment_delete"],
+        prompt_key: "SKILL_BLOG_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: BLOG",
+    },
 ];
 
 /// Catálogo cerrado de skills, en el orden canónico del sistema.
@@ -232,9 +244,9 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las diez variantes del enum, para exigir que el catálogo las cubra
+    /// Las once variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 10] = [
+    const ALL_SKILLS: [Skill; 11] = [
         Skill::Agenda,
         Skill::Pendientes,
         Skill::Recuerdos,
@@ -245,6 +257,7 @@ mod tests {
         Skill::Timeline,
         Skill::Email,
         Skill::Rss,
+        Skill::Blog,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -459,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_declares_exactly_the_ten_wide_domain_ids() {
+    fn catalog_declares_exactly_the_eleven_wide_domain_ids() {
         let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
 
         for id in [
@@ -473,6 +486,7 @@ mod tests {
             "timeline",
             "email",
             "rss",
+            "blog",
         ] {
             assert!(
                 ids.contains(&id),
@@ -481,8 +495,8 @@ mod tests {
         }
         assert_eq!(
             ids.len(),
-            10,
-            "el catálogo debe tener exactamente diez skills; tiene {ids:?}"
+            11,
+            "el catálogo debe tener exactamente once skills; tiene {ids:?}"
         );
     }
 
@@ -654,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_twenty_nine_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_thirty_two_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -666,8 +680,16 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            29,
-            "el core más las diez skills deben cubrir las veintinueve herramientas: {covered:?}"
+            32,
+            "el core más las once skills deben cubrir las treinta y dos herramientas: {covered:?}"
+        );
+        assert!(
+            covered.iter().any(|t| t == "blog_comment_reply"),
+            "la cobertura debe incluir `blog_comment_reply`: {covered:?}"
+        );
+        assert!(
+            covered.iter().any(|t| t == "blog_comment_delete"),
+            "la cobertura debe incluir `blog_comment_delete`: {covered:?}"
         );
         for spec in catalog() {
             assert!(
@@ -679,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_keys_are_the_ten_canonical_keys() {
+    fn prompt_keys_are_the_eleven_canonical_keys() {
         let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
 
         for key in [
@@ -693,6 +715,7 @@ mod tests {
             "SKILL_TIMELINE_PROMPT",
             "SKILL_EMAIL_PROMPT",
             "SKILL_RSS_PROMPT",
+            "SKILL_BLOG_PROMPT",
         ] {
             assert!(
                 keys.contains(&key),
@@ -701,8 +724,16 @@ mod tests {
         }
         assert_eq!(
             keys.len(),
-            10,
-            "el catálogo debe declarar exactamente diez claves de fragmento; tiene {keys:?}"
+            11,
+            "el catálogo debe declarar exactamente once claves de fragmento; tiene {keys:?}"
+        );
+        let mut unique = keys.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            keys.len(),
+            "las claves de fragmento deben ser únicas; tiene {keys:?}"
         );
         for legacy in [
             "SKILL_TAREAS_PROMPT",
@@ -824,6 +855,156 @@ mod tests {
             declaring,
             vec!["agenda", "pendientes", "entorno", "widgets"],
             "solo las skills del briefing deben declarar el saludo de apertura del día; declaran: {declaring:?}"
+        );
+    }
+
+    // ─── RED: la bitácora en el catálogo (journal-entries, 3.8) ─────────────
+    //
+    // La bitácora es, para el enrutador, otra forma de «apuntar y recuperar
+    // algo personal»: el dominio de `recuerdos`, la misma skill que ya cubre
+    // `notes` y `unified_search`. Entra en ella —y **solo** en ella— y sus
+    // `criteria` ganan el habla de la bitácora. Estas pruebas describen ese
+    // contrato y **fallan** con el catálogo actual.
+
+    /// Scenario: la skill de recuerdos cubre la bitácora y su habla.
+    #[test]
+    fn recuerdos_covers_the_journal_and_no_other_skill_does() {
+        let recuerdos = catalog().iter().find(|spec| spec.skill == Skill::Recuerdos);
+        assert!(recuerdos.is_some(), "recuerdos debe estar en el catálogo");
+        let recuerdos = recuerdos.unwrap();
+        assert!(
+            recuerdos.tools.contains(&"journal"),
+            "recuerdos debe cubrir `journal` además de `notes` y `unified_search`: {:?}",
+            recuerdos.tools
+        );
+
+        let owners: Vec<&str> = catalog()
+            .iter()
+            .filter(|spec| spec.tools.contains(&"journal"))
+            .map(|spec| spec.id)
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["recuerdos"],
+            "`journal` no puede repartirse entre skills distintas; lo cubren: {owners:?}"
+        );
+
+        assert!(
+            !CORE_TOOLS.contains(&"journal"),
+            "`journal` es enrutable: no puede pertenecer al conjunto core"
+        );
+        assert_eq!(
+            skill_of_tool("journal"),
+            Some(Skill::Recuerdos),
+            "`journal` debe enrutarse con la skill recuerdos"
+        );
+    }
+
+    /// Scenario: las criteria de la skill de recuerdos ganan el habla de la
+    /// bitácora, de modo que el router la seleccione cuando el usuario pida
+    /// leer o apuntar su diario.
+    #[test]
+    fn recuerdos_criteria_mention_the_journal_speech() {
+        let criteria = criteria_true_of("recuerdos").unwrap_or("");
+        for marker in ["bitácora", "diario", "cómo fue mi día"] {
+            assert!(
+                criteria.contains(marker),
+                "las criteria de `recuerdos` deben incluir «{marker}»; tienen: {criteria:?}"
+            );
+        }
+    }
+
+    // ─── RED: la skill del blog (comment-reply-publisher, 6.3) ──────────────
+    //
+    // Publicar en el blog es una skill propia —`blog`— y no una herramienta de
+    // `pendientes`: si viviera allí, un turno sobre tareas o recordatorios
+    // ganaría capacidad de publicar en el sitio. Estas pruebas describen ese
+    // contrato y **fallan** con el catálogo actual.
+
+    /// La entrada del catálogo con el id dado, o `None` si aún no existe (para
+    /// que el test falle por aserción y no por pánico).
+    fn spec_of(id: &str) -> Option<&'static SkillSpec> {
+        catalog().iter().find(|spec| spec.id == id)
+    }
+
+    #[test]
+    fn blog_skill_covers_the_two_blog_writes() {
+        let blog = spec_of("blog").expect("el catálogo debe declarar la skill `blog`");
+        assert_eq!(
+            blog.tools,
+            &["blog_comment_reply", "blog_comment_delete"][..],
+            "blog debe cubrir las dos escrituras y ninguna otra herramienta: {:?}",
+            blog.tools
+        );
+
+        for tool in ["blog_comment_reply", "blog_comment_delete"] {
+            let owners: Vec<&str> = catalog()
+                .iter()
+                .filter(|spec| spec.tools.contains(&tool))
+                .map(|spec| spec.id)
+                .collect();
+            assert_eq!(
+                owners,
+                vec!["blog"],
+                "`{tool}` no puede repartirse entre skills distintas; lo cubren: {owners:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn blog_comment_reply_is_not_in_pendientes() {
+        let pendientes = spec_of("pendientes").expect("pendientes debe estar en el catálogo");
+        for tool in ["blog_comment_reply", "blog_comment_delete"] {
+            assert!(
+                !pendientes.tools.contains(&tool),
+                "una capacidad de escritura no ensancha `pendientes`: {tool} en {:?}",
+                pendientes.tools
+            );
+        }
+        assert!(
+            pendientes.tools.contains(&"notifications"),
+            "`notifications` (solo lectura de avisos) permanece en pendientes: {:?}",
+            pendientes.tools
+        );
+    }
+
+    #[test]
+    fn blog_skill_is_a_domain_skill_with_threshold_010() {
+        let blog = spec_of("blog").expect("el catálogo debe declarar la skill `blog`");
+        assert_eq!(
+            pct(blog.threshold),
+            10,
+            "blog debe declarar el umbral 0.10 de las skills de dominio"
+        );
+        assert!(
+            !CORE_TOOLS.contains(&"blog_comment_reply"),
+            "blog_comment_reply es enrutable: no pertenece al core"
+        );
+    }
+
+    #[test]
+    fn blog_criteria_cover_responding_to_a_comment_and_incoming_notice() {
+        let blog = spec_of("blog").expect("el catálogo debe declarar la skill `blog`");
+        assert!(
+            !blog.instructions.trim().is_empty(),
+            "blog debe declarar una pregunta"
+        );
+        assert!(
+            !blog.criteria_false.trim().is_empty(),
+            "blog debe declarar un criteria_false"
+        );
+        let criteria = blog.criteria_true.to_lowercase();
+        assert!(
+            criteria.contains("comentario"),
+            "el criteria_true debe cubrir responder a un comentario del blog: {criteria:?}"
+        );
+        assert!(
+            criteria.contains("aviso"),
+            "el criteria_true debe cubrir el comentario que llega como aviso entrante: {criteria:?}"
+        );
+        assert!(
+            criteria.contains("papelera"),
+            "el criteria_true debe cubrir mandar a la papelera el comentario notificado: {criteria:?}"
         );
     }
 }

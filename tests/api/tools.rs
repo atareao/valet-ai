@@ -187,7 +187,7 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
     let skills = body["skills"]
         .as_array()
         .expect("GET /api/skills must return a `skills` array");
-    assert_eq!(skills.len(), 10, "the closed catalog has ten skills");
+    assert_eq!(skills.len(), 11, "the closed catalog has eleven skills");
 
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
     for expected in [
@@ -201,6 +201,7 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
         "timeline",
         "email",
         "rss",
+        "blog",
     ] {
         assert!(
             ids.contains(&expected),

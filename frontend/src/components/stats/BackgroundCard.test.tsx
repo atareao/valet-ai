@@ -107,6 +107,26 @@ describe("BackgroundCard", () => {
     expect(row.getByText("timeline")).toBeInTheDocument();
   });
 
+  it("etiqueta el origen journal con su nombre legible", () => {
+    const withJournal: BackgroundStats[] = [
+      pair("journal", "role-model", {
+        calls: 2,
+        input_tokens: 100,
+        output_tokens: 50,
+        total_tokens: 150,
+        total_cost: 0.001,
+        total_errors: 0,
+        avg_duration_ms: 120,
+      }),
+    ];
+    render(<BackgroundCard data={withJournal} loading={false} />);
+
+    const row = within(screen.getByRole("row", { name: /journal/ }));
+    // Etiqueta legible y `kind` crudo conviven en la fila.
+    expect(row.getByText("Bitácora")).toBeInTheDocument();
+    expect(row.getByText("journal")).toBeInTheDocument();
+  });
+
   it("renderiza una fila por pareja (rol, modelo) cuando un rol tiene dos modelos", () => {
     const data: BackgroundStats[] = [
       pair("consolidator", "qwen/qwen3-235b-a22b-2507", { calls: 33 }),

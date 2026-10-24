@@ -7,24 +7,26 @@ Enrutado de skills por turno: qué habilidades necesita un turno, con qué herra
 
 ### Requirement: El catálogo de skills SHALL ser cerrado y cubrir todas las herramientas con sus prerrequisitos
 
-El catálogo SHALL declarar, en código, un conjunto **cerrado de diez skills de dominio amplio**: `agenda`, `pendientes`, `recuerdos`, `entorno`, `web`, `widgets`, `running`, `timeline`, `email` y `rss`. Cada skill SHALL declarar un id estable, las instrucciones y las `criteria` por defecto con las que se pregunta por ella, su umbral por defecto, el conjunto de herramientas que cubre —**incluyendo los prerrequisitos**— y la clave y el encabezado de su fragmento de prompt. Las herramientas de un mismo dominio SHALL NOT repartirse entre skills distintas: `pendientes` cubre `tasks`, `reminders` y `notifications`; `recuerdos` cubre `notes` y `unified_search`; `entorno` cubre `weather`, `geocode`, `reverse_geocode` y `search_places`; `running` cubre `strava_recent_activities`, `strava_activity_detail`, `strava_activity_streams` y `strava_athlete_stats`; `timeline` cubre `timeline_get_events`, `timeline_add_event` y `timeline_delete_event`; `email` cubre `email_list_unread`, `email_get_body`, `email_mark_read` y `email_send`; `rss` cubre `rss_list_unread`, `rss_get_entry`, `rss_search_entries` y `rss_mark_read`. El conjunto **core** no enrutable SHALL ser `get_current_time` y `get_current_location`. La herramienta `render_widget` SHALL pertenecer a la skill `widgets` y SHALL NOT estar en el core. Una herramienta PUEDE pertenecer a más de una skill. Toda herramienta registrada SHALL pertenecer al core o a al menos una skill.
+El catálogo SHALL declarar, en código, un conjunto **cerrado de once skills de dominio amplio**: `agenda`, `pendientes`, `recuerdos`, `entorno`, `web`, `widgets`, `running`, `timeline`, `email`, `rss` y `blog`. Cada skill SHALL declarar un id estable, las instrucciones y las `criteria` por defecto con las que se pregunta por ella, su umbral por defecto, el conjunto de herramientas que cubre —**incluyendo los prerrequisitos**— y la clave y el encabezado de su fragmento de prompt. Las herramientas de un mismo dominio SHALL NOT repartirse entre skills distintas: `pendientes` cubre `tasks`, `reminders` y `notifications`; `recuerdos` cubre `notes`, `unified_search` y `journal`; `entorno` cubre `weather`, `geocode`, `reverse_geocode` y `search_places`; `running` cubre `strava_recent_activities`, `strava_activity_detail`, `strava_activity_streams` y `strava_athlete_stats`; `timeline` cubre `timeline_get_events`, `timeline_add_event` y `timeline_delete_event`; `email` cubre `email_list_unread`, `email_get_body`, `email_mark_read` y `email_send`; `rss` cubre `rss_list_unread`, `rss_get_entry`, `rss_search_entries` y `rss_mark_read`; `blog` cubre `blog_comment_reply` y `blog_comment_delete`. Añadir una herramienta nueva al blog SHALL NOT crear una skill nueva mientras pertenezca al mismo dominio: el catálogo SHALL seguir declarando once skills. Una capacidad de **escritura** SHALL NOT ensanchar la skill de otro dominio: `notifications` —que solo lee avisos— permanece en `pendientes` y las dos escrituras del blog —publicar una respuesta y mandar un comentario a la papelera— viven en la skill `blog`, de modo que un turno sobre tareas o recordatorios no gane capacidad de escribir en el sitio. Las `criteria` de `recuerdos` SHALL incluir el habla de la bitácora (`bitácora`, `diario`, `cómo fue mi día`), de modo que el router seleccione la skill cuando el usuario pida leer o apuntar su diario; y las de `blog` SHALL cubrir los casos legítimos de escribir en el blog —responder a un comentario y mandar a la papelera el comentario que llegó **como aviso entrante**—, de modo que el router seleccione la skill tanto cuando el usuario pida responder como cuando pida retirar el comentario anunciado. El conjunto **core** no enrutable SHALL ser `get_current_time` y `get_current_location`. La herramienta `render_widget` SHALL pertenecer a la skill `widgets` y SHALL NOT estar en el core. Una herramienta PUEDE pertenecer a más de una skill. Toda herramienta registrada SHALL pertenecer al core o a al menos una skill.
 
 #### Scenario: Toda herramienta registrada está cubierta
-- **Given** el registry de producción con sus veintinueve herramientas
+- **Given** el registry de producción con sus treinta y dos herramientas
 - **When** se contrasta con el catálogo de skills y el conjunto core
 - **Then** cada herramienta pertenece al core o a alguna skill
 - **And** el test de integridad falla si se registra una herramienta y se olvida en el catálogo
 
 #### Scenario: Las herramientas de un mismo dominio no se reparten en skills distintas
 - **Given** el catálogo de skills
-- **When** se inspeccionan las herramientas de `pendientes`, `recuerdos`, `entorno`, `running`, `timeline`, `email` y `rss`
+- **When** se inspeccionan las herramientas de `pendientes`, `recuerdos`, `entorno`, `running`, `timeline`, `email`, `rss` y `blog`
 - **Then** `tasks`, `reminders` y `notifications` están todas en `pendientes`
-- **And** `notes` y `unified_search` están ambas en `recuerdos`
+- **And** `notes`, `unified_search` y `journal` están todas en `recuerdos`
 - **And** `weather`, `geocode`, `reverse_geocode` y `search_places` están todas en `entorno`
 - **And** las cuatro herramientas `strava_*` están todas en `running`
 - **And** las tres herramientas `timeline_*` están todas en `timeline`
 - **And** las cuatro herramientas `email_*` están todas en `email`
 - **And** las cuatro herramientas `rss_*` están todas en `rss`
+- **And** `blog_comment_reply` y `blog_comment_delete` están en `blog`
+- **And** ni `blog_comment_reply` ni `blog_comment_delete` están en `pendientes`, donde solo se leen los avisos
 
 #### Scenario: El conjunto core no se enruta
 - **Given** el catálogo de skills
@@ -68,6 +70,33 @@ El catálogo SHALL declarar, en código, un conjunto **cerrado de diez skills de
 - **Then** cubre `rss_list_unread`, `rss_get_entry`, `rss_search_entries` y `rss_mark_read`
 - **And** `rss` es una skill enrutable, no parte del conjunto core
 - **And** declara el umbral `0.10` de las skills de dominio
+
+#### Scenario: La skill del blog cubre la publicación, y solo ella
+- **Given** el catálogo de skills
+- **When** se inspeccionan las herramientas y las `criteria` de la skill `blog`
+- **Then** la skill cubre `blog_comment_reply`, de modo que responder a un comentario del blog —también cuando el comentario llega como aviso entrante— la selecciona
+- **And** `blog` es una skill enrutable, no parte del conjunto core
+- **And** declara el umbral `0.10` de las skills de dominio
+- **And** la cobertura completa de la skill —las **dos** escrituras del blog— la fija el escenario «La skill del blog cubre las dos escrituras del blog», que **sustituye** al presente
+
+#### Scenario: La skill del blog cubre las dos escrituras del blog
+- **Given** el catálogo de skills
+- **When** se inspeccionan las herramientas de la skill `blog`
+- **Then** cubre `blog_comment_reply` y `blog_comment_delete`, y ninguna otra herramienta
+- **And** el catálogo sigue declarando once skills: la herramienta nueva no añade una skill
+
+#### Scenario: La skill del blog reconoce el borrado del comentario notificado
+- **Given** el catálogo de skills
+- **When** se inspeccionan las `criteria` de la skill `blog`
+- **Then** reconocen el caso de mandar a la papelera el comentario que llegó como aviso
+- **And** ninguna otra skill cubre `blog_comment_delete`
+
+#### Scenario: La skill de recuerdos cubre la bitácora y su habla
+- **Given** el catálogo de skills
+- **When** se inspeccionan las herramientas y las `criteria` de la skill `recuerdos`
+- **Then** cubre la herramienta `journal` además de `notes` y `unified_search`
+- **And** `journal` no es parte del conjunto core ni se reparte en otra skill
+- **And** sus `criteria` mencionan la bitácora, el diario y cómo fue el día
 
 ### Requirement: El catálogo SHALL poder consultarse por la API
 

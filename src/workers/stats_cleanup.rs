@@ -120,6 +120,15 @@ mod tests {
     async fn test_cleanup_purges_old_data() {
         let pool = setup().await;
 
+        // Fechas relativas al reloj: 45 y 5 días atrás, alrededor de la
+        // retención de 30 días (antes eran literales con fecha fija).
+        let old_date = (chrono::Utc::now() - chrono::Duration::days(45))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+        let recent_date = (chrono::Utc::now() - chrono::Duration::days(5))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+
         // Insert 5 old records (45 days ago)
         for i in 0..5 {
             let id = format!("old-{i}");
@@ -137,7 +146,7 @@ mod tests {
                 "success",
                 None,
                 None,
-                Some("2026-08-12T00:00:00"),
+                Some(old_date.as_str()),
             )
             .await;
         }
@@ -159,7 +168,7 @@ mod tests {
                 "success",
                 None,
                 None,
-                Some("2026-09-21T00:00:00"),
+                Some(recent_date.as_str()),
             )
             .await;
         }

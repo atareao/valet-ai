@@ -233,9 +233,12 @@ async fn test_by_day() {
     .await
     .unwrap();
 
-    // Insert one request per day for 5 days (Sep 21-25)
+    // Insert one request per day for 5 days, ending yesterday.
+    // Fechas relativas al reloj para no caducar con la ventana de 30 días.
     for i in 1..=5 {
-        let date = format!("2026-09-{:02}T10:00:00", 20 + i);
+        let date = (chrono::Utc::now() - chrono::Duration::days(6 - i as i64))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
         let id = format!("day-{i}");
         sqlx::query(
             "INSERT INTO llm_requests (id, model, profile_id, prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens, cost, duration_ms, status, created_at)
@@ -568,8 +571,8 @@ async fn test_background_summary() {
         .expect("the background summary must be a JSON array");
     assert_eq!(
         origins.len(),
-        5,
-        "one entry per non-chat origin (router, archivist, consolidator, collapse, timeline)"
+        6,
+        "one entry per non-chat origin (router, archivist, consolidator, collapse, timeline, journal)"
     );
 
     let mut kinds: Vec<&str> = origins
@@ -583,6 +586,7 @@ async fn test_background_summary() {
             "archivist",
             "collapse",
             "consolidator",
+            "journal",
             "router",
             "timeline"
         ],

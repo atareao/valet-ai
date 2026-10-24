@@ -49,7 +49,7 @@ pub struct AppState {
     pub last_api_call: Arc<RwLock<Option<crate::models::stats::LastApiCall>>>,
 }
 
-/// Build the production tool registry with all 29 built-in tools.
+/// Build the production tool registry with all 32 built-in tools.
 ///
 /// Exposed so the evaluation harness (`valet-route-eval`) can resolve the same
 /// advertised tool set the running application uses.
@@ -81,6 +81,9 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
         crate::tools::current_location::CurrentLocationTool::new(pool.clone()),
     ));
     registry.register(Box::new(crate::tools::notes::NotesTool::new(pool.clone())));
+    registry.register(Box::new(crate::tools::journal::JournalTool::new(
+        pool.clone(),
+    )));
     registry.register(Box::new(
         crate::tools::unified_search::UnifiedSearchTool::new(pool.clone()),
     ));
@@ -132,6 +135,12 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     )));
     registry.register(Box::new(
         crate::tools::notifications::NotificationsTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(
+        crate::tools::blog_comments::BlogCommentReplyTool::new(pool.clone()),
+    ));
+    registry.register(Box::new(
+        crate::tools::blog_comments::BlogCommentDeleteTool::new(pool.clone()),
     ));
     registry
 }
@@ -512,6 +521,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::events::routes())
         // Tasks
         .merge(routes::tasks::routes())
+        // Journal (bitácora): listado, lectura, alta/reemplazo y borrado por día
+        .merge(routes::journal::routes())
         // Stats
         .merge(routes::stats::routes())
         // Search

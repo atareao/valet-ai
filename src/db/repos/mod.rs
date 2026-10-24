@@ -1,5 +1,7 @@
+pub mod comment_replies;
 pub mod events;
 pub mod ingest_keys;
+pub mod journal;
 pub mod memories;
 pub mod memory;
 pub mod messages;

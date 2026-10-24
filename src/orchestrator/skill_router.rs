@@ -735,9 +735,11 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// Las veintinueve herramientas del registry de producción: lo que expone
+    /// Las treinta y dos herramientas del registry de producción: lo que expone
     /// el fallo abierto con todas las skills habilitadas.
     const ALL_TOOLS: &[&str] = &[
+        "blog_comment_delete",
+        "blog_comment_reply",
         "calendar",
         "email_get_body",
         "email_list_unread",
@@ -746,6 +748,7 @@ mod tests {
         "geocode",
         "get_current_location",
         "get_current_time",
+        "journal",
         "notes",
         "notifications",
         "reminders",
@@ -985,6 +988,27 @@ mod tests {
             sorted(exposed_tools(&sel, &config)),
             sorted(all_tools()),
             "fail-open exposes every enabled skill's tools plus the core"
+        );
+    }
+
+    /// 6.5 — el fallo abierto con todas las skills habilitadas expone las treinta
+    /// y dos herramientas, incluidas las dos escrituras del blog.
+    #[tokio::test]
+    async fn fail_open_exposes_the_blog_comment_reply_tool() {
+        let provider = FakeDecisions::new(&[]); // sin respuestas → fallo abierto
+        let config = enabled_config();
+        let router = SkillRouter::new(Some(provider), config.clone());
+
+        let sel = router.select("responde a este comentario", &[]).await;
+        let exposed = exposed_tools(&sel, &config);
+        assert!(
+            exposed.iter().any(|t| t == "blog_comment_reply"),
+            "el fallo abierto debe exponer `blog_comment_reply`: {exposed:?}"
+        );
+        assert_eq!(
+            sorted(exposed),
+            sorted(all_tools()),
+            "el fallo abierto expone las treinta y dos herramientas"
         );
     }
 

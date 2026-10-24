@@ -1,3 +1,4 @@
+pub mod journal;
 pub mod memory;
 pub mod message;
 pub mod pagination;
@@ -7,6 +8,7 @@ pub mod stats;
 pub mod timeline;
 pub mod tool;
 
+pub use journal::*;
 pub use memory::*;
 pub use message::*;
 pub use pagination::*;

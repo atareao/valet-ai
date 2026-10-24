@@ -2,6 +2,8 @@ import type {
   CalendarEvent,
   ChatInitResponse,
   CreateMessage,
+  JournalEntry,
+  JournalEntryInput,
   LastApiCall,
   MemoryStats,
   Message,
@@ -232,4 +234,31 @@ export const api = {
       "/strava/disconnect",
       { method: "POST" },
     ),
+
+  // --- Bitácora ------------------------------------------------------------
+  // `GET /api/journal` lista por rango **inclusivo**, de la entrada más reciente
+  // a la más antigua. Sin parámetros devuelve el diario entero: los extremos los
+  // pone el backend.
+  listJournalEntries: (params?: { from?: string; to?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.from) qs.set("from", params.from);
+    if (params?.to) qs.set("to", params.to);
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    const suffix = qs.toString();
+    return request<JournalEntry[]>(`/journal${suffix ? `?${suffix}` : ""}`);
+  },
+
+  // Un día sin entrada responde `404` con `{"error": "no journal entry for …"}`.
+  getJournalEntry: (date: string) => request<JournalEntry>(`/journal/${date}`),
+
+  // `PUT` **reemplaza** la entrada del día: lo que no venga en el cuerpo se
+  // guarda como lista vacía. Quien edite debe mandar también lo que no toca.
+  upsertJournalEntry: (date: string, body: JournalEntryInput) =>
+    request<JournalEntry>(`/journal/${date}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  deleteJournalEntry: (date: string) =>
+    request<void>(`/journal/${date}`, { method: "DELETE" }),
 };

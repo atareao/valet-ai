@@ -133,6 +133,7 @@ mod tests {
             memory_model: "mistralai/mistral-small".into(),
             semantic_model: "mistralai/mistral-small".into(),
             timeline_model: "mistralai/mistral-small".into(),
+            journal_model: "mistralai/mistral-small".into(),
             rag_budget_tokens: 2000,
             embedding_provider: None,
             embedding_model: None,

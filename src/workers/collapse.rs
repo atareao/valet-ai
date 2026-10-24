@@ -129,9 +129,7 @@ impl CollapseWorker {
                         Ok(response) => {
                             let duration_ms = start.elapsed().as_millis() as i64;
                             let collapsed = response.message.content;
-                            let collapsed_tokens = estimate_markdown_tokens_heuristic(&collapsed);
 
-                            // Record stats
                             let prompt_tokens = response
                                 .usage
                                 .as_ref()
@@ -143,48 +141,87 @@ impl CollapseWorker {
                                 .map(|u| u.completion_tokens as i64)
                                 .unwrap_or(0);
                             let total_tokens = prompt_tokens + completion_tokens;
-                            let _ = StatsRepo::record_request(
-                                &db,
-                                CallKind::Collapse,
-                                &uuid::Uuid::new_v4().to_string(),
-                                &model,
-                                None,
-                                prompt_tokens,
-                                completion_tokens,
-                                total_tokens,
-                                response
-                                    .usage
-                                    .as_ref()
-                                    .map(|u| u.cached_tokens as i64)
-                                    .unwrap_or(0),
-                                response
-                                    .usage
-                                    .as_ref()
-                                    .map(|u| u.reasoning_tokens as i64)
-                                    .unwrap_or(0),
-                                response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0),
-                                Some(duration_ms),
-                                "success",
-                                None,
-                                None,
-                                None,
-                            )
-                            .await;
+                            let cached_tokens = response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.cached_tokens as i64)
+                                .unwrap_or(0);
+                            let reasoning_tokens = response
+                                .usage
+                                .as_ref()
+                                .map(|u| u.reasoning_tokens as i64)
+                                .unwrap_or(0);
+                            let cost = response.usage.as_ref().map(|u| u.cost).unwrap_or(0.0);
 
-                            // 4. Update DB
-                            let update_result = sqlx::query(
-                                "UPDATE messages SET collapsed_content = ?1, collapsed_tokens_count = ?2 WHERE id = ?3",
-                            )
-                             .bind(&collapsed)
-                             .bind(collapsed_tokens as i64)
-                             .bind(&message_id)
-                             .execute(&db)
-                             .await;
-
-                            if let Err(e) = update_result {
-                                tracing::error!(message_id = %message_id, error = %e, "CollapseWorker failed to update DB");
+                            // Guard: an empty or whitespace-only summary is a
+                            // silent content loss. Never store it as the
+                            // collapsed content; record the failure as an error
+                            // row and leave the message un-collapsed so a later
+                            // attempt can retry it (D5).
+                            if collapsed.trim().is_empty() {
+                                let _ = StatsRepo::record_request(
+                                    &db,
+                                    CallKind::Collapse,
+                                    &uuid::Uuid::new_v4().to_string(),
+                                    &model,
+                                    None,
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    total_tokens,
+                                    cached_tokens,
+                                    reasoning_tokens,
+                                    cost,
+                                    Some(duration_ms),
+                                    "error",
+                                    Some("collapse returned an empty summary"),
+                                    None,
+                                    None,
+                                )
+                                .await;
+                                tracing::error!(
+                                    message_id = %message_id,
+                                    "CollapseWorker: empty summary; message left un-collapsed"
+                                );
                             } else {
-                                tracing::info!(message_id = %message_id, collapsed_tokens = %collapsed_tokens, "CollapseWorker completed");
+                                let collapsed_tokens =
+                                    estimate_markdown_tokens_heuristic(&collapsed);
+
+                                // Record stats
+                                let _ = StatsRepo::record_request(
+                                    &db,
+                                    CallKind::Collapse,
+                                    &uuid::Uuid::new_v4().to_string(),
+                                    &model,
+                                    None,
+                                    prompt_tokens,
+                                    completion_tokens,
+                                    total_tokens,
+                                    cached_tokens,
+                                    reasoning_tokens,
+                                    cost,
+                                    Some(duration_ms),
+                                    "success",
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await;
+
+                                // 4. Update DB
+                                let update_result = sqlx::query(
+                                    "UPDATE messages SET collapsed_content = ?1, collapsed_tokens_count = ?2 WHERE id = ?3",
+                                )
+                                 .bind(&collapsed)
+                                 .bind(collapsed_tokens as i64)
+                                 .bind(&message_id)
+                                 .execute(&db)
+                                 .await;
+
+                                if let Err(e) = update_result {
+                                    tracing::error!(message_id = %message_id, error = %e, "CollapseWorker failed to update DB");
+                                } else {
+                                    tracing::info!(message_id = %message_id, collapsed_tokens = %collapsed_tokens, "CollapseWorker completed");
+                                }
                             }
                         }
                         Err(e) => {
@@ -226,7 +263,7 @@ mod tests {
     use crate::db::repos::messages::MessagesRepo;
     use crate::db::schema::run_migrations;
     use crate::llm::provider::{
-        ChatMessage, ChatRequest, ChatResponse, LLMError, ReasoningSpec, TokenUsage,
+        ChatMessage, ChatRequest, ChatResponse, FinishReason, LLMError, ReasoningSpec, TokenUsage,
     };
     use async_trait::async_trait;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -257,6 +294,55 @@ mod tests {
                     reasoning_tokens: 0,
                     cost: 0.0,
                 }),
+                finish_reason: None,
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<
+            std::pin::Pin<
+                Box<
+                    dyn tokio_stream::Stream<
+                            Item = Result<crate::llm::provider::StreamEvent, LLMError>,
+                        > + Send,
+                >,
+            >,
+            LLMError,
+        > {
+            unimplemented!("chat_stream not used in tests")
+        }
+    }
+
+    /// A mock LLM provider that returns a configurable response content (it may
+    /// be empty or whitespace-only), so a test can drive the empty-summary
+    /// guard. It records every [`ChatRequest`] it receives.
+    struct ConfigurableResponseLLMProvider {
+        pub calls: Arc<Mutex<Vec<ChatRequest>>>,
+        pub content: String,
+    }
+
+    #[async_trait]
+    impl LLMProvider for ConfigurableResponseLLMProvider {
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            self.calls.lock().unwrap().push(request);
+            Ok(ChatResponse {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: self.content.clone(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                usage: Some(TokenUsage {
+                    prompt_tokens: 100,
+                    completion_tokens: 0,
+                    cached_tokens: 0,
+                    reasoning_tokens: 0,
+                    cost: 0.0,
+                }),
+                finish_reason: Some(FinishReason::Stop),
             })
         }
 
@@ -619,6 +705,66 @@ mod tests {
             request.max_tokens,
             Some(1024),
             "a missing key must fall back to the role default"
+        );
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Change `llm-worker-resilience` — RED: guarda del resumen vacío (2.4)
+    // -----------------------------------------------------------------------
+
+    /// Scenario: Un resumen vacío no se escribe.
+    ///
+    /// A whitespace-only summary must NOT be stored in `collapsed_content`; the
+    /// failure is recorded as a `kind = 'collapse'`, `status = 'error'` row and
+    /// the message is left un-collapsed so a later attempt can retry it.
+    #[tokio::test]
+    async fn test_empty_summary_is_not_written_and_recorded_as_error(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = test_db().await?;
+        let msg_id = create_long_message(&pool).await?;
+
+        let (tx, rx) = mpsc::channel::<String>(16);
+        let calls: Arc<Mutex<Vec<ChatRequest>>> = Arc::new(Mutex::new(Vec::new()));
+        let mock = Arc::new(ConfigurableResponseLLMProvider {
+            calls: calls.clone(),
+            content: "   ".to_string(),
+        });
+
+        let _handle = CollapseWorker::start(
+            pool.clone(),
+            mock,
+            rx,
+            "Resume el siguiente mensaje.".to_string(),
+            "mistralai/mistral-small".to_string(),
+        );
+
+        tx.send(msg_id.clone()).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        assert!(
+            !calls.lock().unwrap().is_empty(),
+            "the collapse worker must have called the LLM"
+        );
+
+        let msg = MessagesRepo::find_by_id(&pool, &msg_id)
+            .await?
+            .expect("Message should exist");
+        assert!(
+            msg.collapsed_content.is_none(),
+            "a whitespace-only summary must never be stored as collapsed_content"
+        );
+
+        let errors: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests
+             WHERE kind = 'collapse' AND status = 'error'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            errors, 1,
+            "the empty summary must be recorded as one error row"
         );
 
         Ok(())

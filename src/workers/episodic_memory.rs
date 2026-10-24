@@ -14,7 +14,7 @@ use crate::db::repos::persistent_memory::PersistentMemoryRepo;
 use crate::db::repos::stats::StatsRepo;
 use crate::db::repos::timeline::TimelineRepo;
 use crate::embeddings::EmbeddingProvider;
-use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider, ResponseFormat};
+use crate::llm::provider::{ChatMessage, ChatRequest, FinishReason, LLMProvider, ResponseFormat};
 use crate::models::message::estimate_markdown_tokens_heuristic;
 use crate::models::stats::CallKind;
 use crate::models::timeline::{normalize_category, NewTimelineEvent, TimelineEvent};
@@ -148,7 +148,10 @@ fn compression_prompt() -> String {
 ///
 /// A request made of a single `system` message is not a conversation: the
 /// configured model (DeepSeek v4.1-flash) answers it with `content: null` and
-/// `completion_tokens: 1` **without error**, which aborts the pass silently.
+/// `completion_tokens: 1` **without error**, which leaves the consolidation
+/// without a JSON object to validate — the pass then degrades, it does not
+/// abort.
+///
 /// This turn is a code constant, independent of the user-editable
 /// `consolidator_prompt`.
 const CONSOLIDATOR_USER_TURN: &str = "Consolida el estado de memoria persistente según las instrucciones y devuelve únicamente el objeto JSON del esquema.";
@@ -456,8 +459,9 @@ struct PersistentWrite {
 }
 
 /// Failure of the **initial** consolidation step (the one that produces the
-/// Layer C state). Any of these aborts the pass: nothing is written, nothing is
-/// marked, and the cooldown starts.
+/// Layer C state). The caller **degrades** the pass instead of aborting it: the
+/// episodic card and the index mark are still written and the previous Layer C
+/// state is kept. The failure is already recorded as an `llm_requests` error row.
 ///
 /// Size management is deliberately **not** represented here: a compression
 /// failure is never a pass failure, it degrades (see `consolidate_state`).
@@ -480,6 +484,10 @@ enum ConsolidationError {
 /// call still yields exactly one row (written by the caller).
 struct SemanticChatOutcome {
     content: String,
+    /// The reason the completion finished, when the provider reports one.
+    finish_reason: Option<FinishReason>,
+    /// The `max_tokens` the request carried, so a truncation retry can double it.
+    max_tokens: u32,
     prompt_tokens: i64,
     completion_tokens: i64,
     total_tokens: i64,
@@ -638,22 +646,16 @@ impl EpisodicMemoryWorker {
         };
 
         // 5c. Extraction 2/2: the persistent state (Layer C) from the SAME
-        // batch, before writing anything. A failure here must leave neither
-        // the card nor the state behind.
+        // batch. A failure here no longer aborts the pass: it degrades — the
+        // card and the mark are still written and the previous Layer C state is
+        // kept (D1). The failure is recorded as an `llm_requests` error row by
+        // the consolidation itself.
         let consolidation =
-            match Self::consolidate_state(db, &llm_provider, config, &message_block).await {
-                Ok(outcome) => outcome,
-                Err(e) => {
-                    last_llm_attempt.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
-                    tracing::error!(
-                        error = %e,
-                        "EpisodicMemoryWorker: state consolidation failed; aborting the pass"
-                    );
-                    return;
-                }
-            };
+            Self::consolidate_state(db, &llm_provider, config, &message_block).await;
 
-        // Both extractions succeeded: clear the failure tracker.
+        // The episodic extraction succeeded: clear the failure tracker. A
+        // degraded consolidation must not leave the batch rate-limited, since
+        // its messages are still going to be marked.
         last_llm_attempt.store(0, Ordering::Relaxed);
 
         // 5d. Extraction 3/3: the chronological facts (Layer D) from the SAME
@@ -661,17 +663,26 @@ impl EpisodicMemoryWorker {
         let timeline = Self::extract_timeline(db, &llm_provider, config, &primary).await;
 
         let persistent_write = match consolidation {
-            Consolidation::Write {
+            Ok(Consolidation::Write {
                 payload,
                 updated_at,
-            } => Some(PersistentWrite {
+            }) => Some(PersistentWrite {
                 payload: serde_json::to_string(&payload)
                     .unwrap_or_else(|_| "{\"schema_version\":1}".to_string()),
                 updated_at,
             }),
             // A ceiling rejection keeps the previous state but is not a
             // failure: the pass continues and the card is still written.
-            Consolidation::KeepPrevious => None,
+            Ok(Consolidation::KeepPrevious) => None,
+            // A consolidation failure degrades the pass: the previous state is
+            // kept and the card is written (D1). Never abort the memory.
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "EpisodicMemoryWorker: state consolidation failed; degrading the pass (card written, previous state kept)"
+                );
+                None
+            }
         };
 
         // 6. Persist Layer B + Layer C + the index mark in ONE transaction.
@@ -1125,17 +1136,24 @@ impl EpisodicMemoryWorker {
     /// or [`Self::try_compress`]) once the outcome is known — `success` when it
     /// validates, `error` with the reason when it does not. Either way every
     /// attempt yields exactly one row.
+    ///
+    /// `max_tokens_override` replaces the budget read from
+    /// `GENERATION_SEMANTIC_MAX_TOKENS`; the truncation retry uses it to double
+    /// the budget (see [`Self::initial_consolidation`]). `None` uses the
+    /// configured value.
     async fn call_semantic_chat(
         db: &SqlitePool,
         llm_provider: &Arc<dyn LLMProvider>,
         config: &EpisodicMemoryConfig,
         system_content: String,
+        max_tokens_override: Option<u32>,
     ) -> Result<SemanticChatOutcome, ConsolidationError> {
         let generation = crate::generation::read_generation_params(
             db,
             crate::generation::GenerationRole::Semantic,
         )
         .await;
+        let max_tokens = max_tokens_override.unwrap_or(generation.max_tokens);
 
         let request = ChatRequest {
             model: config.semantic_model.clone(),
@@ -1157,7 +1175,7 @@ impl EpisodicMemoryWorker {
             ],
             tools: None,
             temperature: Some(generation.temperature),
-            max_tokens: Some(generation.max_tokens),
+            max_tokens: Some(max_tokens),
             stream: false,
             reasoning: generation.reasoning,
             response_format: Some(ResponseFormat::JsonObject),
@@ -1208,6 +1226,8 @@ impl EpisodicMemoryWorker {
 
         Ok(SemanticChatOutcome {
             content: response.message.content,
+            finish_reason: response.finish_reason,
+            max_tokens,
             prompt_tokens,
             completion_tokens,
             total_tokens,
@@ -1250,6 +1270,32 @@ impl EpisodicMemoryWorker {
             Some(outcome.duration_ms),
             status,
             error_message,
+            None,
+            None,
+        )
+        .await;
+    }
+
+    /// Record a consolidation failure that never reached the model — e.g. the
+    /// read of the previous Layer C state failed — so the diagnostic also lands
+    /// as an `llm_requests` error row (the model-facing failures already write
+    /// their own row).
+    async fn record_consolidation_failure(db: &SqlitePool, model: &str, reason: &str) {
+        let _ = StatsRepo::record_request(
+            db,
+            CallKind::Consolidator,
+            &Uuid::new_v4().to_string(),
+            model,
+            None,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0.0,
+            None,
+            "error",
+            Some(reason),
             None,
             None,
         )
@@ -1497,9 +1543,14 @@ impl EpisodicMemoryWorker {
     /// Consolidate the Layer C state from the same batch used for the episodic
     /// card.
     ///
-    /// Returns `Err(ConsolidationError)` only when the **initial** consolidation
-    /// fails (LLM error, non-JSON, invalid schema or DB error); the caller then
-    /// aborts the whole pass.
+    /// Returns `Err(ConsolidationError)` when the **initial** consolidation
+    /// fails (LLM error, non-JSON, invalid schema or DB error). The caller then
+    /// **degrades** the pass: it still writes the card and the mark, keeping the
+    /// previous Layer C state. The failure is recorded as an `llm_requests`
+    /// error row (by [`Self::call_semantic_chat`] on a transport error, by
+    /// [`Self::initial_consolidation`] on a content failure, or by
+    /// [`Self::record_consolidation_failure`] when the previous state could not
+    /// be read).
     ///
     /// Size management never aborts: if the state exceeds the budget, a single
     /// compression is attempted, and if that fails or still exceeds the ceiling,
@@ -1511,8 +1562,16 @@ impl EpisodicMemoryWorker {
         config: &EpisodicMemoryConfig,
         message_block: &str,
     ) -> Result<Consolidation, ConsolidationError> {
-        // Previous state; its absence is a valid empty state.
-        let previous = PersistentMemoryRepo::get(db).await?;
+        // Previous state; its absence is a valid empty state. A read failure is
+        // a consolidation failure: it is recorded and degrades the pass.
+        let previous = match PersistentMemoryRepo::get(db).await {
+            Ok(previous) => previous,
+            Err(e) => {
+                let reason = format!("failed to read the previous persistent state: {e}");
+                Self::record_consolidation_failure(db, &config.semantic_model, &reason).await;
+                return Err(ConsolidationError::Database(e));
+            }
+        };
         let current_payload = match previous.as_ref() {
             Some(entry) => match serde_json::from_str::<serde_json::Value>(&entry.payload) {
                 Ok(payload) => payload,
@@ -1552,8 +1611,9 @@ impl EpisodicMemoryWorker {
             .replace("{{ ESTADO_ACTUAL }}", &current_json)
             .replace("{{ BLOQUE_DE_MENSAJES }}", message_block);
 
-        // Initial consolidation: a failure here aborts the pass. It gets a
-        // single retry when the model returns no valid state.
+        // Initial consolidation: a failure here degrades the pass — the card
+        // and the mark are still written and the previous Layer C state is
+        // kept. It gets a single retry when the model returns no valid state.
         let validated =
             Self::initial_consolidation(db, llm_provider, config, &system_content).await?;
 
@@ -1654,7 +1714,7 @@ impl EpisodicMemoryWorker {
         let serialized = serde_json::to_string(state).ok()?;
         let prompt = compression_prompt().replace("{{ ESTADO_ACTUAL }}", &serialized);
 
-        let outcome = match Self::call_semantic_chat(db, llm_provider, config, prompt).await {
+        let outcome = match Self::call_semantic_chat(db, llm_provider, config, prompt, None).await {
             Ok(outcome) => outcome,
             Err(e) => {
                 // The transport failure already left its own `error` row behind.
@@ -1727,6 +1787,12 @@ impl EpisodicMemoryWorker {
     /// Run the initial consolidation, retrying **once** when the response yields no
     /// valid state (empty, non-JSON or schema-invalid). An LLM transport error is
     /// not retried: it propagates immediately.
+    ///
+    /// When the failed attempt was cut off by the token budget
+    /// (`finish_reason = length`), the retry doubles the budget
+    /// (`GENERATION_SEMANTIC_MAX_TOKENS`); for any other cause the retry uses the
+    /// configured parameters. The diagnostic of every failed attempt carries the
+    /// `finish_reason` next to the `content_len` and the preview.
     async fn initial_consolidation(
         db: &SqlitePool,
         llm_provider: &Arc<dyn LLMProvider>,
@@ -1734,11 +1800,23 @@ impl EpisodicMemoryWorker {
         system_content: &str,
     ) -> Result<serde_json::Value, ConsolidationError> {
         let mut last_error = String::new();
+        // When the previous attempt was cut by the budget, the next one doubles
+        // it; otherwise it keeps the configured value.
+        let mut max_tokens_override: Option<u32> = None;
         for attempt in 1..=INITIAL_CONSOLIDATION_ATTEMPTS {
-            let outcome =
-                Self::call_semantic_chat(db, llm_provider, config, system_content.to_string())
-                    .await?;
+            let outcome = Self::call_semantic_chat(
+                db,
+                llm_provider,
+                config,
+                system_content.to_string(),
+                max_tokens_override,
+            )
+            .await?;
             let content_len = outcome.content.len();
+            let finish_reason = match &outcome.finish_reason {
+                Some(reason) => reason.to_string(),
+                None => "none".to_string(),
+            };
             match Self::extract_json_object(&outcome.content) {
                 Some(candidate) => match validate_payload(&candidate) {
                     Ok(validated) => {
@@ -1754,7 +1832,7 @@ impl EpisodicMemoryWorker {
                     }
                     Err(e) => {
                         last_error = format!(
-                            "invalid state (content_len={content_len}, preview=\"{}\"): {e}",
+                            "invalid state (content_len={content_len}, finish_reason={finish_reason}, preview=\"{}\"): {e}",
                             Self::content_preview(&outcome.content)
                         );
                         Self::record_consolidator_stats(
@@ -1769,7 +1847,7 @@ impl EpisodicMemoryWorker {
                 },
                 None => {
                     last_error = format!(
-                        "consolidator returned no JSON object (content_len={content_len}, preview=\"{}\")",
+                        "consolidator returned no JSON object (content_len={content_len}, finish_reason={finish_reason}, preview=\"{}\")",
                         Self::content_preview(&outcome.content)
                     );
                     Self::record_consolidator_stats(
@@ -1783,9 +1861,15 @@ impl EpisodicMemoryWorker {
                 }
             }
             if attempt < INITIAL_CONSOLIDATION_ATTEMPTS {
+                max_tokens_override = if outcome.finish_reason == Some(FinishReason::Length) {
+                    Some(outcome.max_tokens.saturating_mul(2))
+                } else {
+                    None
+                };
                 tracing::warn!(
                     attempt,
                     content_len,
+                    finish_reason = %finish_reason,
                     "initial consolidation produced no valid state; retrying once"
                 );
             }
@@ -1917,8 +2001,8 @@ mod tests {
     use crate::db::schema::run_migrations;
     use crate::embeddings::provider::EmbeddingError;
     use crate::llm::provider::{
-        ChatMessage, ChatRequest, ChatResponse, LLMError, ReasoningEffort, ReasoningSpec,
-        ResponseFormat, TokenUsage,
+        ChatMessage, ChatRequest, ChatResponse, FinishReason, LLMError, ReasoningEffort,
+        ReasoningSpec, ResponseFormat, TokenUsage,
     };
     use crate::models::timeline::TimelineEvent;
     use async_trait::async_trait;
@@ -1939,12 +2023,22 @@ mod tests {
         pub compression_response: String,
         pub timeline_response: String,
         pub fail_semantic: bool,
+        /// Fail the episodic (Layer B) call — the archivist extraction — with a
+        /// transport error. `fail_semantic` only affects the consolidator and the
+        /// compression calls, so this is the switch that exercises a Layer B
+        /// failure.
+        pub fail_episodic: bool,
         pub state_sequence: Arc<Mutex<std::collections::VecDeque<String>>>,
         /// Per-call timeline responses (first call first). Falls back to
         /// `timeline_response` once the queue is exhausted. Mirrors
         /// `state_sequence` but for the Layer D extractor, so a test can make
         /// the first attempt malformed and the next one valid.
         pub timeline_sequence: Arc<Mutex<std::collections::VecDeque<String>>>,
+        /// Per-call finish reasons for the consolidator/compression calls
+        /// (first call first). Falls back to `None` (the provider reported no
+        /// reason) once the queue is exhausted, so a test can simulate a
+        /// truncation (`length`) on the first attempt only.
+        pub semantic_finish_reasons: Arc<Mutex<std::collections::VecDeque<Option<FinishReason>>>>,
     }
 
     #[async_trait]
@@ -1964,10 +2058,19 @@ mod tests {
                 !is_semantic && matches!(request.response_format, Some(ResponseFormat::JsonObject));
             self.chat_calls.lock().unwrap().push(request);
 
+            let mut finish_reason: Option<FinishReason> = None;
             let content = if is_semantic {
                 if self.fail_semantic {
                     return Err(LLMError::HttpError("semantic backend down".into()));
                 }
+                // The finish reason is configurable per semantic call so a test
+                // can simulate a truncation (`length`) on the first attempt.
+                finish_reason = self
+                    .semantic_finish_reasons
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .flatten();
                 if system_content.contains(COMPRESSION_CALL_MARKER) {
                     self.compression_response.clone()
                 } else {
@@ -1981,6 +2084,9 @@ mod tests {
                     .pop_front()
                     .unwrap_or_else(|| self.timeline_response.clone())
             } else {
+                if self.fail_episodic {
+                    return Err(LLMError::HttpError("episodic backend down".into()));
+                }
                 self.chat_response.clone()
             };
 
@@ -1999,6 +2105,7 @@ mod tests {
                     reasoning_tokens: 0,
                     cost: 0.0,
                 }),
+                finish_reason,
             })
         }
 
@@ -2028,8 +2135,10 @@ mod tests {
                 compression_response: DEFAULT_STATE_RESPONSE.to_string(),
                 timeline_response: r#"{"events": []}"#.to_string(),
                 fail_semantic: false,
+                fail_episodic: false,
                 state_sequence: Arc::new(Mutex::new(std::collections::VecDeque::new())),
                 timeline_sequence: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+                semantic_finish_reasons: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             }
         }
 
@@ -2069,9 +2178,23 @@ mod tests {
             self
         }
 
+        /// Queue per-call finish reasons for the semantic calls (first call
+        /// first). Falls back to `None` once the queue is exhausted.
+        fn finish_reasons(mut self, reasons: Vec<Option<FinishReason>>) -> Self {
+            self.semantic_finish_reasons = Arc::new(Mutex::new(reasons.into_iter().collect()));
+            self
+        }
+
         /// Make every semantic (consolidator/compression) call fail.
         fn failing_semantic(mut self) -> Self {
             self.fail_semantic = true;
+            self
+        }
+
+        /// Make the episodic (Layer B) extraction call fail. Lets a test exercise
+        /// the Layer B failure path, which `failing_semantic` does not touch.
+        fn failing_episodic(mut self) -> Self {
+            self.fail_episodic = true;
             self
         }
 
@@ -3577,6 +3700,197 @@ mod tests {
         assert_eq!(compression_calls, 1, "compression must not be retried");
     }
 
+    // ─── Change `llm-worker-resilience` — RED (2.1, 2.2, 2.3) ─────────────
+    //
+    // RED: fijaron el comportamiento esperado. Ya en GREEN, la pasada degrada
+    // en vez de abortar, el reintento amplía el presupuesto al truncar y el
+    // diagnóstico lleva el motivo de finalización.
+
+    /// 2.1 — Un corte por presupuesto (`finish_reason = length`) hace que el
+    /// reintento de la consolidación lleve `max_tokens` al **doble**; un fallo
+    /// que no es por truncamiento repite el presupuesto configurado.
+    #[tokio::test]
+    async fn test_consolidation_truncation_retries_with_doubled_budget() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        crate::db::repos::settings::SettingsRepo::set(
+            &db,
+            "GENERATION_SEMANTIC_MAX_TOKENS",
+            "1000",
+        )
+        .await
+        .unwrap();
+
+        // Truncation: empty content with `finish_reason = length` on the first
+        // attempt; the retry then returns a valid state.
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .state_sequence(vec!["", DEFAULT_STATE_RESPONSE])
+            .finish_reasons(vec![Some(FinishReason::Length), Some(FinishReason::Stop)]);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        let outcome = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect("the retry with a doubled budget must succeed");
+
+        assert!(matches!(outcome, Consolidation::Write { .. }));
+        {
+            let calls = calls.lock().unwrap();
+            assert_eq!(calls.len(), 2, "exactly two attempts");
+            assert_eq!(
+                calls[0].max_tokens,
+                Some(1000),
+                "the first attempt uses the configured budget"
+            );
+            assert_eq!(
+                calls[1].max_tokens,
+                Some(2000),
+                "a truncation retry must double GENERATION_SEMANTIC_MAX_TOKENS"
+            );
+        }
+
+        // Not truncated: an empty first attempt (no finish reason) retries with
+        // the configured budget, not the doubled one.
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .state_sequence(vec!["", DEFAULT_STATE_RESPONSE]);
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+
+        EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect("the retry must succeed");
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls[1].max_tokens,
+            Some(1000),
+            "a retry that is not a truncation keeps the configured budget"
+        );
+    }
+
+    /// 2.2 — Un fallo de la consolidación **degrada** la pasada: escribe ficha y
+    /// marca, y conserva el estado anterior, en vez de abortar.
+    #[tokio::test]
+    async fn test_consolidation_failure_degrades_the_pass() {
+        let db = test_db().await;
+        // A previous Layer C state that must survive the failure untouched.
+        let previous_payload = r#"{"schema_version":1,"user_profile":{"note":"estado anterior"},"system_rules":["regla previa"]}"#;
+        PersistentMemoryRepo::upsert(&db, previous_payload, "2026-09-01T10:00:00Z")
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_semantic();
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            mock.wrap(),
+            embedding_provider(),
+            &EpisodicMemoryConfig {
+                inactivity_minutes: 0,
+                ..Default::default()
+            },
+            &no_attempt(),
+        )
+        .await;
+
+        assert_eq!(
+            count_memory(&db).await,
+            1,
+            "the episodic card survives the consolidator failure"
+        );
+        let stored = PersistentMemoryRepo::get(&db)
+            .await
+            .unwrap()
+            .expect("the previous state must still be there");
+        assert_eq!(
+            stored.payload, previous_payload,
+            "the previous state must not be overwritten"
+        );
+        assert_eq!(stored.updated_at, "2026-09-01T10:00:00Z");
+        assert_eq!(
+            count_unindexed(&db).await,
+            0,
+            "the batch is still marked as indexed"
+        );
+
+        let errors: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM llm_requests
+             WHERE kind = 'consolidator' AND status = 'error'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(
+            errors >= 1,
+            "the consolidator failure is recorded as an error row"
+        );
+    }
+
+    /// 2.3 — La fila `status = 'error'` del consolidador lleva el **motivo de
+    /// finalización** junto al `content_len` y el preview.
+    #[tokio::test]
+    async fn test_consolidation_error_diagnostic_includes_finish_reason() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+
+        // Both attempts are truncated: no valid content, `length` each time.
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE)
+            .state_sequence(vec!["", ""])
+            .finish_reasons(vec![Some(FinishReason::Length), Some(FinishReason::Length)]);
+        let provider = mock.wrap();
+
+        let err = EpisodicMemoryWorker::consolidate_state(
+            &db,
+            &provider,
+            &EpisodicMemoryConfig::default(),
+            "BLOQUE",
+        )
+        .await
+        .expect_err("two truncated attempts must fail");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("finish_reason=length"),
+            "the pass error must carry the finish reason: {msg}"
+        );
+
+        let error_message: Option<String> = sqlx::query_scalar(
+            "SELECT error_message FROM llm_requests
+             WHERE kind = 'consolidator' AND status = 'error'
+             ORDER BY rowid DESC LIMIT 1",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        let error_message = error_message.expect("the error row must carry a diagnostic");
+        assert!(
+            error_message.contains("content_len"),
+            "the diagnostic keeps content_len: {error_message}"
+        );
+        assert!(
+            error_message.contains("preview="),
+            "the diagnostic keeps the preview: {error_message}"
+        );
+        assert!(
+            error_message.contains("finish_reason=length"),
+            "the diagnostic must include the finish reason: {error_message}"
+        );
+    }
+
     // ─── Bloque 5: pasada unificada ────────────────────────────────────────
 
     #[tokio::test]
@@ -3650,8 +3964,11 @@ mod tests {
         assert_eq!(count_unindexed(&db).await, 0, "the batch is marked");
     }
 
+    /// A consolidator failure degrades the pass: the card is written and the
+    /// batch is marked, so the messages are not reprocessed in a loop and a
+    /// following pass produces no duplicate card.
     #[tokio::test]
-    async fn test_consolidator_failure_writes_nothing_and_retry_dedupes() {
+    async fn test_consolidator_failure_degrades_and_does_not_duplicate() {
         let db = test_db().await;
         let now = chrono::Utc::now().to_rfc3339();
         for i in 0..5 {
@@ -3662,7 +3979,8 @@ mod tests {
             ..Default::default()
         };
 
-        // Episodic card succeeds, consolidation fails: nothing is written.
+        // Episodic card succeeds, consolidation fails: the pass degrades, the
+        // card is written and the batch is marked.
         let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_semantic();
         EpisodicMemoryWorker::evaluate(
             &db,
@@ -3673,11 +3991,20 @@ mod tests {
         )
         .await;
 
-        assert_eq!(count_memory(&db).await, 0, "no orphan card");
-        assert_eq!(count_persistent_memory(&db).await, 0, "no state");
-        assert_eq!(count_unindexed(&db).await, 5, "nothing marked");
+        assert_eq!(
+            count_memory(&db).await,
+            1,
+            "the card is written despite the consolidator failure"
+        );
+        assert_eq!(
+            count_persistent_memory(&db).await,
+            0,
+            "there is no previous state to keep"
+        );
+        assert_eq!(count_unindexed(&db).await, 0, "the batch is marked");
 
-        // A successful retry produces exactly ONE card (no duplicates).
+        // The batch is consumed: a following pass finds nothing to do, so no
+        // duplicate card is produced.
         let retry = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
         EpisodicMemoryWorker::evaluate(
             &db,
@@ -3688,9 +4015,192 @@ mod tests {
         )
         .await;
 
-        assert_eq!(count_memory(&db).await, 1, "exactly one card after retry");
-        assert_eq!(count_persistent_memory(&db).await, 1, "state written");
-        assert_eq!(count_unindexed(&db).await, 0, "messages marked");
+        assert_eq!(count_memory(&db).await, 1, "exactly one card, no duplicate");
+        assert_eq!(count_unindexed(&db).await, 0, "still nothing unindexed");
+    }
+
+    /// Spec: «La pasada siguiente vuelve a la normalidad». A pass degraded by a
+    /// consolidation failure does not poison the worker: a **new** batch, with a
+    /// consolidation that succeeds, still updates the persistent state normally.
+    ///
+    /// The degraded pass marks its own batch, so the second batch is a **new**
+    /// one, not a retry of the degraded one. That is also why the rate limiter is
+    /// *not* part of what this test proves: only a failed episodic call arms
+    /// `last_llm_attempt`, and here the card succeeds — it is the consolidation
+    /// that fails — so the limiter both passes share never leaves `0`. In the real
+    /// flow it could not fire either, because it is only read while messages
+    /// remain unindexed and the degraded pass has just marked them all. What this
+    /// test pins down is the state transition: the next batch consolidates and
+    /// writes normally instead of inheriting the failure.
+    #[tokio::test]
+    async fn test_pass_after_a_degraded_one_updates_the_state_normally() {
+        let db = test_db().await;
+        set_persistent_budget(&db, "100000").await;
+        let previous = r#"{"schema_version":1,"user_profile":{"note":"estado inicial"},"system_rules":["regla inicial"]}"#;
+        PersistentMemoryRepo::upsert(&db, previous, "2026-09-01T10:00:00Z")
+            .await
+            .unwrap();
+        let config = EpisodicMemoryConfig {
+            inactivity_minutes: 0,
+            ..Default::default()
+        };
+        let last = no_attempt();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Antiguo {i}"), 100, false, &now).await;
+        }
+
+        // Pass 1 degrades: the card is written, the previous state is kept.
+        let failing = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_semantic();
+        EpisodicMemoryWorker::evaluate(&db, failing.wrap(), embedding_provider(), &config, &last)
+            .await;
+
+        assert_eq!(
+            count_memory(&db).await,
+            1,
+            "the degraded pass still writes the card"
+        );
+        let kept = PersistentMemoryRepo::get(&db)
+            .await
+            .unwrap()
+            .expect("the previous state must be kept");
+        assert_eq!(
+            kept.payload, previous,
+            "the degraded pass must not overwrite the state"
+        );
+        assert_eq!(
+            count_unindexed(&db).await,
+            0,
+            "the degraded batch is marked"
+        );
+
+        // A NEW batch, this time with a consolidation that succeeds.
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Nuevo {i}"), 100, false, &now).await;
+        }
+        let new_state = r#"{"schema_version":1,"user_profile":{"note":"estado nuevo"},"system_rules":["regla nueva"]}"#;
+        let working = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).semantic(new_state);
+        EpisodicMemoryWorker::evaluate(&db, working.wrap(), embedding_provider(), &config, &last)
+            .await;
+
+        let updated = PersistentMemoryRepo::get(&db)
+            .await
+            .unwrap()
+            .expect("the state must still be there");
+        assert!(
+            updated.payload.contains("estado nuevo"),
+            "the following pass must update the state normally: {}",
+            updated.payload
+        );
+        assert_eq!(count_memory(&db).await, 2, "one card per batch");
+        assert_eq!(count_unindexed(&db).await, 0, "the new batch is marked");
+    }
+
+    /// Spec: «Fallo episódico no escribe ni marca» (Layer B, not C). When the
+    /// **episodic** extraction fails, nothing is written, the batch stays
+    /// unmarked and the cooldown is armed so the next poll will not hammer the
+    /// provider.
+    #[tokio::test]
+    async fn test_episodic_failure_writes_nothing_marks_nothing_and_arms_cooldown() {
+        let db = test_db().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_episodic();
+        let calls = mock.chat_calls.clone();
+        let provider = mock.wrap();
+        // A long cooldown so a second pass inside it is unmistakably rate-limited.
+        let config = EpisodicMemoryConfig {
+            poll_interval_minutes: 120,
+            inactivity_minutes: 0,
+            ..Default::default()
+        };
+        let last = no_attempt();
+
+        EpisodicMemoryWorker::evaluate(&db, provider.clone(), embedding_provider(), &config, &last)
+            .await;
+
+        assert_eq!(
+            count_memory(&db).await,
+            0,
+            "a Layer B failure writes no card"
+        );
+        assert_eq!(
+            count_persistent_memory(&db).await,
+            0,
+            "a Layer B failure writes no Layer C state"
+        );
+        assert_eq!(
+            count_unindexed(&db).await,
+            5,
+            "a Layer B failure must not mark the batch"
+        );
+        assert!(
+            last.load(Ordering::Relaxed) > 0,
+            "a Layer B failure must arm the cooldown"
+        );
+
+        // Behavioural check of the cooldown: a second pass within it re-calls
+        // nothing, and the batch is still untouched.
+        EpisodicMemoryWorker::evaluate(&db, provider, embedding_provider(), &config, &last).await;
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            1,
+            "the cooldown must suppress a second LLM call"
+        );
+        assert_eq!(
+            count_unindexed(&db).await,
+            5,
+            "the batch is still waiting after the rate-limited pass"
+        );
+    }
+
+    /// Spec: «Fallo episódico seguido de éxito no duplica». After a Layer B
+    /// failure, a pass that succeeds writes the card exactly once.
+    #[tokio::test]
+    async fn test_episodic_failure_then_success_does_not_duplicate() {
+        let db = test_db().await;
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            insert_message(&db, "user", &format!("Mensaje {i}"), 100, false, &now).await;
+        }
+
+        let config = EpisodicMemoryConfig {
+            inactivity_minutes: 0,
+            ..Default::default()
+        };
+        let last = no_attempt();
+
+        // Pass 1: the episodic extraction fails — nothing is written or marked.
+        let failing = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).failing_episodic();
+        EpisodicMemoryWorker::evaluate(&db, failing.wrap(), embedding_provider(), &config, &last)
+            .await;
+
+        assert_eq!(count_memory(&db).await, 0, "the failed pass writes nothing");
+        assert_eq!(count_unindexed(&db).await, 5, "the batch is still waiting");
+
+        // Pass 2: the cooldown has elapsed — the same batch, this time with a
+        // successful extraction.
+        let working = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE);
+        EpisodicMemoryWorker::evaluate(
+            &db,
+            working.wrap(),
+            embedding_provider(),
+            &config,
+            &no_attempt(),
+        )
+        .await;
+
+        assert_eq!(
+            count_memory(&db).await,
+            1,
+            "the retried batch writes exactly one card"
+        );
+        assert_eq!(count_vec_memory(&db).await, 1, "one embedding for the card");
+        assert_eq!(count_unindexed(&db).await, 0, "the batch is now marked");
     }
 
     #[tokio::test]
@@ -4001,7 +4511,8 @@ mod tests {
         .unwrap();
 
         // Empty content: the transport succeeds, the validation does not. The
-        // initial consolidation retries once and then aborts the pass.
+        // initial consolidation retries once and then fails; the caller would
+        // degrade the pass.
         let mock = MockEpisodicLLM::new(SAMPLE_LLM_RESPONSE).semantic("");
         EpisodicMemoryWorker::consolidate_state(
             &db,
@@ -4010,7 +4521,7 @@ mod tests {
             "BLOQUE123",
         )
         .await
-        .expect_err("a state that does not validate must abort the pass");
+        .expect_err("a state that does not validate must fail the consolidation");
 
         let successes: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM llm_requests

@@ -68,6 +68,7 @@ futures = "0.3"
 serial_test = "4"
 tower = { version = "0.5", features = ["util"] }
 wiremock = "0.6"
+tokio = { version = "1", features = ["test-util"] }
 
 [[test]]
 name = "health"
@@ -196,3 +197,27 @@ path = "tests/api/notifications.rs"
 [[test]]
 name = "ingest_keys"
 path = "tests/api/ingest_keys.rs"
+
+[[test]]
+name = "journal-migration"
+path = "tests/db/journal_migration.rs"
+
+[[test]]
+name = "journal-worker-migration"
+path = "tests/db/journal_worker_migration.rs"
+
+[[test]]
+name = "journal-repo"
+path = "tests/db/journal_repo.rs"
+
+[[test]]
+name = "journal-tool"
+path = "tests/tools/journal_tool.rs"
+
+[[test]]
+name = "journal-api"
+path = "tests/api/journal.rs"
+
+[[test]]
+name = "comment-reply-publisher-migration"
+path = "tests/db/comment_reply_publisher_migration.rs"

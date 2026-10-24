@@ -175,9 +175,9 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 - **Causa de fondo:** cuatro skills superan su umbral casi siempre (`recuerdos` 97,5 %, `pendientes` 79 %, `timeline` 77 %, `agenda` 70 %) y la cobertura exige que *todas* las herramientas usadas estén expuestas, con 1,77 usos por turno.
 - Queda **sin medir** la calibración de umbrales por skill: solo pagaría en coste, y el coste no es un problema (histórico de `chat`: 0,1318 $, con el 53 % del prefijo ya cacheado), así que no se considera trabajo pendiente.
 
-**6. El router falla abierto y su margen de timeout es del 70 %.** `ROUTER_TIMEOUT_MS=800` y, al expirar, el router expone todas las skills habilitadas. En producción no ha ocurrido nunca (44 llamadas, todas `success`, media 349 ms, **máximo 567 ms**), pero si la latencia sube esos turnos pagan el catálogo entero. Dato anotado para `llm-worker-resilience` (aparcado; no reabrir sin orden explícita).
+**6. El router falla abierto y su margen de timeout es del 70 %.** `ROUTER_TIMEOUT_MS=800` y, al expirar, el router expone todas las skills habilitadas. En producción no ha ocurrido nunca (44 llamadas, todas `success`, media 349 ms, **máximo 567 ms**), pero si la latencia sube esos turnos pagan el catálogo entero. Dato anotado para `llm-worker-resilience`, que se implementó y **archivó el 2026-10-18**, sin tocar este margen: el dato sigue vigente.
 
-**7. La medición en producción del arreglo de «marcar todas» (`notifications-inbox`) queda aplazada.** Decidido el 2026-10-14 al cerrar la feature: el arreglo está verificado por tests, pero no se desplegó ni se midió. La comprobación —pedirle al agente «marca todas las notificaciones como leídas» y confirmar que `mark_read` sin `ids` ya no entra en bucle de reintentos— se hará en el próximo despliegue. Referencia del «antes»: los 3 avisos con `read_at = NULL` de los turnos del 2026-10-13 19:12 y 2026-10-14 05:04.
+**7. «Marcar todas» (`notifications-inbox`): medido con un turno real (2026-10-18).** El arreglo estaba verificado por tests desde el 2026-10-14, pero nunca se había medido en un despliegue. Medición sobre la instancia levantada con la **v0.15.0** (el despliegue de trabajo, `docker-compose.yml`): tres avisos metidos por la API de ingesta y un turno real del agente pidiéndole «marca todas las notificaciones como leídas». Resultado: **una sola invocación de `mark_read` sin `ids`**, un solo `UPDATE notifications SET read_at = datetime('now') WHERE read_at IS NULL` con `rows_affected=3`, sin aprobaciones, sin repeticiones y con cero errores o reintentos en los logs (2 iteraciones del bucle ReAct de un tope de 5). El bucle de reintentos que motivó el arreglo **no aparece**. Referencia del «antes»: los 3 avisos con `read_at = NULL` de los turnos del 2026-10-13 19:12 y 2026-10-14 05:04. Dejó además una nota útil: el patrón sano es `list_unread` + `mark_read` sin `ids` **en la misma respuesta del modelo** (el agente usó el `total=3` del listado para responder), no `listar → marcar con los ids`.
 
 **8. «Abrir» en Android: verificado en dispositivo real.** La prueba de la tarea 6.3 de `location-widget-open-action` (2026-10-18) salió bien: `geo:` **sin fijar paquete** abre la aplicación de mapas en un Android real y el pin cae donde debe. La decisión de diseño queda confirmada en la práctica y el `intent://` con `S.browser_fallback_url` que se descartó al diseñar **no hace falta**. No se reabre salvo que aparezca un dispositivo donde falle.
 
@@ -212,9 +212,10 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-001-COMPLETED.md` | Plan maestro original (`PLAN.md`): fases F0–F4 | ✅ Completado |
 | `plans/PLAN-002-COMPLETED.md` | OIDC (PocketID), producción tras Traefik y cierres (`PLAN-PENDIENTE.md`) | ✅ Completado |
 | `plans/PLAN-003-COMPLETED.md` | Selección por skills y otros temas (Temas 1–4 ✅: PR #155, #159, #163, #166/#167; Tema 5 aparcado) | ✅ Completado |
-| `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log, observabilidad | ⏸️ Pending |
+| `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log | ⏸️ Pending |
 | `plans/PLAN-005-COMPLETED.md` | Activity Timeline & Life Journal (línea temporal de hechos) (PR #169) | ✅ Completado |
 | `plans/PLAN-006-COMPLETED.md` | `LocationWidget`: de «Guardar» a «Abrir» (change `location-widget-open-action`) | ✅ Completado |
+| `plans/PLAN-007.md` | Bitácora autónoma: la app escribe el diario por su cuenta | 🔜 Activo |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
