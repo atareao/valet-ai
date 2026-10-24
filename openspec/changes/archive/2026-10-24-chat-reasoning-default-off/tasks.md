@@ -34,5 +34,5 @@
 
 ## 6. Verificación y cierre
 
-- [ ] 6.1 Verificar en un despliegue de trabajo que el chat no emite tokens de razonamiento con un modelo razonador y el default nuevo.
+- [ ] 6.1 Verificar en un despliegue de trabajo que el chat no emite tokens de razonamiento con un modelo razonador y el default nuevo. **(diferida: se medirá en el primer despliegue de trabajo con la imagen nueva — decisión del 2026-10-24)**
 - [ ] 6.2 `openspec archive chat-reasoning-default-off`.
