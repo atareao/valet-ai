@@ -1,7 +1,7 @@
 # frontend/notifications Specification
 
 ## Purpose
-TBD - created by archiving change notifications-inbox. Update Purpose after archive.
+Bandeja de avisos del panel de Valet: el tipo `Notification` y los métodos de cliente para listar las no leídas (`listUnreadNotifications`) y marcarlas como leídas (`markNotificationsRead`, `markAllNotificationsRead`), el hook `useNotifications` con paginación por pila de cursores, la vista `NotificationsView` que lista los pendientes de 10 en 10 y permite marcarlos como leídos, y su integración en el header de `AppLayout` mediante un botón de avisos que abre un modal.
 
 ## Requirements
 
