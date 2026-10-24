@@ -1,4 +1,81 @@
 # Changelog
+## [0.16.0] - 2026-10-24
+
+### Bug Fixes
+
+- *(llm)* El proveedor expone el motivo de finalización y rechaza una respuesta sin choices
+- *(workers)* La consolidación degrada la pasada, dobla el presupuesto al truncar y no colapsa en vacío
+- *(bitacora)* El test de la fecha prueba lo que dice y el animo se agrupa
+- *(stats)* Calcula las fechas de los tests desde el reloj, no literales
+
+### Documentation
+
+- *(workers)* Los comentarios dejan de hablar de abortar la pasada
+- *(openspec)* La spec del proveedor describe la forma plana del motivo de finalización
+- *(agents)* El item 6 deja de dar llm-worker-resilience por aparcado
+- *(agents)* Registra la medición de «marcar todas» como cerrada
+- *(agents)* El índice deja de anunciar observabilidad en el roadmap
+- *(plans)* Quita de PLAN-006 la nota que remitía al roadmap de observabilidad
+- *(plans)* Abre PLAN-007 para la bitácora autónoma
+- *(openspec)* Redacta el change journal-entries
+- *(openspec)* Registra la medicion del enrutado y el tope del listado
+- *(plans)* Registra el cierre de journal-entries en PLAN-007
+- *(openspec)* Redacta el change journal-worker
+- *(openspec)* El prompt de la bitacora se edita desde Ajustes
+- *(plans)* Registra el cierre de journal-worker en PLAN-007
+- *(openspec)* Registra el diseño del publicador de respuestas
+- *(openspec)* Cierra la verificación global del publicador de respuestas
+- *(openspec)* Redacta el change comment-deletion
+- *(openspec)* Rellena el Purpose de frontend/notifications
+
+### Features
+
+- *(bitacora)* La tabla de entradas y su repositorio
+- *(bitacora)* La herramienta del agente y su sitio en el enrutado
+- *(bitacora)* Los endpoints de la bitácora
+- *(bitacora)* La sección de bitácora en la app
+- *(bitacora)* El dia local, los ajustes y el prompt del diario
+- *(bitacora)* El worker que escribe el diario por su cuenta
+- *(bitacora)* La migracion, la visibilidad y el editor del prompt
+- *(blog-comments)* Publica las respuestas del blog con reserva idempotente
+- *(blog-comments)* Lee el comentario y lo manda a la papelera
+- *(blog-comments)* La herramienta del borrado y su sitio en el catálogo
+
+### Miscellaneous Tasks
+
+- *(openspec)* Reanuda llm-worker-resilience y repara sus artefactos
+- *(openspec)* Elimina las obligaciones duplicadas del delta de workers
+- *(env)* Las plantillas dejan de sembrar modelos que razonan en los roles mecánicos
+- *(openspec)* Archiva el change llm-worker-resilience
+- *(plans)* Retira el apartado de observabilidad del roadmap v2
+- *(openspec)* Archiva el change journal-entries
+- *(frontend)* Resincroniza static con el build de la bitacora
+- *(env)* La bitacora tiene su modelo por entorno sin razonamiento
+- *(openspec)* Archiva el change journal-worker
+- *(openspec)* Archiva el change comment-reply-publisher
+- *(openspec)* Archiva el change comment-deletion
+- *(openspec)* Normaliza DEBE a SHALL en los requirements de infra
+- *(frontend)* Resincroniza static con el build actual
+
+### Refactor
+
+- *(llm)* El motivo de finalización se serializa en forma plana y se re-exporta
+
+### Testing
+
+- *(llm)* Rojo del rechazo de una respuesta sin choices
+- *(llm)* Rojo del motivo de finalización en el contrato del proveedor
+- *(workers)* Rojo de la degradación, el presupuesto doblado y la guarda del colapso
+- *(llm)* Rojo del ida y vuelta plano del motivo de finalización
+- *(workers)* Cubre los escenarios que la revisión dejó sin aserciones
+- *(bitacora)* Rojo del esquema, el modelo y el repositorio
+- *(bitacora)* Rojo de la herramienta y del enrutado
+- *(bitacora)* Rojo de los endpoints de la bitácora
+- *(bitacora)* Rojo de la sección de bitácora
+- *(bitacora)* Corrige dos aserciones del rojo de la bitácora
+- *(bitacora)* Rojo del dia, los ajustes y el prompt
+- *(bitacora)* Rojo del worker y de su fallo
+- *(bitacora)* Rojo de la migracion, las estadisticas y el editor
 ## [0.15.0] - 2026-10-18
 
 ### Bug Fixes
@@ -150,7 +227,7 @@
 - *(db)* Añade en rojo el test de la migración de los ajustes de rss
 - *(rss)* Añade en rojo los tests del cliente Miniflux
 - *(settings)* Exige los campos de Miniflux en API Keys
-## [0.12.0] - 2026-10-11
+## [0.12.0] - 2026-10-10
 
 ### Bug Fixes
 
