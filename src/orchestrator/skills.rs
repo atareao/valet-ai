@@ -195,11 +195,11 @@ static CATALOG: [SkillSpec; 11] = [
     SkillSpec {
         skill: Skill::Blog,
         id: "blog",
-        instructions: "¿La respuesta requiere responder a un comentario del blog publicando una respuesta en el sitio?",
-        criteria_true: "El mensaje pide responder a un comentario del sitio o publicar una respuesta bajo un comentario ya aprobado. Cuenta también el comentario que llega como aviso entrante de otra aplicación (por ejemplo, un aviso de comentario nuevo que se pide responder).",
-        criteria_false: "El mensaje no se refiere a ningún comentario del blog ni pide publicar una respuesta en el sitio.",
+        instructions: "¿La respuesta requiere escribir en el blog del sitio, publicando una respuesta a un comentario o mandando a la papelera el comentario que llegó como aviso?",
+        criteria_true: "El mensaje pide responder a un comentario del sitio o publicar una respuesta bajo un comentario ya aprobado, o pide mandar a la papelera (retirar, borrar, quitar) el comentario que llegó como aviso entrante de otra aplicación. Cuenta también el comentario notificado que se pide retirar del sitio.",
+        criteria_false: "El mensaje no se refiere a ningún comentario del blog ni pide publicar una respuesta ni mandar un comentario a la papelera en el sitio.",
         threshold: 0.10,
-        tools: &["blog_comment_reply"],
+        tools: &["blog_comment_reply", "blog_comment_delete"],
         prompt_key: "SKILL_BLOG_PROMPT",
         prompt_heading: "# SKILL ACTIVA: BLOG",
     },
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_thirty_one_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_thirty_two_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -680,12 +680,16 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            31,
-            "el core más las once skills deben cubrir las treinta y una herramientas: {covered:?}"
+            32,
+            "el core más las once skills deben cubrir las treinta y dos herramientas: {covered:?}"
         );
         assert!(
             covered.iter().any(|t| t == "blog_comment_reply"),
             "la cobertura debe incluir `blog_comment_reply`: {covered:?}"
+        );
+        assert!(
+            covered.iter().any(|t| t == "blog_comment_delete"),
+            "la cobertura debe incluir `blog_comment_delete`: {covered:?}"
         );
         for spec in catalog() {
             assert!(
@@ -924,35 +928,39 @@ mod tests {
     }
 
     #[test]
-    fn blog_skill_covers_only_blog_comment_reply() {
+    fn blog_skill_covers_the_two_blog_writes() {
         let blog = spec_of("blog").expect("el catálogo debe declarar la skill `blog`");
         assert_eq!(
             blog.tools,
-            &["blog_comment_reply"][..],
-            "blog debe cubrir `blog_comment_reply` y ninguna otra herramienta: {:?}",
+            &["blog_comment_reply", "blog_comment_delete"][..],
+            "blog debe cubrir las dos escrituras y ninguna otra herramienta: {:?}",
             blog.tools
         );
 
-        let owners: Vec<&str> = catalog()
-            .iter()
-            .filter(|spec| spec.tools.contains(&"blog_comment_reply"))
-            .map(|spec| spec.id)
-            .collect();
-        assert_eq!(
-            owners,
-            vec!["blog"],
-            "`blog_comment_reply` no puede repartirse entre skills distintas; lo cubren: {owners:?}"
-        );
+        for tool in ["blog_comment_reply", "blog_comment_delete"] {
+            let owners: Vec<&str> = catalog()
+                .iter()
+                .filter(|spec| spec.tools.contains(&tool))
+                .map(|spec| spec.id)
+                .collect();
+            assert_eq!(
+                owners,
+                vec!["blog"],
+                "`{tool}` no puede repartirse entre skills distintas; lo cubren: {owners:?}"
+            );
+        }
     }
 
     #[test]
     fn blog_comment_reply_is_not_in_pendientes() {
         let pendientes = spec_of("pendientes").expect("pendientes debe estar en el catálogo");
-        assert!(
-            !pendientes.tools.contains(&"blog_comment_reply"),
-            "una capacidad de escritura no ensancha `pendientes`: {:?}",
-            pendientes.tools
-        );
+        for tool in ["blog_comment_reply", "blog_comment_delete"] {
+            assert!(
+                !pendientes.tools.contains(&tool),
+                "una capacidad de escritura no ensancha `pendientes`: {tool} en {:?}",
+                pendientes.tools
+            );
+        }
         assert!(
             pendientes.tools.contains(&"notifications"),
             "`notifications` (solo lectura de avisos) permanece en pendientes: {:?}",
@@ -993,6 +1001,10 @@ mod tests {
         assert!(
             criteria.contains("aviso"),
             "el criteria_true debe cubrir el comentario que llega como aviso entrante: {criteria:?}"
+        );
+        assert!(
+            criteria.contains("papelera"),
+            "el criteria_true debe cubrir mandar a la papelera el comentario notificado: {criteria:?}"
         );
     }
 }
