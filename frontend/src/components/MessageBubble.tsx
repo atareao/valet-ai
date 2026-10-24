@@ -71,6 +71,26 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         ) : (
           <Text style={{ color: config.color }}>{message.content}</Text>
         )}
+        {/*
+          Aviso de respuesta interrumpida (`chat-stream-resilience`): la burbuja
+          conserva el texto parcial y añade esta línea para que el usuario sepa
+          por qué la respuesta se cortó a medias.
+        */}
+        {message.interrupted && (
+          <div
+            style={{
+              display: "flex",
+              gap: 6,
+              alignItems: "center",
+              marginTop: 6,
+              color: "#ffccc7",
+              fontSize: 12,
+            }}
+          >
+            <span aria-hidden="true">⚠️</span>
+            <span>La respuesta se interrumpió</span>
+          </div>
+        )}
         {widgets && widgets.length > 0 && (
           <div style={{ marginTop: 4 }}>
             {widgets.map((widget) => (

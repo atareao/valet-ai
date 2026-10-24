@@ -15,6 +15,12 @@ export interface Message {
   tools_used?: string;
   created_at: string;
   widgets?: WidgetInstance[] | null;
+  /**
+   * `true` en una burbuja de asistente cuyo texto quedó a medias porque el
+   * stream falló (change `chat-stream-resilience`). El parcial no se persiste
+   * en el servidor: la burbuja vive solo en memoria y una recarga la pierde.
+   */
+  interrupted?: boolean;
 }
 
 export interface CreateMessage {
@@ -168,6 +174,12 @@ export interface SSEStreamEvent {
   tool_name?: string;
   reason?: string;
   approved?: boolean;
+  /**
+   * Texto que el asistente había emitido cuando el stream falló a mitad. Solo
+   * llega en el evento `error` del fallo de stream, y se **omite** por completo
+   * cuando no había nada escrito (change `chat-stream-resilience`).
+   */
+  partial?: string;
 }
 
 export interface ChatInitResponse {

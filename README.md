@@ -103,6 +103,10 @@ Environment variables are read once at startup (see `src/config.rs`) with sensib
 | `OPENROUTER_BASE_URL` | OpenRouter API base URL | `https://openrouter.ai/api/v1` |
 | `OLLAMA_BASE_URL` | Ollama fallback base URL | `http://localhost:11434` |
 | `OLLAMA_MODEL` | Ollama fallback model | `llama3.2:3b` |
+| `OPENROUTER_TIMEOUT_SECS` | OpenRouter total (non-streaming) timeout, seconds | `120` |
+| `OPENROUTER_STREAM_READ_TIMEOUT_SECS` | OpenRouter SSE inactivity timeout, seconds | `120` |
+| `OLLAMA_TIMEOUT_SECS` | Ollama total timeout, seconds | `120` |
+| `OLLAMA_STREAM_READ_TIMEOUT_SECS` | Ollama body inactivity timeout, seconds | `120` |
 | `AUTH_ENABLED` | Enable PocketID authentication | `false` |
 | `AUTH_ISSUER_URL` | OIDC issuer URL (required when `AUTH_ENABLED=true`) | — |
 | `AUTH_CLIENT_ID` | OIDC client ID (required when `AUTH_ENABLED=true`) | — |

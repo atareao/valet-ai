@@ -595,4 +595,77 @@ describe("useMainChat", () => {
 
     expect(result.current.pendingApproval).toBeNull();
   });
+
+  // -----------------------------------------------------------------------
+  // chat-stream-resilience — el texto parcial interrumpido no se descarta
+  // -----------------------------------------------------------------------
+  it("mantiene el texto parcial como burbuja de asistente interrumpida cuando el error lo incluye", async () => {
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(
+      () => {
+        expect(result.current.loading).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    // El asistente está escribiendo: llega texto parcial.
+    await act(async () => {
+      const chunkFn = sseCallbacks.onChunk as (content: string) => void;
+      chunkFn("Hola, esto es una resp");
+    });
+
+    expect(result.current.streamingContent).toBe("Hola, esto es una resp");
+
+    // Y el stream se corta, pero el error trae el parcial acumulado.
+    await act(async () => {
+      const errorFn = sseCallbacks.onError as (
+        message: string,
+        status?: number,
+        partial?: string,
+      ) => void;
+      errorFn("Stream read error: boom", undefined, "Hola, esto es una resp");
+    });
+
+    const assistants = result.current.messages.filter(
+      (m) => m.role === "assistant",
+    );
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toBe("Hola, esto es una resp");
+    expect(assistants[0].interrupted).toBe(true);
+    expect(result.current.streaming).toBe(false);
+    expect(result.current.streamingContent).toBe("");
+    expect(result.current.error).toBe("Stream read error: boom");
+  });
+
+  it("un error sin texto parcial no deja ninguna burbuja de asistente", async () => {
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(
+      () => {
+        expect(result.current.loading).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      const errorFn = sseCallbacks.onError as (message: string) => void;
+      errorFn("Stream read error: boom");
+    });
+
+    const assistants = result.current.messages.filter(
+      (m) => m.role === "assistant",
+    );
+    expect(assistants).toHaveLength(0);
+    expect(result.current.streaming).toBe(false);
+    expect(result.current.error).toBe("Stream read error: boom");
+  });
 });

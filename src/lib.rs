@@ -84,24 +84,10 @@ fn chat_event_bus(capacity: usize) -> (broadcast::Sender<ChatEvent>, Arc<TurnLoc
 /// end-to-end test of the chat sync can pass a deterministic mock instead.
 fn build_env_llm_provider() -> Arc<dyn crate::llm::provider::LLMProvider> {
     if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
-        let config = crate::llm::openrouter::OpenRouterConfig {
-            api_key,
-            model: std::env::var("OPENROUTER_MODEL")
-                .unwrap_or_else(|_| "anthropic/claude-sonnet-20241022".into()),
-            base_url: std::env::var("OPENROUTER_BASE_URL")
-                .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into()),
-            max_retries: 3,
-            timeout_secs: 120,
-        };
+        let config = crate::llm::openrouter::OpenRouterConfig::from_env(api_key);
         Arc::new(crate::llm::openrouter::OpenRouterProvider::new(config))
     } else {
-        let config = crate::llm::ollama::OllamaConfig {
-            base_url: std::env::var("OLLAMA_BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".into()),
-            model: std::env::var("LLM_MODEL").unwrap_or_else(|_| "llama3.2:3b".into()),
-            timeout_secs: 120,
-            keep_alive: "5m".into(),
-        };
+        let config = crate::llm::ollama::OllamaConfig::from_env();
         Arc::new(crate::llm::ollama::OllamaProvider::new(config))
     }
 }

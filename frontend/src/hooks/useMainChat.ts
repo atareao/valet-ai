@@ -387,7 +387,7 @@ export function useMainChat() {
             setUsedTools([]);
             setPendingApproval(null);
           },
-          onError: (msg, status) => {
+          onError: (msg, status, partial) => {
             console.error("[useMainChat] Stream error:", msg, status);
             setError(msg);
             if (status === 409) {
@@ -398,6 +398,21 @@ export function useMainChat() {
               // ...y el texto vuelve a estar disponible para reenviarlo cuando
               // el turno ajeno termine, en vez de perderse.
               setRejectedDraft(content);
+            } else if (partial && partial.trim() !== "") {
+              // El stream falló a mitad, pero ya se había pintado texto: NO se
+              // descarta. Se persiste como burbuja de asistente marcada como
+              // interrumpida para que el parcial siga visible tras el fallo. No
+              // se persiste en el servidor (diseño D3): una recarga lo pierde.
+              upsert(
+                {
+                  id: `msg-${Date.now()}`,
+                  role: "assistant",
+                  content: partial,
+                  interrupted: true,
+                  created_at: new Date().toISOString(),
+                },
+                { pending: true },
+              );
             }
             streamingRef.current = false;
             // El turno propio no llegó a salir (o falló): cualquier `busy` que

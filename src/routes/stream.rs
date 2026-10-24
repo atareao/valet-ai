@@ -26,7 +26,7 @@ use tokio::sync::broadcast;
 use crate::chat_events::ChatEvent;
 use crate::db::repos::messages::{MessagesCursor, MessagesRepo};
 use crate::orchestrator::agent::BrowserContext;
-use crate::orchestrator::agent::SSEEvent;
+use crate::orchestrator::agent::{AgentError, SSEEvent};
 use crate::AppState;
 
 /// Query payload for the streaming message endpoint.
@@ -147,6 +147,7 @@ pub async fn stream_message(
             let _ = tx
                 .send(SSEEvent::Error {
                     message: format!("Failed to resolve profile: {}", e),
+                    partial: None,
                 })
                 .await;
             // The turn never starts, so no task is launched either; the guard is
@@ -203,13 +204,21 @@ pub async fn stream_message(
             )
             .await
         {
-            tracing::error!(error = %e, "❌ Orchestrator error, sending error to client");
-            let _ = tx
-                .send(SSEEvent::Error {
-                    message: format!("Error: {}", e),
-                })
-                .await
-                .ok();
+            if matches!(e, AgentError::StreamInterrupted(_)) {
+                // The orchestrator already emitted an error event —carrying any
+                // partial text— before returning. Emitting another here would
+                // produce two error events for one failure.
+                tracing::error!(error = %e, "❌ Orchestrator stream interrupted (already reported)");
+            } else {
+                tracing::error!(error = %e, "❌ Orchestrator error, sending error to client");
+                let _ = tx
+                    .send(SSEEvent::Error {
+                        message: format!("Error: {}", e),
+                        partial: None,
+                    })
+                    .await
+                    .ok();
+            }
         }
     });
 

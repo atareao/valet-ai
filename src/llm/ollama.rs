@@ -14,8 +14,36 @@ use super::provider::{
 pub struct OllamaConfig {
     pub base_url: String,
     pub model: String,
+    /// Total request timeout (seconds).
     pub timeout_secs: u64,
+    /// Inactivity read timeout (seconds) applied to each body read.
+    pub stream_read_timeout_secs: u64,
     pub keep_alive: String,
+}
+
+impl OllamaConfig {
+    /// Build the configuration from the environment, mirroring the OpenRouter
+    /// provider's `from_env`: a missing or non-numeric timeout falls back to the
+    /// 120 s default without aborting startup.
+    pub fn from_env() -> Self {
+        Self {
+            base_url: std::env::var("OLLAMA_BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:11434".into()),
+            model: std::env::var("LLM_MODEL").unwrap_or_else(|_| "llama3.2:3b".into()),
+            timeout_secs: env_secs("OLLAMA_TIMEOUT_SECS", 120),
+            stream_read_timeout_secs: env_secs("OLLAMA_STREAM_READ_TIMEOUT_SECS", 120),
+            keep_alive: "5m".into(),
+        }
+    }
+}
+
+/// Read a `u64` seconds value from the environment, falling back to `default`
+/// when the variable is absent or not a valid number.
+fn env_secs(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(default)
 }
 
 /// Provider that communicates with a local Ollama instance.
@@ -26,8 +54,12 @@ pub struct OllamaProvider {
 
 impl OllamaProvider {
     pub fn new(config: OllamaConfig) -> Self {
+        // Ollama's `chat_stream` is a single-shot call (it is not incremental),
+        // so the total timeout governs; the read timeout bounds a stalled body.
         let client = Client::builder()
+            .connect_timeout(Duration::from_secs(config.timeout_secs))
             .timeout(Duration::from_secs(config.timeout_secs))
+            .read_timeout(Duration::from_secs(config.stream_read_timeout_secs))
             .build()
             .unwrap_or_default();
         Self { config, client }
@@ -179,6 +211,7 @@ mod tests {
             base_url: "http://localhost:11434".into(),
             model: "llama3.2:3b".into(),
             timeout_secs: 120,
+            stream_read_timeout_secs: 120,
             keep_alive: "5m".into(),
         };
         assert_eq!(config.model, "llama3.2:3b");
@@ -190,6 +223,7 @@ mod tests {
             base_url: "http://localhost:11434".into(),
             model: "test-model".into(),
             timeout_secs: 120,
+            stream_read_timeout_secs: 120,
             keep_alive: "5m".into(),
         };
         let provider = OllamaProvider::new(config);
@@ -366,6 +400,7 @@ mod tests {
             base_url: server.uri(),
             model: "test-model".into(),
             timeout_secs: 5,
+            stream_read_timeout_secs: 5,
             keep_alive: "5m".into(),
         });
 
