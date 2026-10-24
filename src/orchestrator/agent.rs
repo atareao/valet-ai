@@ -5565,8 +5565,8 @@ mod tests {
 
         assert_eq!(request.temperature, Some(0.7));
         assert!(
-            request.reasoning.is_none(),
-            "default (empty) chat reasoning must be None, got {:?}",
+            matches!(request.reasoning, Some(ReasoningSpec::Off)),
+            "default chat reasoning must be Off, got {:?}",
             request.reasoning
         );
         assert_eq!(request.max_tokens, Some(4096));

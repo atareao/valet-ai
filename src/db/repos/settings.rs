@@ -279,6 +279,25 @@ mod tests {
         )
     }
 
+    /// Locate the "chat reasoning off" migration by content (the filename is not
+    /// fixed) and return its SQL.
+    fn chat_reasoning_off_migration_sql() -> String {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut found: Option<String> = None;
+        for entry in std::fs::read_dir(&dir).expect("migrations directory must exist") {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("sql") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("readable migration file");
+            if content.contains("WHERE key = 'GENERATION_CHAT_REASONING' AND value = ''") {
+                found = Some(content);
+                break;
+            }
+        }
+        found.expect("a migration turning the empty chat reasoning default into `off` must exist")
+    }
+
     /// Scenario: Las doce claves se siembran con sus defaults
     #[tokio::test]
     async fn test_generation_settings_seeded_with_defaults(
@@ -287,7 +306,7 @@ mod tests {
 
         let expected = [
             ("GENERATION_CHAT_TEMPERATURE", "0.7"),
-            ("GENERATION_CHAT_REASONING", ""),
+            ("GENERATION_CHAT_REASONING", "off"),
             ("GENERATION_CHAT_MAX_TOKENS", "4096"),
             ("GENERATION_COLLAPSE_TEMPERATURE", "0.2"),
             ("GENERATION_COLLAPSE_REASONING", "off"),
@@ -358,6 +377,52 @@ mod tests {
             SettingsRepo::get(&pool, "GENERATION_TIMELINE_REASONING").await?,
             Some("low".to_string()),
             "a non-empty pre-existing timeline generation setting must be preserved"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: El razonamiento del chat vacío se corrige a `off`
+    #[tokio::test]
+    async fn test_chat_reasoning_empty_default_is_corrected_to_off(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+
+        // A base seeded with the legacy empty default.
+        SettingsRepo::set(&pool, "GENERATION_CHAT_REASONING", "").await?;
+
+        let sql = chat_reasoning_off_migration_sql();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await?;
+
+        assert_eq!(
+            SettingsRepo::get(&pool, "GENERATION_CHAT_REASONING").await?,
+            Some("off".to_string()),
+            "the legacy empty chat reasoning default must be corrected to `off`"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: Un razonamiento del chat explícito se respeta
+    #[tokio::test]
+    async fn test_chat_reasoning_explicit_value_is_respected(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup().await?;
+
+        // A user-customised, non-empty value present before the migration runs.
+        SettingsRepo::set(&pool, "GENERATION_CHAT_REASONING", "high").await?;
+
+        let sql = chat_reasoning_off_migration_sql();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await?;
+
+        assert_eq!(
+            SettingsRepo::get(&pool, "GENERATION_CHAT_REASONING").await?,
+            Some("high".to_string()),
+            "an explicit chat reasoning value must be preserved"
         );
 
         Ok(())
