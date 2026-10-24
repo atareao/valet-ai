@@ -64,6 +64,7 @@ mod tests {
             base_url: "http://localhost:19999".into(),
             model: "test".into(),
             timeout_secs: 1,
+            stream_read_timeout_secs: 1,
             keep_alive: "1m".into(),
         };
         let provider1: Box<dyn LLMProvider> = Box::new(OllamaProvider::new(config1));
@@ -73,6 +74,7 @@ mod tests {
             base_url: "http://localhost:19999".into(),
             max_retries: 0,
             timeout_secs: 1,
+            stream_read_timeout_secs: 1,
         };
         let provider2: Box<dyn LLMProvider> = Box::new(OpenRouterProvider::new(config2));
         let fallback = FallbackProvider::new(vec![provider1, provider2]);
@@ -99,6 +101,7 @@ mod tests {
             base_url: "http://localhost:19998".into(),
             model: "test".into(),
             timeout_secs: 1,
+            stream_read_timeout_secs: 1,
             keep_alive: "1m".into(),
         };
         let provider: Box<dyn LLMProvider> = Box::new(OllamaProvider::new(config));

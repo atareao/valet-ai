@@ -11,9 +11,11 @@ export interface UseSSEOptions {
   /**
    * `status` es el código HTTP cuando el fallo cortó la petición antes de abrir
    * el stream (p. ej. `409` con el chat ocupado); `undefined` si el turno se
-   * cortó a mitad.
+   * cortó a mitad. `partial` es el texto que el asistente ya había emitido en
+   * ese fallo a mitad (change `chat-stream-resilience`); `undefined` si no
+   * había nada escrito o si el fallo ocurrió antes de abrir el stream.
    */
-  onError?: (message: string, status?: number) => void;
+  onError?: (message: string, status?: number, partial?: string) => void;
   onApprovalRequired?: (
     requestId: string,
     toolName: string,
@@ -125,7 +127,11 @@ export function useSSE() {
                     );
                     break;
                   case "error":
-                    options.onError?.(event.message || "Unknown error");
+                    options.onError?.(
+                      event.message || "Unknown error",
+                      undefined,
+                      event.partial,
+                    );
                     break;
                   case "tool_call":
                     options.onToolCall?.(event.name || "", event.args);
