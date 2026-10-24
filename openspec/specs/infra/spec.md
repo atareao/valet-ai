@@ -392,9 +392,9 @@ SHALL caer en las del directorio padre; y NO SHALL reescribirse las menciones hi
 
 ### Requirement: Formato de inspección de imágenes sin caracteres sobrantes
 
-Las recetas de despliegue DEBEN obtener el ID de la imagen en ejecución, el ID de la imagen publicada y el nombre de la imagen mediante formatos de `podman inspect` que se resuelvan exactamente a `{{.Image}}`, `{{.Id}}` y `{{.Config.Image}}`, sin ninguna secuencia de llaves sobrante.
+Las recetas de despliegue SHALL obtener el ID de la imagen en ejecución, el ID de la imagen publicada y el nombre de la imagen mediante formatos de `podman inspect` que se resuelvan exactamente a `{{.Image}}`, `{{.Id}}` y `{{.Config.Image}}`, sin ninguna secuencia de llaves sobrante.
 
-La causa del defecto y su razón de ser: en `just`, `{{{{` se colapsa a `{{` pero `}}}}` no se colapsa, así que un formato escrito como `'{{{{.Image}}}}'` llega a podman como `{{.Image}}}}` y podman imprime el valor con dos llaves adheridas. El formato DEBE declararse una sola vez como variable de `just` e interpolarse, para que no haya llaves literales en las recetas.
+La causa del defecto y su razón de ser: en `just`, `{{{{` se colapsa a `{{` pero `}}}}` no se colapsa, así que un formato escrito como `'{{{{.Image}}}}'` llega a podman como `{{.Image}}}}` y podman imprime el valor con dos llaves adheridas. El formato SHALL declararse una sola vez como variable de `just` e interpolarse, para que no haya llaves literales en las recetas.
 
 #### Scenario: La interpolación produce el formato limpio
 
@@ -416,7 +416,7 @@ La causa del defecto y su razón de ser: en `just`, `{{{{` se colapsa a `{{` per
 
 ### Requirement: La comprobación de imagen sigue detectando discordancias
 
-La receta `deploy` DEBE seguir fallando cuando el contenedor en ejecución no corresponde a la imagen publicada, y DEBE seguir pasando cuando coinciden. El arreglo del formato NO DEBE alterar esta lógica.
+La receta `deploy` SHALL seguir fallando cuando el contenedor en ejecución no corresponde a la imagen publicada, y SHALL seguir pasando cuando coinciden. El arreglo del formato SHALL NOT alterar esta lógica.
 
 #### Scenario: El contenedor usa la imagen publicada
 
