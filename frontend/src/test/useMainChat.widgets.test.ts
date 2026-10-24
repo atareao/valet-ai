@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useMainChat } from "../hooks/useMainChat";
 import type { WidgetInstance } from "../components/widgets/types";
@@ -26,6 +26,9 @@ vi.mock("../api/client", () => ({
     approveAction: vi.fn().mockResolvedValue(undefined),
   },
   BASE_URL: "http://localhost:3000",
+  UNAUTHORIZED_EVENT: "valet:unauthorized",
+  chatEventsUrl: (since?: string | null) =>
+    `http://localhost:3000/chat/events${since ? `?since=${since}` : ""}`,
 }));
 
 vi.mock("../hooks/useSSE", () => ({
@@ -59,6 +62,16 @@ describe("useMainChat — widgets", () => {
     sseCallbacks.onDone = undefined;
     sseCallbacks.onError = undefined;
     sseCallbacks.onWidget = undefined;
+    // La suscripción al bus de eventos queda colgada: estas pruebas no hablan
+    // con la red.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("acumula el widget en streaming y lo mueve al messageId en onDone", async () => {

@@ -8,7 +8,12 @@ export interface UseSSEOptions {
   onToolCall?: (name: string, args: unknown) => void;
   onToolResult?: (name: string, success: boolean) => void;
   onWidget?: (id: string, name: string, data: unknown) => void;
-  onError?: (message: string) => void;
+  /**
+   * `status` es el código HTTP cuando el fallo cortó la petición antes de abrir
+   * el stream (p. ej. `409` con el chat ocupado); `undefined` si el turno se
+   * cortó a mitad.
+   */
+  onError?: (message: string, status?: number) => void;
   onApprovalRequired?: (
     requestId: string,
     toolName: string,
@@ -26,6 +31,7 @@ export function useSSE() {
       content: string,
       options: UseSSEOptions = {},
       browserContext?: BrowserContext,
+      clientMessageId?: string,
     ) => {
       if (abortRef.current) {
         abortRef.current.abort();
@@ -44,6 +50,11 @@ export function useSSE() {
         const body: Record<string, unknown> = { content };
         if (browserContext) {
           body.browser_context = browserContext;
+        }
+        // El servidor respeta este id para el mensaje de usuario (spec
+        // `stream-route`), lo que permite sustituir la burbuja optimista por id.
+        if (clientMessageId) {
+          body.client_message_id = clientMessageId;
         }
 
         const response = await fetch(`${BASE_URL}/chat/stream`, {
@@ -65,7 +76,10 @@ export function useSSE() {
             window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
           }
           const errorBody = await response.json().catch(() => null);
-          options.onError?.(errorBody?.error || `HTTP ${response.status}`);
+          options.onError?.(
+            errorBody?.error || `HTTP ${response.status}`,
+            response.status,
+          );
           setConnected(false);
           return;
         }
