@@ -98,13 +98,13 @@ describe("CalendarView — caracterización", () => {
     expect(screen.getByText("Health task")).toBeInTheDocument();
 
     expect(dotFor("Work task")).toHaveStyle({
-      background: CATEGORY_COLORS.work,
+      backgroundColor: CATEGORY_COLORS.work,
     });
     expect(dotFor("Personal task")).toHaveStyle({
-      background: CATEGORY_COLORS.personal,
+      backgroundColor: CATEGORY_COLORS.personal,
     });
     expect(dotFor("Health task")).toHaveStyle({
-      background: CATEGORY_COLORS.health,
+      backgroundColor: CATEGORY_COLORS.health,
     });
   });
 });

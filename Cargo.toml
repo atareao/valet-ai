@@ -1,6 +1,6 @@
 [package]
 name = "valet"
-version = "0.18.1"
+version = "0.18.2"
 edition = "2021"
 autobins = false
 
@@ -27,10 +27,10 @@ futures = "0.3"
 async-stream = "0.3"
 url = "2"
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
-axum-extra = { version = "0.10", features = ["cookie"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
 cookie = "0.18"
 rand = "0.10"
-sha2 = "0.10"
+sha2 = "0.11"
 http = "1"
 web-push-native = "0.5"
 

@@ -1,4 +1,14 @@
 # Changelog
+## [0.18.2] - 2026-10-25
+
+### Documentation
+
+- *(openspec)* Archiva adopt-jsdom-30-1-3
+
+### Miscellaneous Tasks
+
+- *(deps-dev)* Bump @vitejs/plugin-react in /frontend
+- *(deps-dev)* Bump vite from 8.3.1 to 8.3.5 in /frontend
 ## [0.18.1] - 2026-10-25
 
 ### Bug Fixes
