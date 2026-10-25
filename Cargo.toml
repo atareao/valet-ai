@@ -221,3 +221,7 @@ path = "tests/api/journal.rs"
 [[test]]
 name = "comment-reply-publisher-migration"
 path = "tests/db/comment_reply_publisher_migration.rs"
+
+[[test]]
+name = "notes"
+path = "tests/api/notes.rs"

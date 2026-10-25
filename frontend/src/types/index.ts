@@ -471,3 +471,33 @@ export interface JournalEntryInput {
   struggles?: string[];
   tags?: string[];
 }
+
+/**
+ * Categoría de una nota tal como la admite la API (`POST`/`PUT`). El dato
+ * legado `todo` queda **fuera** del tipo: se muestra, pero nunca se guarda
+ * (guardar obliga a elegir una de estas tres).
+ */
+export type NoteCategory = "idea" | "journal" | "fact";
+
+/**
+ * Nota del perfil (`GET /api/notes`). Espejo del contrato del backend:
+ * `category` es `string` (no `NoteCategory`) porque el dato legado `todo` sigue
+ * existiendo en la tabla; `tags` viaja como **cadena coma-separada** o `null`, y
+ * las marcas de tiempo son el crudo de SQLite (`"YYYY-MM-DD HH:MM:SS"`, UTC).
+ */
+export interface Note {
+  id: string;
+  profile_id: string;
+  content: string;
+  category: string;
+  tags: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Cuerpo de `POST /api/notes` y `PUT /api/notes/{id}`. */
+export interface NoteInput {
+  content: string;
+  category: NoteCategory;
+  tags?: string;
+}
