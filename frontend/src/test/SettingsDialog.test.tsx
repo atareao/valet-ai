@@ -529,10 +529,12 @@ describe("SettingsDialog", () => {
     await user.clear(system);
     await user.type(system, "Nuevo system");
 
+    await user.click(screen.getByText("Archivist"));
     const archivist = screen.getByLabelText("Archivist Prompt");
     await user.clear(archivist);
     await user.type(archivist, "Nuevo archivist");
 
+    await user.click(screen.getByText("Collapse"));
     const collapse = screen.getByLabelText("Collapse Prompt");
     await user.clear(collapse);
     await user.type(collapse, "Nuevo collapse");
