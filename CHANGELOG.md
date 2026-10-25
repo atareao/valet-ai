@@ -1,4 +1,18 @@
 # Changelog
+## [0.18.0] - 2026-10-24
+
+### Bug Fixes
+
+- *(chat)* Evita el corte de respuestas largas y preserva el texto parcial
+
+### Documentation
+
+- *(openspec)* Archiva chat-cross-device-sync y chat-stream-resilience
+- *(openspec)* Archiva chat-reasoning-default-off
+
+### Features
+
+- *(chat)* El chat no razona por defecto
 ## [0.17.0] - 2026-10-24
 
 ### Documentation

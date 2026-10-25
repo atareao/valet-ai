@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-24
+goal: Que el chat nazca SIN razonamiento (off) en vez de dejar decidir al
+  modelo, para que un modelo razonador no piense por defecto

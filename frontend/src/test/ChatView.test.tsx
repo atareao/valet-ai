@@ -178,3 +178,74 @@ describe("ChatView — aprobación de herramientas destructivas", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("ChatView — respuesta interrumpida por un fallo del stream", () => {
+  const partialText = "Hola, esto es una resp";
+
+  function renderInterrupted() {
+    const interrupted: Message = {
+      id: "a-interrupted",
+      role: "assistant",
+      content: partialText,
+      interrupted: true,
+      created_at: "2026-10-24T10:31:00Z",
+    };
+    return render(
+      <ChatView
+        messages={[userMessage, interrupted]}
+        loading={false}
+        onSendMessage={vi.fn()}
+        streaming={false}
+        streamingContent=""
+        activeTools={[]}
+      />,
+    );
+  }
+
+  it("mantiene el texto parcial visible y muestra el aviso de interrupción", () => {
+    renderInterrupted();
+
+    expect(screen.getByText(partialText)).toBeInTheDocument();
+    expect(screen.getByText(/interrumpi/i)).toBeInTheDocument();
+  });
+
+  it("un mensaje de asistente normal no muestra el aviso de interrupción", () => {
+    const normal: Message = {
+      id: "a-normal",
+      role: "assistant",
+      content: "Respuesta completa",
+      created_at: "2026-10-24T10:31:00Z",
+    };
+    render(
+      <ChatView
+        messages={[userMessage, normal]}
+        loading={false}
+        onSendMessage={vi.fn()}
+        streaming={false}
+        streamingContent=""
+        activeTools={[]}
+      />,
+    );
+
+    expect(screen.queryByText(/interrumpi/i)).not.toBeInTheDocument();
+  });
+
+  it("un error sin parcial muestra el aviso y no deja burbuja de asistente vacía", () => {
+    const { container } = render(
+      <ChatView
+        messages={[userMessage]}
+        loading={false}
+        onSendMessage={vi.fn()}
+        streaming={false}
+        streamingContent=""
+        activeTools={[]}
+        error="Stream read error: boom"
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("Stream read error: boom");
+    expect(
+      container.querySelectorAll("img[src*='valet-icon']"),
+    ).toHaveLength(0);
+  });
+});

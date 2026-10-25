@@ -41,7 +41,7 @@ impl GenerationRole {
     /// The reasoning default is the raw settings string (`""` means "omit").
     fn defaults(self) -> (f32, &'static str, u32) {
         match self {
-            GenerationRole::Chat => (0.7, "", 4096),
+            GenerationRole::Chat => (0.7, "off", 4096),
             GenerationRole::Collapse => (0.2, "off", 1024),
             GenerationRole::Memory => (0.3, "off", 1024),
             GenerationRole::Semantic => (0.1, "off", 2048),
@@ -187,7 +187,7 @@ mod tests {
         let pool = db().await;
         let params = read_generation_params(&pool, GenerationRole::Chat).await;
         assert_eq!(params.temperature, 0.7);
-        assert_eq!(params.reasoning, None);
+        assert_eq!(params.reasoning, Some(ReasoningSpec::Off));
         assert_eq!(params.max_tokens, 4096);
     }
 
@@ -207,6 +207,31 @@ mod tests {
         assert_eq!(params.temperature, 0.1);
         assert_eq!(params.reasoning, Some(ReasoningSpec::Off));
         assert_eq!(params.max_tokens, 2048);
+    }
+
+    /// Scenario: El default del rol chat es `off` cuando la clave falta.
+    #[tokio::test]
+    async fn chat_default_reasoning_is_off_when_missing() {
+        let pool = db().await;
+        crate::db::repos::settings::SettingsRepo::delete(&pool, "GENERATION_CHAT_REASONING")
+            .await
+            .expect("delete");
+        let params = read_generation_params(&pool, GenerationRole::Chat).await;
+        assert_eq!(params.reasoning, Some(ReasoningSpec::Off));
+    }
+
+    /// Scenario: El razonamiento vacío no se envía.
+    ///
+    /// Un vacío **explícito** (`""`) sigue significando `None`: el cambio de
+    /// default a `off` no altera la semántica del valor vacío.
+    #[tokio::test]
+    async fn explicit_empty_chat_reasoning_is_none() {
+        let pool = db().await;
+        SettingsRepo::set(&pool, "GENERATION_CHAT_REASONING", "")
+            .await
+            .expect("set");
+        let params = read_generation_params(&pool, GenerationRole::Chat).await;
+        assert_eq!(params.reasoning, None);
     }
 
     /// The code-level default for the Semantic role is `off` when the setting is absent.

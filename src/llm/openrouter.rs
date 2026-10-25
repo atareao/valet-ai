@@ -28,6 +28,12 @@ fn map_finish_reason(reason: &str) -> FinishReason {
     }
 }
 
+/// Default total timeout (seconds) for non-streaming requests.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 120;
+
+/// Default inactivity timeout (seconds) for streaming requests.
+pub const DEFAULT_STREAM_READ_TIMEOUT_SECS: u64 = 120;
+
 /// Configuration for the OpenRouter LLM provider.
 #[derive(Debug, Clone)]
 pub struct OpenRouterConfig {
@@ -35,22 +41,78 @@ pub struct OpenRouterConfig {
     pub model: String,
     pub base_url: String,
     pub max_retries: u32,
+    /// Total request timeout (seconds) for **non-streaming** calls (`chat()`):
+    /// covers connecting plus reading the whole response body.
     pub timeout_secs: u64,
+    /// Inactivity timeout (seconds) for **streaming** calls (`chat_stream()`):
+    /// the maximum time without receiving new bytes before the stream is
+    /// considered stalled. It is **not** a total deadline.
+    pub stream_read_timeout_secs: u64,
+}
+
+/// Read a `u64` seconds value from the environment, falling back to `default`
+/// when the variable is absent or not a valid number.
+fn env_secs(key: &str, default: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+impl OpenRouterConfig {
+    /// Build the provider configuration from the environment.
+    ///
+    /// * `OPENROUTER_TIMEOUT_SECS` — total timeout for non-streaming calls.
+    /// * `OPENROUTER_STREAM_READ_TIMEOUT_SECS` — inactivity timeout for streaming.
+    ///
+    /// Both default to 120 s; a missing or non-numeric value falls back to the
+    /// default instead of aborting startup.
+    pub fn from_env(api_key: String) -> Self {
+        Self {
+            api_key,
+            model: std::env::var("OPENROUTER_MODEL")
+                .unwrap_or_else(|_| "anthropic/claude-sonnet-20241022".into()),
+            base_url: std::env::var("OPENROUTER_BASE_URL")
+                .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into()),
+            max_retries: 3,
+            timeout_secs: env_secs("OPENROUTER_TIMEOUT_SECS", DEFAULT_TIMEOUT_SECS),
+            stream_read_timeout_secs: env_secs(
+                "OPENROUTER_STREAM_READ_TIMEOUT_SECS",
+                DEFAULT_STREAM_READ_TIMEOUT_SECS,
+            ),
+        }
+    }
 }
 
 /// Provider that routes requests through the OpenRouter API.
 pub struct OpenRouterProvider {
     config: OpenRouterConfig,
+    /// Client for non-streaming calls: a **total** request timeout.
     client: Client,
+    /// Client for streaming calls: `connect_timeout` plus a **read** (inactivity)
+    /// timeout and **no** total deadline, so a response that keeps producing is
+    /// never cut for taking long overall.
+    stream_client: Client,
 }
 
 impl OpenRouterProvider {
     pub fn new(config: OpenRouterConfig) -> Self {
+        let connect_timeout = Duration::from_secs(config.timeout_secs);
         let client = Client::builder()
+            .connect_timeout(connect_timeout)
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
             .unwrap_or_default();
-        Self { config, client }
+        let stream_client = Client::builder()
+            .connect_timeout(connect_timeout)
+            .read_timeout(Duration::from_secs(config.stream_read_timeout_secs))
+            .build()
+            .unwrap_or_default();
+        Self {
+            config,
+            client,
+            stream_client,
+        }
     }
 
     /// Parse an OpenRouter JSON response body into a `ChatResponse`.
@@ -400,7 +462,7 @@ impl LLMProvider for OpenRouterProvider {
         );
 
         let response = self
-            .client
+            .stream_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.config.api_key))
             .header("Content-Type", "application/json")
@@ -499,12 +561,15 @@ impl LLMProvider for OpenRouterProvider {
                         break;
                     }
                     Err(e) => {
-                        let _ = tx
-                            .send(Err(LLMError::HttpError(format!(
-                                "Stream read error: {}",
-                                e
-                            ))))
-                            .await;
+                        // A read timeout (idle stream) is a real, bounded stop;
+                        // surface it as `Timeout` so callers (and the turn loop)
+                        // can tell it apart from a decoding/transport failure.
+                        let error = if e.is_timeout() {
+                            LLMError::Timeout(format!("Stream read timeout: {}", e))
+                        } else {
+                            LLMError::HttpError(format!("Stream read error: {}", e))
+                        };
+                        let _ = tx.send(Err(error)).await;
                         return;
                     }
                 }
@@ -806,6 +871,7 @@ mod tests {
             base_url: "https://openrouter.ai/api/v1".into(),
             max_retries: 3,
             timeout_secs: 60,
+            stream_read_timeout_secs: 60,
         };
         assert_eq!(config.model, "anthropic/claude-sonnet-20241022");
     }
@@ -818,6 +884,7 @@ mod tests {
             base_url: "https://openrouter.ai/api/v1".into(),
             max_retries: 3,
             timeout_secs: 60,
+            stream_read_timeout_secs: 60,
         };
         let provider = OpenRouterProvider::new(config);
         // Just verify it compiles and doesn't panic
@@ -1297,6 +1364,7 @@ mod tests {
             base_url: mock_server.uri(),
             max_retries: 3,
             timeout_secs: 60,
+            stream_read_timeout_secs: 60,
         };
         let provider = OpenRouterProvider::new(config);
 
@@ -1467,6 +1535,7 @@ mod tests {
             base_url: server.uri(),
             max_retries: 0,
             timeout_secs: 5,
+            stream_read_timeout_secs: 5,
         })
     }
 
@@ -1613,6 +1682,7 @@ mod tests {
             base_url: server.uri(),
             max_retries: 0,
             timeout_secs: 5,
+            stream_read_timeout_secs: 5,
         });
 
         let result = provider.chat(generation_request(None, None, false)).await;
@@ -1696,5 +1766,284 @@ mod tests {
             "finish_reason \"length\" must be FinishReason::Length so callers can tell a \
              truncated completion apart from a complete one"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Resiliencia del streaming: timeout de inactividad vs timeout total
+    // -----------------------------------------------------------------------
+
+    use serial_test::serial;
+    use std::time::Duration as StdDuration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_stream::StreamExt;
+
+    /// One step of a scripted SSE server.
+    enum SseStep {
+        /// Send one SSE line (already including its trailing `\n`).
+        Data(String),
+        /// Stay silent — send nothing — for this long.
+        Stall(StdDuration),
+        /// Send the terminating zero-length chunk and close the body.
+        Close,
+    }
+
+    /// Spawn a minimal HTTP/1.1 server on an ephemeral port that answers a single
+    /// request with a `text/event-stream` body built from `steps`, honouring the
+    /// timing between them. Returns the `http://host:port` base URL.
+    async fn spawn_scripted_sse_server(steps: Vec<SseStep>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local addr");
+
+        tokio::spawn(async move {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => return,
+            };
+
+            // Read (and discard) the request headers so the client can finish
+            // sending its request.
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf).await;
+
+            if socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+                )
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let _ = socket.flush().await;
+
+            for step in steps {
+                match step {
+                    SseStep::Data(line) => {
+                        let chunk = format!("{:X}\r\n{}\r\n", line.len(), line);
+                        if socket.write_all(chunk.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        let _ = socket.flush().await;
+                    }
+                    SseStep::Stall(d) => tokio::time::sleep(d).await,
+                    SseStep::Close => {
+                        let _ = socket.write_all(b"0\r\n\r\n").await;
+                        let _ = socket.flush().await;
+                        return;
+                    }
+                }
+            }
+
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+            let _ = socket.flush().await;
+        });
+
+        format!("http://{}", addr)
+    }
+
+    fn sse_content_line(text: &str) -> String {
+        format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"{text}\"}},\"index\":0}}]}}\n")
+    }
+
+    fn sse_done_line() -> String {
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\
+         \"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}\n"
+            .to_string()
+    }
+
+    /// Scenario: Una respuesta larga que fluye no se corta
+    ///
+    /// The stream keeps producing for longer than `timeout_secs` (the total
+    /// deadline). With an inactivity timeout it must complete; with a total
+    /// deadline it would be cut mid-body.
+    #[tokio::test]
+    async fn test_chat_stream_flowing_response_is_not_cut_by_total_timeout() {
+        let mut steps = Vec::new();
+        for i in 0..6 {
+            steps.push(SseStep::Data(sse_content_line(&format!("c{i}"))));
+            steps.push(SseStep::Stall(StdDuration::from_millis(300)));
+        }
+        steps.push(SseStep::Data(sse_done_line()));
+        steps.push(SseStep::Close);
+
+        let base_url = spawn_scripted_sse_server(steps).await;
+
+        let provider = OpenRouterProvider::new(OpenRouterConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url,
+            max_retries: 0,
+            // Total deadline deliberately shorter than the whole response...
+            timeout_secs: 1,
+            // ...but the stream never goes idle for this long.
+            stream_read_timeout_secs: 10,
+        });
+
+        let mut stream = provider
+            .chat_stream(generation_request(None, None, true))
+            .await
+            .expect("chat_stream must connect");
+
+        let mut chunks = 0usize;
+        let mut done = false;
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(StreamEvent::Chunk(_)) => chunks += 1,
+                Ok(StreamEvent::Done(_)) => done = true,
+                Ok(_) => {}
+                Err(e) => panic!("a flowing stream must not be cut: {e}"),
+            }
+        }
+
+        assert_eq!(chunks, 6, "every emitted fragment must reach the consumer");
+        assert!(done, "the stream must reach finish_reason/[DONE]");
+    }
+
+    /// Scenario: Un stream que se queda mudo falla por inactividad
+    #[tokio::test]
+    async fn test_chat_stream_stalled_response_fails_with_timeout() {
+        let steps = vec![
+            SseStep::Data(sse_content_line("a")),
+            SseStep::Stall(StdDuration::from_millis(100)),
+            SseStep::Data(sse_content_line("b")),
+            // Silence for far longer than the inactivity timeout.
+            SseStep::Stall(StdDuration::from_secs(3)),
+            SseStep::Close,
+        ];
+
+        let base_url = spawn_scripted_sse_server(steps).await;
+
+        let provider = OpenRouterProvider::new(OpenRouterConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url,
+            max_retries: 0,
+            // The total deadline is long, so only inactivity may cut the stream.
+            timeout_secs: 30,
+            stream_read_timeout_secs: 1,
+        });
+
+        let mut stream = provider
+            .chat_stream(generation_request(None, None, true))
+            .await
+            .expect("chat_stream must connect");
+
+        let mut saw_timeout = false;
+        let mut chunks = 0usize;
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(StreamEvent::Chunk(_)) => chunks += 1,
+                Ok(_) => {}
+                Err(e) => {
+                    assert!(
+                        matches!(e, LLMError::Timeout(_)),
+                        "a stalled stream must fail with LLMError::Timeout, got: {e}"
+                    );
+                    saw_timeout = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            chunks >= 1,
+            "the fragments emitted before the stall must arrive"
+        );
+        assert!(
+            saw_timeout,
+            "a stream idle for longer than the inactivity timeout must fail with a timeout"
+        );
+    }
+
+    /// Scenario: `chat()` sigue sujeto a un timeout total
+    #[tokio::test]
+    async fn test_chat_non_streaming_still_has_a_total_timeout() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(any())
+            .and(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(StdDuration::from_secs(3))
+                    .set_body_json(serde_json::json!({
+                        "choices": [{"message": {"content": "late"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+                    })),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let provider = OpenRouterProvider::new(OpenRouterConfig {
+            api_key: "test-key".into(),
+            model: "test-model".into(),
+            base_url: mock_server.uri(),
+            max_retries: 0,
+            timeout_secs: 1,
+            stream_read_timeout_secs: 30,
+        });
+
+        let result = provider.chat(generation_request(None, None, false)).await;
+
+        assert!(
+            matches!(result, Err(LLMError::Timeout(_))),
+            "chat() must stay bounded by the total timeout, got: {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Configuración por entorno
+    // -----------------------------------------------------------------------
+
+    /// Scenario: El timeout total viene del entorno
+    #[test]
+    #[serial]
+    fn test_openrouter_config_from_env_reads_both_timeouts() {
+        std::env::set_var("OPENROUTER_TIMEOUT_SECS", "300");
+        std::env::set_var("OPENROUTER_STREAM_READ_TIMEOUT_SECS", "45");
+
+        let config = OpenRouterConfig::from_env("test-key".into());
+
+        std::env::remove_var("OPENROUTER_TIMEOUT_SECS");
+        std::env::remove_var("OPENROUTER_STREAM_READ_TIMEOUT_SECS");
+
+        assert_eq!(config.timeout_secs, 300, "OPENROUTER_TIMEOUT_SECS must win");
+        assert_eq!(
+            config.stream_read_timeout_secs, 45,
+            "OPENROUTER_STREAM_READ_TIMEOUT_SECS must win"
+        );
+    }
+
+    /// Scenario: Sin variables, los defaults son 120 s
+    #[test]
+    #[serial]
+    fn test_openrouter_config_from_env_defaults_to_120() {
+        std::env::remove_var("OPENROUTER_TIMEOUT_SECS");
+        std::env::remove_var("OPENROUTER_STREAM_READ_TIMEOUT_SECS");
+
+        let config = OpenRouterConfig::from_env("test-key".into());
+
+        assert_eq!(config.timeout_secs, 120);
+        assert_eq!(config.stream_read_timeout_secs, 120);
+    }
+
+    /// Scenario: Un valor inválido cae al default
+    #[test]
+    #[serial]
+    fn test_openrouter_config_from_env_invalid_value_falls_back() {
+        std::env::set_var("OPENROUTER_TIMEOUT_SECS", "abc");
+        std::env::set_var("OPENROUTER_STREAM_READ_TIMEOUT_SECS", "not-a-number");
+
+        let config = OpenRouterConfig::from_env("test-key".into());
+
+        std::env::remove_var("OPENROUTER_TIMEOUT_SECS");
+        std::env::remove_var("OPENROUTER_STREAM_READ_TIMEOUT_SECS");
+
+        assert_eq!(
+            config.timeout_secs, 120,
+            "a non-numeric value must not abort"
+        );
+        assert_eq!(config.stream_read_timeout_secs, 120);
     }
 }

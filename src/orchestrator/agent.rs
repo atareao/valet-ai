@@ -12,7 +12,9 @@ use crate::chat_events::ChatEvent;
 use crate::db::repos::messages::CLIENT_MESSAGE_ID_MAX_LEN;
 use crate::db::repos::stats::StatsRepo;
 use crate::llm::decisions::DecisionsProvider;
-use crate::llm::provider::{ChatMessage, ChatRequest, LLMProvider, StreamEvent, ToolCall};
+use crate::llm::provider::{
+    ChatMessage, ChatRequest, LLMError, LLMProvider, StreamEvent, ToolCall,
+};
 use crate::orchestrator::context_builder::ContextBuilder;
 use crate::orchestrator::context_classifier::ContextClassifier;
 use crate::orchestrator::guardrails::{ApprovalOutcome, GuardrailResult, Guardrails};
@@ -110,6 +112,11 @@ pub enum AgentError {
     ContextError(String),
     #[error("Max iterations exceeded")]
     MaxIterationsExceeded,
+    /// The model's stream failed mid-way and the error event —including any
+    /// partial text— has already been emitted to the client. Carries the error
+    /// message for logging; the caller must not emit a second error event.
+    #[error("Stream interrupted: {0}")]
+    StreamInterrupted(String),
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -135,6 +142,18 @@ impl From<crate::llm::provider::LLMError> for AgentError {
 impl From<crate::orchestrator::guardrails::GuardrailError> for AgentError {
     fn from(err: crate::orchestrator::guardrails::GuardrailError) -> Self {
         AgentError::GuardrailError(err.to_string())
+    }
+}
+
+/// Map a streaming failure to the `llm_requests.status` discriminator.
+///
+/// A timeout is recorded as `"timeout"` so a stalled stream is diagnosable
+/// without `RUST_LOG=debug`; any other failure stays `"error"`.
+fn stream_failure_status(error: &LLMError) -> &'static str {
+    if matches!(error, LLMError::Timeout(_)) {
+        "timeout"
+    } else {
+        "error"
     }
 }
 
@@ -179,8 +198,16 @@ pub enum SSEEvent {
     },
 
     /// An error occurred during processing.
+    ///
+    /// When the model's stream fails after having emitted text, `partial` carries
+    /// the text accumulated up to that point, so the client can keep it visible
+    /// instead of losing it. The field is omitted when nothing was emitted.
     #[serde(rename = "error")]
-    Error { message: String },
+    Error {
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<String>,
+    },
 
     /// Human-in-the-loop approval is required before a tool can proceed.
     #[serde(rename = "approval_required")]
@@ -701,11 +728,18 @@ impl Orchestrator {
     }
 
     /// Record a failed streaming LLM call for observability: one `llm_requests`
-    /// row and the in-memory last-call snapshot, both with status `"error"`.
+    /// row and the in-memory last-call snapshot, both carrying `status`.
+    /// A timeout is recorded as `"timeout"`; any other failure as `"error"`.
     ///
     /// This only records the failure; it does not swallow it. The caller is
     /// still responsible for propagating the original error with `return Err`.
-    async fn record_stream_failure(&self, profile_id: &str, duration_ms: i64, error_message: &str) {
+    async fn record_stream_failure(
+        &self,
+        profile_id: &str,
+        duration_ms: i64,
+        error_message: &str,
+        status: &str,
+    ) {
         let _ = StatsRepo::record_request(
             &self.db,
             CallKind::Chat,
@@ -719,7 +753,7 @@ impl Orchestrator {
             0,
             0.0,
             Some(duration_ms),
-            "error",
+            status,
             Some(error_message),
             None,
             None,
@@ -736,7 +770,7 @@ impl Orchestrator {
             0,
             0.0,
             Some(duration_ms),
-            "error",
+            status,
             Some(error_message),
             None,
         );
@@ -1092,6 +1126,7 @@ impl Orchestrator {
                 let _ = tx
                     .send(SSEEvent::Error {
                         message: "Max iterations exceeded".into(),
+                        partial: None,
                     })
                     .await
                     .ok();
@@ -1123,8 +1158,13 @@ impl Orchestrator {
                 Ok(s) => s,
                 Err(e) => {
                     let duration_ms = call_start.elapsed().as_millis() as i64;
-                    self.record_stream_failure(profile_id, duration_ms, &e.to_string())
-                        .await;
+                    self.record_stream_failure(
+                        profile_id,
+                        duration_ms,
+                        &e.to_string(),
+                        stream_failure_status(&e),
+                    )
+                    .await;
                     return Err(e.into());
                 }
             };
@@ -1146,9 +1186,28 @@ impl Orchestrator {
                     Err(e) => {
                         let duration_ms = stream_start.elapsed().as_millis() as i64;
                         let error_message = e.to_string();
-                        self.record_stream_failure(profile_id, duration_ms, &error_message)
+                        self.record_stream_failure(
+                            profile_id,
+                            duration_ms,
+                            &error_message,
+                            stream_failure_status(&e),
+                        )
+                        .await;
+                        // Preserve the text emitted before the failure so the
+                        // client can keep it visible instead of losing it. It is
+                        // not persisted in `messages`.
+                        let partial = if content_buffer.is_empty() {
+                            None
+                        } else {
+                            Some(content_buffer.clone())
+                        };
+                        let _ = tx
+                            .send(SSEEvent::Error {
+                                message: error_message.clone(),
+                                partial,
+                            })
                             .await;
-                        return Err(AgentError::LLMError(error_message));
+                        return Err(AgentError::StreamInterrupted(error_message));
                     }
                 };
                 match event {
@@ -1952,6 +2011,7 @@ mod tests {
     fn test_error_serialization() {
         let event = SSEEvent::Error {
             message: "Something went wrong".to_string(),
+            partial: None,
         };
         let json = event.to_json_string();
         assert!(json.contains(r#""type":"error""#));
@@ -5321,6 +5381,179 @@ mod tests {
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Resiliencia del streaming: texto parcial preservado y timeout registrado
+    // -----------------------------------------------------------------------
+
+    /// Mock that emits the given text chunks and then fails with `error`.
+    struct ChunksThenErrorLLM {
+        chunks: Vec<String>,
+        error: LLMError,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for ChunksThenErrorLLM {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            Err(LLMError::HttpError("not used".into()))
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let mut events: Vec<Result<StreamEvent, LLMError>> = self
+                .chunks
+                .iter()
+                .cloned()
+                .map(|c| Ok(StreamEvent::Chunk(c)))
+                .collect();
+            events.push(Err(self.error.clone()));
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    fn orchestrator_with_llm(pool: SqlitePool, llm: Arc<dyn LLMProvider>) -> Orchestrator {
+        let registry = Arc::new(ToolRegistry::new());
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            OrchestratorConfig::default(),
+            pool,
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        )
+    }
+
+    async fn drain_sse_events(mut rx: mpsc::Receiver<SSEEvent>) -> Vec<SSEEvent> {
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    }
+
+    /// Scenario: Fallo tras algunos fragmentos conserva el texto
+    #[tokio::test]
+    async fn test_stream_failure_preserves_partial_text_in_error_event(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let llm = Arc::new(ChunksThenErrorLLM {
+            chunks: vec!["Hola, esto es una resp".into()],
+            error: LLMError::HttpError("Stream read error: boom".into()),
+        });
+        let orchestrator = orchestrator_with_llm(pool.clone(), llm);
+
+        let (tx, rx) = mpsc::channel(100);
+        let result = orchestrator
+            .process_message_stream("profile-1", "hola", None, None, tx)
+            .await;
+        let events = drain_sse_events(rx).await;
+
+        assert!(result.is_err(), "a failed stream must return an error");
+
+        let partial = events
+            .iter()
+            .find_map(|e| match e {
+                SSEEvent::Error { partial, .. } => Some(partial.clone()),
+                _ => None,
+            })
+            .expect("the orchestrator must emit an error event when the stream fails");
+
+        assert_eq!(
+            partial.as_deref(),
+            Some("Hola, esto es una resp"),
+            "the error event must carry the partial text emitted before the failure"
+        );
+
+        // The partial must NOT be persisted as an assistant message.
+        let (messages, _) =
+            crate::db::repos::messages::MessagesRepo::list_all(&pool, 100, None).await?;
+        assert!(
+            messages.iter().all(|m| m.role != "assistant"),
+            "the partial text must not be persisted in `messages`"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: Fallo sin fragmentos no lleva texto
+    #[tokio::test]
+    async fn test_stream_failure_without_chunks_has_no_partial(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let llm = Arc::new(ChunksThenErrorLLM {
+            chunks: vec![],
+            error: LLMError::HttpError("boom".into()),
+        });
+        let orchestrator = orchestrator_with_llm(pool.clone(), llm);
+
+        let (tx, rx) = mpsc::channel(100);
+        let _ = orchestrator
+            .process_message_stream("profile-1", "hola", None, None, tx)
+            .await;
+        let events = drain_sse_events(rx).await;
+
+        let partial = events
+            .iter()
+            .find_map(|e| match e {
+                SSEEvent::Error { partial, .. } => Some(partial.clone()),
+                _ => None,
+            })
+            .expect("the orchestrator must emit an error event when the stream fails");
+
+        assert!(
+            partial.is_none(),
+            "a failure with no emitted fragments must not carry a partial text"
+        );
+
+        Ok(())
+    }
+
+    /// Scenario: El error de timeout del stream queda registrado con un mensaje
+    /// distinguible
+    #[tokio::test]
+    async fn test_stream_timeout_is_recorded_with_distinguishable_status(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let llm = Arc::new(ChunksThenErrorLLM {
+            chunks: vec!["x".into()],
+            error: LLMError::Timeout("stream stalled".into()),
+        });
+        let orchestrator = orchestrator_with_llm(pool.clone(), llm);
+
+        let (tx, rx) = mpsc::channel(100);
+        let _ = orchestrator
+            .process_message_stream("profile-1", "hola", None, None, tx)
+            .await;
+        let _ = drain_sse_events(rx).await;
+
+        let rows: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT status, error_message FROM llm_requests")
+                .fetch_all(&pool)
+                .await?;
+
+        assert!(
+            rows.iter().any(|(status, message)| {
+                status == "timeout"
+                    && message
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains("stalled")
+            }),
+            "a stream timeout must be recorded with status='timeout' and a \
+             distinguishable message, got: {rows:?}"
+        );
+
+        Ok(())
+    }
+
     // ─── Contract tests: el chat usa GENERATION_CHAT_* ─────────────────────
 
     /// Scenario: El chat envía una temperatura explícita y los defaults.
@@ -5332,8 +5565,8 @@ mod tests {
 
         assert_eq!(request.temperature, Some(0.7));
         assert!(
-            request.reasoning.is_none(),
-            "default (empty) chat reasoning must be None, got {:?}",
+            matches!(request.reasoning, Some(ReasoningSpec::Off)),
+            "default chat reasoning must be Off, got {:?}",
             request.reasoning
         );
         assert_eq!(request.max_tokens, Some(4096));

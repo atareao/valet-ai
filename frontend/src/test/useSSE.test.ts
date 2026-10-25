@@ -117,3 +117,61 @@ describe("useSSE — evento widget", () => {
     warnSpy.mockRestore();
   });
 });
+
+describe("useSSE — evento error con texto parcial", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("pasa el texto parcial del evento de error a onError", async () => {
+    const onError = vi.fn();
+    const event = {
+      type: "error",
+      message: "Stream read error: boom",
+      partial: "Hola, esto es una resp",
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(streamResponse([`data: ${JSON.stringify(event)}\n`])),
+    );
+
+    const { result } = renderHook(() => useSSE());
+
+    await act(async () => {
+      await result.current.connect("hola", { onError });
+    });
+
+    expect(onError).toHaveBeenCalledWith(
+      "Stream read error: boom",
+      undefined,
+      "Hola, esto es una resp",
+    );
+  });
+
+  it("sin texto parcial el tercer argumento queda indefinido", async () => {
+    const onError = vi.fn();
+    const event = { type: "error", message: "Stream read error: boom" };
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(streamResponse([`data: ${JSON.stringify(event)}\n`])),
+    );
+
+    const { result } = renderHook(() => useSSE());
+
+    await act(async () => {
+      await result.current.connect("hola", { onError });
+    });
+
+    expect(onError).toHaveBeenCalledWith(
+      "Stream read error: boom",
+      undefined,
+      undefined,
+    );
+  });
+});
