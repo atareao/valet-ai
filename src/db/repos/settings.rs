@@ -333,6 +333,82 @@ mod tests {
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // RED phase — ReAct tool guards settings (change `react-tool-guards`)
+    //
+    // These tests will FAIL (runtime) because the migration that seeds the four
+    // `REACT_TOOL_*` keys does not exist yet.
+    // -----------------------------------------------------------------------
+
+    /// Locate the ReAct tool guards migration by content (the filename is not
+    /// fixed) and return its SQL.
+    fn react_tool_guards_migration_sql() -> String {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut found: Option<String> = None;
+        for entry in std::fs::read_dir(&dir).expect("migrations directory must exist") {
+            let path = entry.expect("readable dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("sql") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("readable migration file");
+            if content.contains("REACT_TOOL_FINGERPRINT_LIMIT") {
+                found = Some(content);
+                break;
+            }
+        }
+        found.expect(
+            "a migration seeding the REACT_TOOL_* keys (REACT_TOOL_FINGERPRINT_LIMIT) must exist",
+        )
+    }
+
+    /// Scenario: Las cuatro claves se siembran con sus defaults
+    ///
+    /// Tarea 1.1 — guardián de contenido de la migración: existe una migración
+    /// que siembra los cuatro umbrales con sus defaults.
+    #[test]
+    fn test_react_tool_guards_migration_seeds_the_four_thresholds() {
+        let sql = react_tool_guards_migration_sql();
+        for (key, value) in [
+            ("REACT_TOOL_FINGERPRINT_LIMIT", "2"),
+            ("REACT_TOOL_FAILURE_LIMIT", "3"),
+            ("REACT_TOOL_SUCCESS_LIMIT", "50"),
+            ("REACT_TOOL_TOTAL_LIMIT", "100"),
+        ] {
+            assert!(
+                sql.contains(key),
+                "the migration must seed `{key}`, got SQL:\n{sql}"
+            );
+            assert!(
+                sql.contains(&format!("VALUES ('{key}', '{value}'")),
+                "the migration must seed `{key}` with its default `{value}`, got SQL:\n{sql}"
+            );
+        }
+    }
+
+    /// Scenario: Las cuatro claves se siembran con sus defaults
+    ///
+    /// Tarea 1.2 — tras migrar, `SettingsRepo::get` devuelve los cuatro valores.
+    #[tokio::test]
+    async fn test_react_tool_guards_seeded_with_defaults() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let pool = setup().await?;
+
+        for (key, value) in [
+            ("REACT_TOOL_FINGERPRINT_LIMIT", "2"),
+            ("REACT_TOOL_FAILURE_LIMIT", "3"),
+            ("REACT_TOOL_SUCCESS_LIMIT", "50"),
+            ("REACT_TOOL_TOTAL_LIMIT", "100"),
+        ] {
+            assert_eq!(
+                SettingsRepo::get(&pool, key).await.unwrap(),
+                Some(value.to_string()),
+                "after migrations, settings.{key} must hold its initial value"
+            );
+        }
+
+        Ok(())
+    }
+
     /// Scenario: Un valor existente se respeta
     #[tokio::test]
     async fn test_generation_setting_existing_value_is_respected(

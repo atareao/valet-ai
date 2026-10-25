@@ -18,6 +18,9 @@ pub mod token_estimate;
 pub mod tools;
 pub mod workers;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use axum::http::{header, HeaderValue, Method};
 use axum::routing::{delete, get};
 use axum::{extract::State, Json, Router};

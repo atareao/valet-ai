@@ -22,6 +22,7 @@ use crate::orchestrator::skill_router::{
     compose_skill_fragments, exposed_tools, read_router_config, read_skill_fragments, RouterUsage,
     SkillRouter,
 };
+use crate::orchestrator::tool_limits::{read_tool_limits, ToolLimits};
 use crate::tools::geo_utils::reverse_geocode;
 use crate::tools::r#trait::ToolResult;
 use crate::tools::registry::ToolRegistry;
@@ -252,8 +253,161 @@ pub struct BrowserContext {
     pub location_name: Option<String>,
 }
 
-/// Maximum number of times the same tool+operation can be called in one ReAct loop.
-const MAX_TOOL_RETRIES: usize = 5;
+/// In-memory, per-turn state for the three orthogonal ReAct tool guards.
+///
+/// Counters live only for the duration of a turn and reset on the next one.
+#[derive(Default)]
+struct ToolGuardState {
+    /// Executions of each call fingerprint (`op_key` + normalised arguments).
+    fingerprint_counts: std::collections::HashMap<String, usize>,
+    /// Separate success / consecutive-failure budgets per `tool::operation`.
+    budgets: std::collections::HashMap<String, ToolBudget>,
+    /// Tool calls executed in this turn.
+    total_executed: usize,
+}
+
+/// Success and consecutive-failure counters for one `tool::operation` key.
+#[derive(Default)]
+struct ToolBudget {
+    successes: usize,
+    consecutive_failures: usize,
+}
+
+/// Why a tool call was blocked; the variant fixes the exact message and the
+/// short guard name recorded in the `warn!`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GuardBlock {
+    /// The per-turn total cap was reached (`n` is the limit).
+    Total(usize),
+    /// An identical call has already been executed `n` times.
+    Fingerprint(usize),
+    /// The success budget (`n` is the limit) was exhausted.
+    Success(usize),
+    /// The consecutive-failure budget (`n` is the limit) was exhausted.
+    Failure(usize),
+}
+
+impl GuardBlock {
+    /// Short guard name recorded in the `warn!`.
+    fn guard(self) -> &'static str {
+        match self {
+            GuardBlock::Total(_) => "total",
+            GuardBlock::Fingerprint(_) => "fingerprint",
+            GuardBlock::Success(_) => "success",
+            GuardBlock::Failure(_) => "failure",
+        }
+    }
+
+    /// Count reported alongside the guard name.
+    fn count(self) -> usize {
+        match self {
+            GuardBlock::Total(n)
+            | GuardBlock::Fingerprint(n)
+            | GuardBlock::Success(n)
+            | GuardBlock::Failure(n) => n,
+        }
+    }
+
+    /// Exact message handed to the model, naming the guard that tripped.
+    fn message(self, key: &str) -> String {
+        match self {
+            GuardBlock::Total(n) => {
+                format!("The turn reached its tool-call limit ({n}); no further tools will run.")
+            }
+            GuardBlock::Fingerprint(n) => format!(
+                "Tool '{key}' has been called {n} times with identical arguments; no further \
+                 identical calls are allowed. Change the arguments or use another approach."
+            ),
+            GuardBlock::Success(n) => {
+                format!("Tool '{key}' reached its per-turn limit of {n} calls.")
+            }
+            GuardBlock::Failure(n) => format!(
+                "Tool '{key}' has failed {n} times in a row; no more retries are allowed. \
+                 Inform the user and suggest alternatives."
+            ),
+        }
+    }
+}
+
+impl ToolGuardState {
+    /// Check the three guards in order (total → fingerprint → success →
+    /// failure); the first that trips wins. Returns `None` when the call may
+    /// run.
+    fn check(&self, op_key: &str, fingerprint: &str, limits: &ToolLimits) -> Option<GuardBlock> {
+        if self.total_executed >= limits.total {
+            return Some(GuardBlock::Total(limits.total));
+        }
+
+        let fingerprint_count = self
+            .fingerprint_counts
+            .get(fingerprint)
+            .copied()
+            .unwrap_or(0);
+        if fingerprint_count + 1 > limits.fingerprint {
+            return Some(GuardBlock::Fingerprint(fingerprint_count));
+        }
+
+        let budget = self.budgets.get(op_key);
+        let successes = budget.map(|b| b.successes).unwrap_or(0);
+        if successes >= limits.success {
+            return Some(GuardBlock::Success(limits.success));
+        }
+
+        let failures = budget.map(|b| b.consecutive_failures).unwrap_or(0);
+        if failures >= limits.failure {
+            return Some(GuardBlock::Failure(limits.failure));
+        }
+
+        None
+    }
+
+    /// Record an execution of `fingerprint` under `op_key`, updating all three
+    /// guards from the real outcome (a failure resets nothing; a success resets
+    /// the consecutive-failure run).
+    fn record(&mut self, op_key: &str, fingerprint: &str, success: bool) {
+        self.total_executed += 1;
+        *self
+            .fingerprint_counts
+            .entry(fingerprint.to_string())
+            .or_insert(0) += 1;
+
+        let budget = self.budgets.entry(op_key.to_string()).or_default();
+        if success {
+            budget.successes += 1;
+            budget.consecutive_failures = 0;
+        } else {
+            budget.consecutive_failures += 1;
+        }
+    }
+}
+
+/// Canonical, key-ordered rendering of tool arguments for fingerprinting, so
+/// two calls with the same arguments in a different key order share a
+/// fingerprint.
+fn canonical_json(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let parts: Vec<String> = keys
+                .into_iter()
+                .map(|key| {
+                    format!(
+                        "{}:{}",
+                        serde_json::to_string(key).unwrap_or_default(),
+                        canonical_json(&map[key])
+                    )
+                })
+                .collect();
+            format!("{{{}}}", parts.join(","))
+        }
+        Value::Array(items) => {
+            let parts: Vec<String> = items.iter().map(canonical_json).collect();
+            format!("[{}]", parts.join(","))
+        }
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
 
 /// Maximum time a turn waits for a human approval decision before treating it
 /// as a denial (`ApprovalOutcome::TimedOut`).
@@ -836,8 +990,11 @@ impl Orchestrator {
         let mut messages: Vec<ChatMessage> = Vec::new();
         let mut used_tools: Vec<String> = Vec::new();
         let mut rendered_widgets: Vec<Value> = Vec::new();
-        let mut tool_call_counts: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        // Per-turn guard state (reset every turn) and the thresholds backing it,
+        // read from `settings` on every turn so editing them takes effect
+        // without a restart.
+        let mut tool_guards = ToolGuardState::default();
+        let tool_limits = read_tool_limits(&self.db).await;
 
         // 1. Classify intent
         let classification = self.classifier.classify(user_message);
@@ -1370,32 +1527,36 @@ impl Orchestrator {
                                 };
 
                                 if allowed {
-                                    // Check per-tool retry limit (max 3 calls per tool per ReAct loop)
+                                    // Three orthogonal guards replace the former single
+                                    // counter: the per-turn total cap, the identical-call
+                                    // fingerprint and the per-`tool::operation` success /
+                                    // consecutive-failure budgets. Checked in that order
+                                    // (total → fingerprint → success → failure), the first
+                                    // that trips wins.
                                     let op = tc.arguments.get("operation").and_then(|v| v.as_str());
                                     let op_key = match op {
                                         Some(op_val) => format!("{}::{}", tc.name, op_val),
                                         None => tc.name.clone(),
                                     };
-                                    let tool_count =
-                                        tool_call_counts.entry(op_key.clone()).or_insert(0);
-                                    *tool_count += 1;
-                                    if *tool_count > MAX_TOOL_RETRIES {
-                                        let display_name = match op {
-                                            Some(op_val) => format!("{}::{}", tc.name, op_val),
-                                            None => tc.name.clone(),
-                                        };
+                                    // Fingerprint uses the raw arguments, canonicalised
+                                    // and key-ordered, **before** `profile_id` is injected
+                                    // below, so the injected field never affects it.
+                                    let fingerprint =
+                                        format!("{op_key}|{}", canonical_json(&tc.arguments));
+
+                                    if let Some(block) =
+                                        tool_guards.check(&op_key, &fingerprint, &tool_limits)
+                                    {
                                         tracing::warn!(
-                                            tool_name = %display_name,
-                                            call_count = %tool_count,
-                                            "⚠️ Tool retry limit reached"
+                                            tool_name = %op_key,
+                                            call_count = %block.count(),
+                                            guard = %block.guard(),
+                                            "⚠️ ReAct tool guard tripped"
                                         );
-                                        let msg = format!(
-                                                "Tool '{}' has been called 3 times. No more retries allowed. Inform the user and suggest alternatives.",
-                                                display_name
-                                            );
+                                        let msg = block.message(&op_key);
                                         messages.push(ChatMessage {
                                             role: "tool".into(),
-                                            content: msg.clone(),
+                                            content: msg,
                                             tool_calls: None,
                                             tool_result: None,
                                             tool_call_id: Some(tc.id.clone()),
@@ -1444,6 +1605,12 @@ impl Orchestrator {
                                                 }
                                             }
                                         };
+
+                                    // Update the guards with the real outcome: a
+                                    // failure (`ToolResult { success: false }` or an
+                                    // `Err`) counts as a failure; a success resets the
+                                    // consecutive-failure run.
+                                    tool_guards.record(&op_key, &fingerprint, tool_result.success);
 
                                     match tool_result.success {
                                         true => {
@@ -4632,206 +4799,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Mock tool that counts calls — for the retry limit test
+    // The legacy single-counter retry test (`test_tool_max_retries_in_react_loop`
+    // plus its `MockLimitedTool` / `MockLLMExceedingRetries` helpers) was
+    // consolidated into the `guard_*` suite below: one counter `MAX_TOOL_RETRIES`
+    // no longer exists, and the three orthogonal guards (fingerprint / success /
+    // consecutive-failure / per-turn total) are each covered there end to end
+    // with exact messages, including the distinct-argument progress case
+    // (`guard_distinct_calls_are_not_blocked`) the old counter got wrong.
     // -----------------------------------------------------------------------
-
-    struct MockLimitedTool {
-        call_count: Arc<AtomicUsize>,
-    }
-
-    #[async_trait::async_trait]
-    impl Tool for MockLimitedTool {
-        fn name(&self) -> &'static str {
-            "limited_tool"
-        }
-
-        fn description(&self) -> &'static str {
-            "Tool that counts calls"
-        }
-
-        fn parameters(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object"})
-        }
-
-        fn permission(&self, _args: &serde_json::Value) -> Permission {
-            Permission::NoConfirm
-        }
-
-        async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult, ToolError> {
-            self.call_count.fetch_add(1, Ordering::SeqCst);
-            Ok(ToolResult {
-                success: true,
-                data: serde_json::json!({"status": "ok"}),
-                message: None,
-            })
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Mock LLM that calls limited_tool MAX_TOOL_RETRIES + 1 times,
-    // then returns plain text on the next call.
-    // -----------------------------------------------------------------------
-
-    struct MockLLMExceedingRetries {
-        call_count: Arc<Mutex<usize>>,
-    }
-
-    #[async_trait::async_trait]
-    impl LLMProvider for MockLLMExceedingRetries {
-        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
-            let mut count = self.call_count.lock().unwrap();
-            *count += 1;
-            if *count <= MAX_TOOL_RETRIES + 1 {
-                // Return a tool call for limited_tool
-                Ok(ChatResponse {
-                    message: ChatMessage {
-                        role: "assistant".into(),
-                        content: "Let me try...".into(),
-                        tool_calls: Some(vec![ToolCall {
-                            id: format!("call-{}", count),
-                            name: "limited_tool".into(),
-                            arguments: serde_json::json!({"input": count.to_string()}),
-                        }]),
-                        tool_result: None,
-                        tool_call_id: None,
-                    },
-                    usage: None,
-                    finish_reason: None,
-                })
-            } else {
-                // Final answer after exhausting retries
-                Ok(ChatResponse {
-                    message: ChatMessage {
-                        role: "assistant".into(),
-                        content: "Done after retries.".into(),
-                        tool_calls: None,
-                        tool_result: None,
-                        tool_call_id: None,
-                    },
-                    usage: None,
-                    finish_reason: None,
-                })
-            }
-        }
-
-        async fn chat_stream(
-            &self,
-            request: ChatRequest,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
-        {
-            let result = self.chat(request).await?;
-            let content = result.message.content.clone();
-            let tool_calls = result.message.tool_calls.clone();
-
-            let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
-
-            if let Some(tcs) = tool_calls {
-                for tc in tcs {
-                    events.push(Ok(StreamEvent::ToolCall(tc)));
-                }
-                events.push(Ok(StreamEvent::Done(result)));
-            } else {
-                for chunk in content
-                    .chars()
-                    .collect::<Vec<_>>()
-                    .chunks(10)
-                    .map(|c| c.iter().collect::<String>())
-                {
-                    events.push(Ok(StreamEvent::Chunk(chunk)));
-                }
-                events.push(Ok(StreamEvent::Done(result)));
-            }
-
-            let stream = futures::stream::iter(events);
-            Ok(Box::pin(stream))
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Test: tool should not execute more than 3 times in the same ReAct loop
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn test_tool_max_retries_in_react_loop() -> Result<(), Box<dyn std::error::Error>> {
-        // 1. Create in-memory SQLite pool and run migrations
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(
-                SqliteConnectOptions::new()
-                    .filename(":memory:")
-                    .create_if_missing(true),
-            )
-            .await?;
-        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
-            .await
-            .unwrap()
-            .run(&pool)
-            .await
-            .unwrap();
-
-        // 2. Registry with MockLimitedTool
-        let call_count = Arc::new(AtomicUsize::new(0));
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(MockLimitedTool {
-            call_count: call_count.clone(),
-        }));
-        let registry = Arc::new(registry);
-
-        // 3. Mock LLM that calls limited_tool MAX_TOOL_RETRIES + 1 times
-        let llm = Arc::new(MockLLMExceedingRetries {
-            call_count: Arc::new(Mutex::new(0)),
-        });
-        let guardrails = Arc::new(Guardrails::new(registry.clone()));
-        let context_builder = Arc::new(ContextBuilder::new());
-        let config = OrchestratorConfig::default();
-
-        let orchestrator = Orchestrator::new(
-            llm,
-            registry,
-            guardrails,
-            context_builder,
-            config,
-            pool.clone(),
-            None,
-            None,
-            Arc::new(RwLock::new(None)),
-        );
-
-        let (tx, mut rx) = mpsc::channel(100);
-
-        // 4. Execute
-        let result = orchestrator
-            .process_message_stream("profile-id", "test", None, None, tx)
-            .await;
-
-        // 5. Verify: orchestrator should complete successfully
-        assert!(
-            result.is_ok(),
-            "Orchestrator should complete successfully, got: {:?}",
-            result
-        );
-
-        // 6. Verify: tool should be called max MAX_TOOL_RETRIES times
-        assert_eq!(
-            call_count.load(Ordering::SeqCst),
-            MAX_TOOL_RETRIES,
-            "Tool should be called max {} times, but was called {} times",
-            MAX_TOOL_RETRIES,
-            call_count.load(Ordering::SeqCst)
-        );
-
-        // 7. Verify SSE events: must have Done
-        let mut got_done = false;
-        while let Some(event) = rx.recv().await {
-            if matches!(event, SSEEvent::Done { .. }) {
-                got_done = true;
-                break;
-            }
-        }
-        assert!(got_done, "Should emit Done event");
-
-        Ok(())
-    }
 
     // -----------------------------------------------------------------------
     // T0.2: Orchestrator injects profile_id into tool calls
@@ -6890,5 +6865,643 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — React tool guards (change `react-tool-guards`)
+    //
+    // These tests exercise the three orthogonal guards that replace the single
+    // `MAX_TOOL_RETRIES` counter: the fingerprint guard (identical calls), the
+    // per-`tool::operation` success/consecutive-failure budgets and the per-turn
+    // global cap. They FAIL against the single counter (`MAX_TOOL_RETRIES = 5`)
+    // and the fixed «called 3 times» message, and PASS once the guards drive the
+    // loop with messages that name the guard that tripped.
+    // -----------------------------------------------------------------------
+
+    use crate::db::repos::settings::SettingsRepo;
+    use crate::test_support::capture_traces;
+    use std::collections::VecDeque;
+
+    const KEY_FINGERPRINT: &str = "REACT_TOOL_FINGERPRINT_LIMIT";
+    const KEY_FAILURE: &str = "REACT_TOOL_FAILURE_LIMIT";
+    const KEY_SUCCESS: &str = "REACT_TOOL_SUCCESS_LIMIT";
+    const KEY_TOTAL: &str = "REACT_TOOL_TOTAL_LIMIT";
+
+    /// Name of the tool used by the guard tests.
+    const GUARD_TOOL: &str = "limited_tool";
+    /// The `operation` every guard-test call passes; the guard key is
+    /// `limited_tool::op`.
+    const GUARD_OPERATION: &str = "op";
+    /// `tool::operation` key the guard messages must name.
+    const GUARD_KEY: &str = "limited_tool::op";
+
+    /// One step of the scripted mock LLM.
+    enum LlmStep {
+        /// Emit a tool call to [`GUARD_TOOL`] with these arguments.
+        Tool { args: Value },
+        /// Emit a plain-text final answer, ending the turn.
+        Text,
+    }
+
+    /// Mock tool that records every **executed** call (a blocked call never
+    /// reaches `execute`) and can be made to fail on demand.
+    #[derive(Clone)]
+    struct GuardTool {
+        calls: Arc<Mutex<Vec<Value>>>,
+        /// Outcomes consumed in order; once exhausted every call succeeds.
+        outcomes: Arc<Mutex<Vec<bool>>>,
+    }
+
+    impl GuardTool {
+        fn new() -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                outcomes: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn with_outcomes(outcomes: Vec<bool>) -> Self {
+            let tool = Self::new();
+            *tool.outcomes.lock().unwrap() = outcomes;
+            tool
+        }
+
+        /// Number of tool calls that actually ran.
+        fn executed(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for GuardTool {
+        fn name(&self) -> &'static str {
+            GUARD_TOOL
+        }
+
+        fn description(&self) -> &'static str {
+            "Guard test tool"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn permission(&self, _args: &serde_json::Value) -> Permission {
+            Permission::NoConfirm
+        }
+
+        async fn execute(&self, args: serde_json::Value) -> Result<ToolResult, ToolError> {
+            self.calls.lock().unwrap().push(args);
+            let success = {
+                let mut outcomes = self.outcomes.lock().unwrap();
+                if outcomes.is_empty() {
+                    true
+                } else {
+                    outcomes.remove(0)
+                }
+            };
+            Ok(ToolResult {
+                success,
+                data: serde_json::json!({"ok": success}),
+                message: if success { None } else { Some("boom".into()) },
+            })
+        }
+    }
+
+    /// Mock LLM that plays a fixed script of steps and records every request so
+    /// the tests can inspect the `tool` messages handed back to the model.
+    struct ScriptedLLM {
+        steps: Arc<Mutex<VecDeque<LlmStep>>>,
+        requests: Arc<Mutex<Vec<ChatRequest>>>,
+    }
+
+    impl ScriptedLLM {
+        fn new(steps: Vec<LlmStep>) -> Self {
+            Self {
+                steps: Arc::new(Mutex::new(steps.into())),
+                requests: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        /// Every `role == "tool"` message content the model ever saw, in order
+        /// (across requests; repeats are harmless for `any`/`contains` checks).
+        fn tool_messages(&self) -> Vec<String> {
+            self.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .flat_map(|request| request.messages.iter())
+                .filter(|message| message.role == "tool")
+                .map(|message| message.content.clone())
+                .collect()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for ScriptedLLM {
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            let call_index = {
+                let mut requests = self.requests.lock().unwrap();
+                requests.push(request);
+                requests.len()
+            };
+
+            let step = self.steps.lock().unwrap().pop_front();
+            let message = match step {
+                Some(LlmStep::Tool { args }) => ChatMessage {
+                    role: "assistant".into(),
+                    content: "calling tool".into(),
+                    tool_calls: Some(vec![ToolCall {
+                        id: format!("call-{call_index}"),
+                        name: GUARD_TOOL.into(),
+                        arguments: args,
+                    }]),
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                _ => ChatMessage {
+                    role: "assistant".into(),
+                    content: "done".into(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+            };
+
+            Ok(ChatResponse {
+                message,
+                usage: None,
+                finish_reason: None,
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let result = self.chat(request).await?;
+            let content = result.message.content.clone();
+            let tool_calls = result.message.tool_calls.clone();
+
+            let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
+            if let Some(tool_calls) = tool_calls {
+                for tc in tool_calls {
+                    events.push(Ok(StreamEvent::ToolCall(tc)));
+                }
+                events.push(Ok(StreamEvent::Done(result)));
+            } else {
+                for chunk in content
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .chunks(10)
+                    .map(|c| c.iter().collect::<String>())
+                {
+                    events.push(Ok(StreamEvent::Chunk(chunk)));
+                }
+                events.push(Ok(StreamEvent::Done(result)));
+            }
+
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// In-memory pool with migrations only — enough for a turn to run end to end
+    /// (the settings it reads are all seeded by migrations or fall back).
+    async fn guard_test_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("in-memory pool");
+        sqlx::migrate::Migrator::new(std::path::Path::new("migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    async fn set_limit(pool: &SqlitePool, key: &str, value: usize) {
+        SettingsRepo::set(pool, key, &value.to_string())
+            .await
+            .expect("set guard limit");
+    }
+
+    /// Orchestrator wired with a single [`GuardTool`] under `pool`.
+    fn guard_orchestrator(
+        pool: SqlitePool,
+        llm: Arc<dyn LLMProvider>,
+        tool: &GuardTool,
+    ) -> Orchestrator {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(tool.clone()));
+        let registry = Arc::new(registry);
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            OrchestratorConfig::default(),
+            pool,
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        )
+    }
+
+    /// Arguments for a guard call with a distinct `id` (distinct fingerprint).
+    fn op_args(id: usize) -> Value {
+        serde_json::json!({"operation": GUARD_OPERATION, "id": id.to_string()})
+    }
+
+    /// `count` tool steps with **distinct** arguments (distinct fingerprints).
+    fn distinct_steps(count: usize) -> Vec<LlmStep> {
+        (0..count)
+            .map(|i| LlmStep::Tool { args: op_args(i) })
+            .collect()
+    }
+
+    /// `count` tool steps with **identical** arguments (same fingerprint).
+    fn identical_steps(count: usize) -> Vec<LlmStep> {
+        (0..count)
+            .map(|_| LlmStep::Tool { args: op_args(0) })
+            .collect()
+    }
+
+    /// Run one turn to completion and collect every SSE event it emitted.
+    async fn run_guard_turn(orchestrator: &Orchestrator, message: &str) -> Vec<SSEEvent> {
+        let (tx, mut rx) = mpsc::channel(1000);
+        let result = orchestrator
+            .process_message_stream("profile-id", message, None, None, tx)
+            .await;
+        assert!(result.is_ok(), "the turn must complete, got: {result:?}");
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        events
+    }
+
+    /// Scenario: N llamadas con argumentos distintos al mismo `tool::operation`
+    /// (todas exitosas) NO se bloquean mientras N ≤ `REACT_TOOL_SUCCESS_LIMIT`.
+    ///
+    /// Six calls: the legacy single counter (`MAX_TOOL_RETRIES = 5`) cut the
+    /// sixth, so this test proves progress is no longer confused with a loop.
+    #[tokio::test]
+    async fn guard_distinct_calls_are_not_blocked() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        let mut steps = distinct_steps(6);
+        steps.push(LlmStep::Text);
+
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::new();
+        let orchestrator = guard_orchestrator(pool, llm, &tool);
+
+        run_guard_turn(&orchestrator, "marca seis cosas").await;
+
+        assert_eq!(tool.executed(), 6, "every distinct-argument call must run");
+    }
+
+    /// Scenario: alcanzado `REACT_TOOL_SUCCESS_LIMIT` éxitos, la siguiente
+    /// llamada al mismo `tool::operation` se bloquea.
+    #[tokio::test]
+    async fn guard_success_budget_blocks_the_call_after_the_limit() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_SUCCESS, 3).await;
+
+        let mut steps = distinct_steps(4);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::new();
+        let orchestrator = guard_orchestrator(pool, llm, &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        assert_eq!(
+            tool.executed(),
+            3,
+            "the fourth call must be blocked by the success budget"
+        );
+    }
+
+    /// Scenario: `REACT_TOOL_FAILURE_LIMIT` fallos consecutivos bloquean.
+    #[tokio::test]
+    async fn guard_consecutive_failures_block() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_FAILURE, 3).await;
+
+        let mut steps = distinct_steps(4);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::with_outcomes(vec![false, false, false, false]);
+        let orchestrator = guard_orchestrator(pool, llm, &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        assert_eq!(
+            tool.executed(),
+            3,
+            "only three consecutive failures are allowed before the cut"
+        );
+    }
+
+    /// Scenario: un éxito intermedio reinicia el contador de fallos.
+    ///
+    /// `f, f, s, f, f, f` all run: were the success not to reset the run, the
+    /// fifth call would already be blocked (four executions), and the legacy
+    /// counter cuts at five.
+    #[tokio::test]
+    async fn guard_a_success_resets_the_consecutive_failure_counter() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_FAILURE, 3).await;
+
+        let mut steps = distinct_steps(6);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::with_outcomes(vec![false, false, true, false, false, false, true]);
+        let orchestrator = guard_orchestrator(pool, llm, &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        assert_eq!(
+            tool.executed(),
+            6,
+            "a success must reset the consecutive-failure budget"
+        );
+    }
+
+    /// Scenario: la misma llamada se bloquea tras `REACT_TOOL_FINGERPRINT_LIMIT`
+    /// ejecuciones, aunque cambie el resultado entre medias.
+    #[tokio::test]
+    async fn guard_identical_calls_are_blocked_by_fingerprint() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_FINGERPRINT, 2).await;
+
+        let mut steps = identical_steps(3);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        // First identical call succeeds, second fails: the guard still counts
+        // executions, not results.
+        let tool = GuardTool::with_outcomes(vec![true, false, true]);
+        let orchestrator = guard_orchestrator(pool, llm, &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        assert_eq!(
+            tool.executed(),
+            2,
+            "the third identical call must be blocked by the fingerprint guard"
+        );
+    }
+
+    /// Scenario: dos llamadas con argumentos distintos al mismo tool NO
+    /// comparten huella.
+    #[tokio::test]
+    async fn guard_distinct_arguments_do_not_share_a_fingerprint() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_FINGERPRINT, 1).await;
+
+        let steps = vec![
+            LlmStep::Tool { args: op_args(1) },
+            LlmStep::Tool { args: op_args(1) }, // same fingerprint → blocked
+            LlmStep::Tool { args: op_args(2) }, // new fingerprint → allowed
+            LlmStep::Text,
+        ];
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::new();
+        let orchestrator = guard_orchestrator(pool, llm, &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        assert_eq!(
+            tool.executed(),
+            2,
+            "only the two distinct-argument calls may run"
+        );
+    }
+
+    /// Scenario: alcanzado `REACT_TOOL_TOTAL_LIMIT` llamadas en el turno, se
+    /// bloquea cualquier herramienta.
+    #[tokio::test]
+    async fn guard_global_cap_blocks_any_further_tool() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_TOTAL, 2).await;
+
+        let mut steps = distinct_steps(3);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::new();
+        let orchestrator = guard_orchestrator(pool, llm, &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        assert_eq!(
+            tool.executed(),
+            2,
+            "the third call must be blocked by the per-turn global cap"
+        );
+    }
+
+    /// Scenario: el mensaje por «huella» es exacto y nombra el motivo.
+    #[tokio::test]
+    async fn guard_fingerprint_message_is_exact() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_FINGERPRINT, 2).await;
+
+        let mut steps = identical_steps(3);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::new();
+        let orchestrator = guard_orchestrator(pool, llm.clone(), &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        let expected = format!(
+            "Tool '{GUARD_KEY}' has been called 2 times with identical arguments; \
+             no further identical calls are allowed. Change the arguments or use \
+             another approach."
+        );
+        let messages = llm.tool_messages();
+        assert!(
+            messages.iter().any(|m| m == &expected),
+            "expected the exact fingerprint guard message, got: {messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| m.contains("3 times")),
+            "the guard message must not contain the legacy `3 times`"
+        );
+    }
+
+    /// Scenario: el mensaje por «fallo» es exacto y nombra el motivo.
+    #[tokio::test]
+    async fn guard_failure_message_is_exact() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_FAILURE, 3).await;
+
+        let mut steps = distinct_steps(4);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::with_outcomes(vec![false, false, false, false]);
+        let orchestrator = guard_orchestrator(pool, llm.clone(), &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        let expected = format!(
+            "Tool '{GUARD_KEY}' has failed 3 times in a row; no more retries are \
+             allowed. Inform the user and suggest alternatives."
+        );
+        let messages = llm.tool_messages();
+        assert!(
+            messages.iter().any(|m| m == &expected),
+            "expected the exact failure guard message, got: {messages:?}"
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|m| m.contains("has been called 3 times. No more retries allowed")),
+            "the guard message must not be the legacy stale text"
+        );
+    }
+
+    /// Scenario: el mensaje por «éxito» es exacto y nombra el motivo.
+    #[tokio::test]
+    async fn guard_success_message_is_exact() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_SUCCESS, 3).await;
+
+        let mut steps = distinct_steps(4);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::new();
+        let orchestrator = guard_orchestrator(pool, llm.clone(), &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        let expected = format!("Tool '{GUARD_KEY}' reached its per-turn limit of 3 calls.");
+        let messages = llm.tool_messages();
+        assert!(
+            messages.iter().any(|m| m == &expected),
+            "expected the exact success guard message, got: {messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| m.contains("3 times")),
+            "the guard message must not contain the legacy `3 times`"
+        );
+    }
+
+    /// Scenario: el mensaje por «tope global» es exacto y nombra el motivo.
+    #[tokio::test]
+    async fn guard_global_message_is_exact() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_TOTAL, 2).await;
+
+        let mut steps = distinct_steps(3);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::new();
+        let orchestrator = guard_orchestrator(pool, llm.clone(), &tool);
+
+        run_guard_turn(&orchestrator, "x").await;
+
+        let expected = "The turn reached its tool-call limit (2); no further tools will run.";
+        let messages = llm.tool_messages();
+        assert!(
+            messages.iter().any(|m| m == expected),
+            "expected the exact global-cap guard message, got: {messages:?}"
+        );
+        assert!(
+            !messages.iter().any(|m| m.contains("3 times")),
+            "the guard message must not contain the legacy `3 times`"
+        );
+    }
+
+    /// Scenario: los contadores se reinician en el turno siguiente.
+    #[tokio::test]
+    async fn guard_counters_reset_on_the_next_turn() {
+        let _capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_FINGERPRINT, 2).await;
+
+        let mut steps = identical_steps(3);
+        steps.push(LlmStep::Text); // end of turn one
+        steps.push(LlmStep::Tool { args: op_args(0) }); // turn two: same call
+        steps.push(LlmStep::Text);
+
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::new();
+        let orchestrator = guard_orchestrator(pool, llm, &tool);
+
+        run_guard_turn(&orchestrator, "turn one").await;
+        assert_eq!(
+            tool.executed(),
+            2,
+            "turn one: two identical calls run, the third is blocked"
+        );
+
+        run_guard_turn(&orchestrator, "turn two").await;
+        assert_eq!(
+            tool.executed(),
+            3,
+            "turn two: the counters must start from zero, so the call runs again"
+        );
+    }
+
+    /// Scenario: al bloquear se emite `ToolResult { success: false }` y se
+    /// registra un `warn!` con el nombre y el motivo.
+    #[tokio::test]
+    async fn guard_block_emits_failure_event_and_warns() {
+        let capture = capture_traces();
+        let pool = guard_test_pool().await;
+        set_limit(&pool, KEY_SUCCESS, 3).await;
+
+        let mut steps = distinct_steps(4);
+        steps.push(LlmStep::Text);
+        let llm = Arc::new(ScriptedLLM::new(steps));
+        let tool = GuardTool::new();
+        let orchestrator = guard_orchestrator(pool, llm, &tool);
+
+        let events = run_guard_turn(&orchestrator, "x").await;
+
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                SSEEvent::ToolResult { name, success: false } if name.as_str() == GUARD_TOOL
+            )),
+            "a blocked call must emit ToolResult success=false, got: {events:?}"
+        );
+
+        let log = capture.contents();
+        assert!(
+            log.contains(GUARD_TOOL),
+            "the warning must name the blocked tool, got: {log}"
+        );
+        assert!(
+            log.contains("guard=success"),
+            "the warning must name the guard that tripped, got: {log}"
+        );
+        assert!(
+            log.contains("ReAct tool guard tripped"),
+            "the warning must carry the guard-trip message, got: {log}"
+        );
     }
 }
