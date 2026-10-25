@@ -31,6 +31,9 @@ vi.mock("../hooks/useEvents", () => ({
   useEvents: mockUseEvents,
   useCreateEvent: vi.fn(() => ({ create: vi.fn(), loading: false })),
   useUpdateEvent: vi.fn(() => ({ update: vi.fn(), loading: false })),
+  // `CalendarView` también consume `useDeleteEvent` (change
+  // `calendar-event-delete`): el mock parcial debe exponerlo o el render falla.
+  useDeleteEvent: vi.fn(() => ({ delete: vi.fn(), loading: false })),
 }));
 
 import { CalendarView } from "../components/CalendarView";
