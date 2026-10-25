@@ -1,5 +1,6 @@
 import React, { useState, useMemo, type ReactNode } from "react";
 import {
+  App as AntdApp,
   Calendar,
   Badge,
   Select,
@@ -13,7 +14,7 @@ import { PlusOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
 import type { Dayjs } from "dayjs";
 import type { CalendarEvent } from "../types";
-import { useEvents } from "../hooks/useEvents";
+import { useEvents, useDeleteEvent } from "../hooks/useEvents";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { EventModal } from "./EventModal";
 import { EventDetail } from "./EventDetail";
@@ -37,6 +38,7 @@ interface CalendarViewProps {
 export const CalendarView: React.FC<CalendarViewProps> = ({
   onClose: _onClose,
 }) => {
+  const { message } = AntdApp.useApp();
   const [currentDate, setCurrentDate] = useState(dayjs());
   const [categoryFilter, setCategoryFilter] = useState<string | undefined>(
     undefined,
@@ -60,6 +62,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
     .format("YYYY-MM-DD");
 
   const { events, loading, error, refetch } = useEvents(monthStart, monthEnd);
+  const { delete: deleteEvent } = useDeleteEvent();
 
   const filteredEvents = useMemo(() => {
     if (!categoryFilter) return events;
@@ -145,9 +148,14 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
     refetch();
   };
 
-  const handleEventDeleted = () => {
-    setDetailOpen(false);
-    refetch();
+  const handleEventDeleted = async (id: string) => {
+    try {
+      await deleteEvent(id);
+      setDetailOpen(false);
+      refetch();
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : String(err));
+    }
   };
 
   if (error) {

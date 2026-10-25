@@ -26,20 +26,33 @@ impl CalendarTool {
             .get("start")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments("Missing start".into()))?;
-        let duration = args
-            .get("duration")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1440);
-
-        // Compute end = start + duration minutes
+        // Validate start always (it is required and marks the lower bound).
         let start_dt = DateTime::parse_from_rfc3339(start)
             .map_err(|_| ToolError::InvalidArguments("Invalid start format".into()))?
             .with_timezone(&Utc);
-        let end_dt = start_dt + Duration::minutes(duration);
-        let end = end_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
 
-        // Use start directly (no normalization needed since it's ISO 8601)
-        let events = EventsRepo::list_by_date_range(&self.db, profile_id, start, &end).await?;
+        // Bounds must be normalized to UTC: events are stored normalized to UTC
+        // with a `Z` suffix and `list_by_date_range` compares them lexicographically,
+        // so passing an offset-bearing string verbatim would yield wrong results.
+        let start_utc = start_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
+
+        // `end` (if present and valid) is the upper bound and takes precedence
+        // over `duration`. Otherwise compute end = start + duration (default 1440).
+        let end = match args.get("end").and_then(|v| v.as_str()) {
+            Some(end_str) => DateTime::parse_from_rfc3339(end_str)
+                .map_err(|_| ToolError::InvalidArguments("Invalid end format".into()))?
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(SecondsFormat::Secs, true),
+            None => {
+                let duration = args
+                    .get("duration")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(1440);
+                (start_dt + Duration::minutes(duration)).to_rfc3339_opts(SecondsFormat::Secs, true)
+            }
+        };
+
+        let events = EventsRepo::list_by_date_range(&self.db, profile_id, &start_utc, &end).await?;
 
         Ok(ToolResult {
             success: true,
@@ -276,8 +289,9 @@ impl Tool for CalendarTool {
                         "list_by_category"
                     ]
                 },
-                "title": { "type": "string", "description": "Título del evento — obligatorio en create_event" },
+                "title": { "type": "string", "description": "Título del evento — obligatorio en create_event. NO es filtro de get_events" },
                 "start": { "type": "string", "description": "ISO 8601. Inicio del evento/rango. Ej: 2026-09-26T21:00:00Z" },
+                "end": { "type": "string", "description": "ISO 8601. Fin del rango en get_events — alternativa a duration; tiene precedencia si vienen ambos" },
                 "duration": { "type": "integer", "description": "Duración en minutos. Ej: 60 = 1h, 1440 = 1 día. Opcional en get_events (default: 1440)" },
                 "id": { "type": "string", "description": "ID del evento — obligatorio en update_event y delete_event" },
                 "category": { "type": "string", "enum": ["default", "work", "personal", "health", "birthday", "holiday"] },
@@ -1018,6 +1032,257 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert_eq!(result.data["end_time"], "2026-09-27T00:30:00Z");
+        Ok(())
+    }
+
+    // ── get_events with `end` range ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_events_with_end_respects_full_range() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_, tool) = setup().await?;
+        // Evento dentro de un rango de varias semanas (fuera del primer día)
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Evento lejano",
+            "start": "2026-11-20T08:00:00Z",
+            "duration": 60,
+            "scope": "shared"
+        }))
+        .await
+        .unwrap();
+
+        // Rango con start + end (sin duration): el rango NO debe colapsarse al día por defecto
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "start": "2026-10-26T00:00:00Z",
+                "end": "2026-12-01T23:59:59Z"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "El evento del 2026-11-20 debe aparecer: el rango start..=end debe respetarse"
+        );
+        assert_eq!(events[0]["title"].as_str().unwrap(), "Evento lejano");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_events_end_takes_precedence_over_duration(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Evento más allá del `duration` indicado, pero dentro de `end`
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Dentro de end",
+            "start": "2026-11-20T08:00:00Z",
+            "duration": 60,
+            "scope": "shared"
+        }))
+        .await
+        .unwrap();
+
+        // duration corto (60 min) pero end amplio: `end` debe ganar
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "start": "2026-10-26T00:00:00Z",
+                "duration": 60,
+                "end": "2026-12-01T23:59:59Z"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "`end` tiene precedencia sobre `duration`: el evento debe aparecer"
+        );
+        assert_eq!(events[0]["title"].as_str().unwrap(), "Dentro de end");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_events_without_end_nor_duration_defaults_to_1440(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Evento dentro del primer día
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Dentro del primer día",
+            "start": "2026-10-26T10:00:00Z",
+            "duration": 60,
+            "scope": "shared"
+        }))
+        .await
+        .unwrap();
+        // Evento fuera del primer día
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Fuera del primer día",
+            "start": "2026-10-28T10:00:00Z",
+            "duration": 60,
+            "scope": "shared"
+        }))
+        .await
+        .unwrap();
+
+        // Solo `start`: el rango por defecto sigue siendo 1440 min (un día)
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "start": "2026-10-26T00:00:00Z"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "Sin `end` ni `duration` el rango por defecto debe ser 1440 min (un día)"
+        );
+        assert_eq!(
+            events[0]["title"].as_str().unwrap(),
+            "Dentro del primer día"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_events_invalid_end_returns_invalid_arguments(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "start": "2026-10-26T00:00:00Z",
+                "end": "no-es-una-fecha"
+            }))
+            .await;
+        assert!(
+            matches!(result, Err(ToolError::InvalidArguments(_))),
+            "Un `end` con formato inválido debe producir ToolError::InvalidArguments"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parameters_includes_end_field() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let params = CalendarTool::parameters(&CalendarTool::new(pool));
+        let properties = params["properties"].as_object().unwrap();
+
+        let end = properties
+            .get("end")
+            .expect("`end` debe declararse en el esquema de parameters()");
+        assert_eq!(end["type"], "string");
+        let description = end["description"]
+            .as_str()
+            .expect("`end` debe tener descripción");
+        assert!(
+            description.contains("duration"),
+            "La descripción de `end` debe explicar que es una alternativa a `duration`"
+        );
+    }
+
+    // ── get_events: normalización de límites a UTC ──────────────────────
+    //
+    // Los eventos se guardan normalizados a UTC con sufijo `Z`, y el repo compara
+    // lexicográficamente. Un `start`/`end` válido pero con offset debe normalizarse
+    // a UTC antes de llegar al repo, o la comparación de cadenas es incorrecta.
+
+    #[tokio::test]
+    async fn test_get_events_normalizes_end_with_negative_offset(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Evento: 2026-11-20T22:00:00Z .. 2026-11-20T23:00:00Z
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Tarde",
+            "start": "2026-11-20T22:00:00Z",
+            "duration": 60,
+            "scope": "shared"
+        }))
+        .await
+        .unwrap();
+
+        // end con offset negativo: "2026-11-20T20:00:00-05:00" == 2026-11-21T01:00:00Z
+        // Con comparación verbatim el evento se excluiría (23:00:00Z > 20:00:00-05:00).
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "start": "2026-11-01T00:00:00Z",
+                "end": "2026-11-20T20:00:00-05:00"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "El evento debe aparecer: un `end` con offset negativo debe normalizarse a UTC"
+        );
+        assert_eq!(events[0]["title"].as_str().unwrap(), "Tarde");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_events_normalizes_start_with_positive_offset(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        // Evento: 2026-11-21T00:30:00Z .. 2026-11-21T01:30:00Z
+        tool.execute(serde_json::json!({
+            "operation": "create_event",
+            "profile_id": "profile-1",
+            "title": "Madrugada",
+            "start": "2026-11-21T00:30:00Z",
+            "duration": 60,
+            "scope": "shared"
+        }))
+        .await
+        .unwrap();
+
+        // start con offset positivo: "2026-11-21T02:00:00+02:00" == 2026-11-21T00:00:00Z
+        // Con comparación verbatim el evento se excluiría (00:30:00Z < 02:00:00+02:00).
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "get_events",
+                "profile_id": "profile-1",
+                "start": "2026-11-21T02:00:00+02:00",
+                "end": "2026-11-22T00:00:00Z"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        let events = result.data.as_array().unwrap();
+        assert_eq!(
+            events.len(),
+            1,
+            "El evento debe aparecer: un `start` con offset positivo debe normalizarse a UTC"
+        );
+        assert_eq!(events[0]["title"].as_str().unwrap(), "Madrugada");
         Ok(())
     }
 }
