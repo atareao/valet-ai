@@ -8,12 +8,19 @@ import {
 import type { Message } from "../types";
 
 /**
- * Fase RED de `chat-cross-device-sync`.
+ * Fase RED de `chat-cross-device-sync` y de `chat-pending-flag-leak`.
  *
  * Contrato (spec `frontend`): la lista de mensajes se fusiona por **upsert de
  * id** (idempotente) y se ordena por la pareja `(created_at, id)` usando
  * **siempre la marca temporal del servidor**; un mensaje optimista permanece al
  * final hasta que llegue su fila canónica.
+ *
+ * Desde `chat-pending-flag-leak` la condición de «optimista» viaja **en el
+ * propio mensaje** (`pending?: boolean`, campo interno del cliente), no en un
+ * `Set` de identificadores aparte: `sortMessages`, `upsertMessage` y
+ * `upsertMessages` ya **no** reciben ese `Set`. Una fila canónica nunca puede
+ * conservar la marca, porque al fusionarla la escritura entrante (sin marca) la
+ * retira, y una escritura optimista sobre una fila ya canónica se descarta.
  */
 
 const msg = (
@@ -70,12 +77,12 @@ describe("upsertMessage — fusión idempotente por id", () => {
   });
 
   it("sustituye la burbuja optimista por su fila canónica conservando el id", () => {
-    const pending = new Set(["cli-1"]);
     const optimista = msg("cli-1", "2026-10-24T12:00:00.000Z", {
       content: "Hola",
+      pending: true,
     });
 
-    const conOptimista = upsertMessage([], optimista, pending);
+    const conOptimista = upsertMessage([], optimista);
     expect(conOptimista).toHaveLength(1);
 
     // Llega la fila canónica con el mismo id (el servidor respeta
@@ -88,6 +95,63 @@ describe("upsertMessage — fusión idempotente por id", () => {
     expect(canonica).toHaveLength(1);
     expect(canonica[0].id).toBe("cli-1");
     expect(canonica[0].created_at).toBe("2026-10-24T12:00:03.000Z");
+  });
+
+  it("la fila canónica retira la marca de optimista de la fila fusionada", () => {
+    // Escenario «El estado de optimista no sobrevive a la fila canónica».
+    const optimista = msg("cli-1", "2026-10-24T12:00:00.000Z", {
+      content: "Hola",
+      pending: true,
+    });
+    const conOptimista = upsertMessage([], optimista);
+    expect(conOptimista[0].pending).toBe(true);
+
+    const canonica = upsertMessage(
+      conOptimista,
+      msg("cli-1", "2026-10-24 12:00:03", { content: "Hola" }),
+    );
+
+    // La marca viaja en el mensaje: al fusionar la fila del servidor (sin
+    // marca) la fusión la retira, y la fila vuelve a la pareja `(created_at, id)`.
+    expect(canonica[0].pending).not.toBe(true);
+    expect(canonica[0].created_at).toBe("2026-10-24T12:00:03.000Z");
+  });
+
+  it("la guarda se mantiene: una escritura optimista no pisa una fila canónica", () => {
+    // design D2: si el id ya existe como fila **canónica** (sin marca) y llega
+    // una escritura optimista, la fusión la descarta en vez de sustituir la
+    // marca temporal del servidor por la del reloj del navegador.
+    const lista = upsertMessage(
+      [],
+      msg("a1", "2026-10-24 12:00:05", { role: "assistant", content: "final" }),
+    );
+
+    const resultado = upsertMessage(
+      lista,
+      msg("a1", "2000-01-01T00:00:00.000Z", {
+        role: "assistant",
+        content: "parcial",
+        pending: true,
+      }),
+    );
+
+    expect(resultado).toHaveLength(1);
+    expect(resultado[0].created_at).toBe("2026-10-24T12:00:05.000Z");
+    expect(resultado[0].content).toBe("final");
+    expect(resultado[0].pending).not.toBe(true);
+  });
+
+  it("es idempotente con la marca en el mensaje: la misma fila dos veces no cambia", () => {
+    const fila = msg("cli-1", "2026-10-24T12:00:00.000Z", {
+      content: "Hola",
+      pending: true,
+    });
+
+    const once = upsertMessage([], fila);
+    const twice = upsertMessage(once, fila);
+
+    expect(twice).toHaveLength(1);
+    expect(twice).toEqual(once);
   });
 
   it("no muta la lista de entrada", () => {
@@ -127,15 +191,13 @@ describe("upsertMessages — fusión de un lote con un solo reordenado", () => {
     expect(once[0].content).toBe("canónico");
   });
 
-  it("mantiene los mensajes pendientes al final del lote", () => {
-    const pending = new Set(["cli-1"]);
+  it("mantiene los mensajes optimistas al final del lote", () => {
     const result = upsertMessages(
       [msg("m1", "2026-10-24 10:00:01")],
       [
-        msg("cli-1", "2000-01-01T00:00:00.000Z"),
+        msg("cli-1", "2000-01-01T00:00:00.000Z", { pending: true }),
         msg("m2", "2026-10-24 10:00:02"),
       ],
-      pending,
     );
 
     expect(result.map((m) => m.id)).toEqual(["m1", "m2", "cli-1"]);
@@ -148,6 +210,41 @@ describe("upsertMessages — fusión de un lote con un solo reordenado", () => {
     upsertMessages(original, [msg("m2", "2026-10-24 10:00:02")]);
 
     expect(original).toEqual(snapshot);
+  });
+
+  it("la fila canónica de un lote retira la marca de optimista de la fila fusionada", () => {
+    // Hueco de cobertura: la ruta del historial / lotes (`upsertMessages`) debe
+    // cumplir la retirada de la marca (design D3) igual que el upsert suelto.
+    const conOptimista = [msg("cli-1", "2000-01-01T00:00:00.000Z", { content: "Hola", pending: true })];
+
+    // La fila canónica llega dentro de un lote, con el mismo id, la marca
+    // temporal del servidor y **sin** la marca de optimista.
+    const result = upsertMessages(conOptimista, [
+      msg("cli-1", "2026-10-24 12:00:03", { content: "Hola" }),
+    ]);
+
+    expect(result.filter((m) => m.id === "cli-1")).toHaveLength(1);
+    expect(result[0].created_at).toBe("2026-10-24T12:00:03.000Z");
+    expect(result[0].pending).not.toBe(true);
+  });
+
+  it("un lote con mezcla deja la lista ordenada por (created_at, id) sin marca pendiente", () => {
+    // El lote trae el canónico de la optimista `cli-1` y otro canónico normal:
+    // todas las filas quedan ordenadas por la pareja del servidor, ninguna
+    // conserva la marca.
+    const result = upsertMessages(
+      [
+        msg("m1", "2026-10-24 10:00:01"),
+        msg("cli-1", "2000-01-01T00:00:00.000Z", { content: "Hola", pending: true }),
+      ],
+      [
+        msg("cli-1", "2026-10-24 10:00:03", { content: "Hola" }),
+        msg("m2", "2026-10-24 10:00:02"),
+      ],
+    );
+
+    expect(result.map((m) => m.id)).toEqual(["m1", "m2", "cli-1"]);
+    expect(result.some((m) => m.pending === true)).toBe(false);
   });
 });
 
@@ -172,18 +269,31 @@ describe("sortMessages — orden por la pareja (created_at, id)", () => {
   });
 
   it("coloca los mensajes optimistas al final hasta que llega su fila canónica", () => {
-    const pending = new Set(["cli-1"]);
     const list = [
       // La hora local del navegador puede ser anterior a la del servidor: el
       // mensaje optimista no debe colarse al principio de la lista.
-      msg("cli-1", "2000-01-01T00:00:00.000Z"),
+      msg("cli-1", "2000-01-01T00:00:00.000Z", { pending: true }),
       msg("m1", "2026-10-24 10:00:01"),
     ];
 
-    expect(sortMessages(list, pending).map((m) => m.id)).toEqual([
-      "m1",
-      "cli-1",
+    expect(sortMessages(list).map((m) => m.id)).toEqual(["m1", "cli-1"]);
+  });
+
+  it("lee la marca de optimista del propio mensaje y la respeta al retirarla", () => {
+    // Escenario (spec): un mensaje con hora del navegador antigua y marcado como
+    // optimista va al FINAL; al retirarle la marca vuelve a su posición natural
+    // por `(created_at, id)`.
+    const conMarca = sortMessages([
+      msg("cli-1", "2000-01-01T00:00:00.000Z", { pending: true }),
+      msg("m1", "2026-10-24 10:00:01"),
     ]);
+    expect(conMarca.map((m) => m.id)).toEqual(["m1", "cli-1"]);
+
+    const sinMarca = sortMessages([
+      msg("cli-1", "2000-01-01T00:00:00.000Z"),
+      msg("m1", "2026-10-24 10:00:01"),
+    ]);
+    expect(sinMarca.map((m) => m.id)).toEqual(["cli-1", "m1"]);
   });
 
   it("mezcla ISO y crudo de SQLite por instante, no por texto", () => {

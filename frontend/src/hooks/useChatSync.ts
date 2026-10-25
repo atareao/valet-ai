@@ -12,6 +12,10 @@ import { upsertMessage, upsertMessages } from "../utils/chatMessages";
  * - fusión por **upsert de id**, idempotente, de modo que recibir el mismo
  *   mensaje por el stream del turno propio y por el bus no lo duplica;
  * - orden por `(created_at, id)` con la marca temporal del **servidor**;
+ * - la condición de **optimista** viaja en el propio mensaje (`Message.pending`,
+ *   change `chat-pending-flag-leak`): una fila canónica la retira al fusionarse
+ *   y una escritura optimista sobre una fila ya canónica se descarta, de modo
+ *   que ninguna fila del servidor queda marcada;
  * - recuperación al volver a la pestaña (relectura por `since` + reapertura) y
  *   reintento con retroceso exponencial (1 s → 30 s);
  * - un `401` dispara el evento global de sesión caducada y **no** reintenta.
@@ -46,7 +50,9 @@ export interface ChatSyncHandle {
    * `options.pending` marca la fila como **optimista** (todavía sin fila
    * canónica): se coloca al final de la lista hasta que llegue su versión del
    * servidor y, si esa versión ya está, la escritura optimista **se descarta**
-   * para no pisar lo que dijo el servidor.
+   * para no pisar lo que dijo el servidor. La marca viaja en el propio mensaje
+   * (`Message.pending`, change `chat-pending-flag-leak`), no en un estado aparte:
+   * una fila canónica nunca la conserva.
    */
   upsert: (message: Message, options?: { pending?: boolean }) => void;
   /** Inserta o sustituye varios mensajes de una vez (carga inicial). */
@@ -321,7 +327,6 @@ export interface ChatSyncOptions {
 export function useChatSync(options?: ChatSyncOptions): ChatSyncHandle {
   const [messages, setMessages] = useState<Message[]>([]);
   const [busy, setBusy] = useState(false);
-  const pendingIdsRef = useRef<Set<string>>(new Set());
   // Refs espejo de los callbacks: la suscripción vive en un `useEffect([])` y no
   // debe recrearse cuando cambie la identidad de los callbacks.
   const onCursorlessOpenRef = useRef(options?.onCursorlessOpen);
@@ -337,26 +342,11 @@ export function useChatSync(options?: ChatSyncOptions): ChatSyncHandle {
 
   const upsert = useCallback(
     (message: Message, options?: { pending?: boolean }) => {
-      const pending = options?.pending === true;
-      // ¿La fila que ya está en la lista es del servidor? Entonces una versión
-      // optimista no debe pisarla (el bus puede adelantarse al turno propio).
-      const wasCanonical = !pendingIdsRef.current.has(message.id);
-
-      if (pending) pendingIdsRef.current.add(message.id);
-      else pendingIdsRef.current.delete(message.id);
-
-      // Snapshot **antes** de encolar el updater: el updater debe ser puro. Si
-      // otra ruta mutara el ref dentro del mismo batch, leerlo en el updater
-      // —que corre después— ordenaría un mensaje optimista por la hora del
-      // navegador en vez de al final.
-      const pendingSnapshot = new Set(pendingIdsRef.current);
-
-      setMessages((prev) => {
-        if (pending && wasCanonical && prev.some((m) => m.id === message.id)) {
-          return prev;
-        }
-        return upsertMessage(prev, message, pendingSnapshot);
-      });
+      // La marca de optimista viaja en el mensaje (design D1): se adjunta aquí
+      // y la fusión se encarga de retirarla cuando llegue la fila canónica.
+      const row: Message =
+        options?.pending === true ? { ...message, pending: true } : message;
+      setMessages((prev) => upsertMessage(prev, row));
     },
     [],
   );
@@ -365,23 +355,20 @@ export function useChatSync(options?: ChatSyncOptions): ChatSyncHandle {
     // El historial puede venir vacío (recarga de un hilo sin mensajes): no hay
     // nada que fusionar y se evita un reordenado estéril.
     if (incoming.length === 0) return;
-    const pendingSnapshot = new Set(pendingIdsRef.current);
-    setMessages((prev) => upsertMessages(prev, incoming, pendingSnapshot));
+    setMessages((prev) => upsertMessages(prev, incoming));
   }, []);
 
   const remove = useCallback((id: string) => {
-    pendingIdsRef.current.delete(id);
     setMessages((prev) => prev.filter((message) => message.id !== id));
   }, []);
 
   useEffect(() => {
     const subscription = createChatEventsSubscription({
       onMessage: (message) => {
-        // Un mensaje que llega por el bus ya está persistido: deja de ser
-        // optimista aunque su id hubiera quedado pendiente.
-        pendingIdsRef.current.delete(message.id);
-        const pendingSnapshot = new Set(pendingIdsRef.current);
-        setMessages((prev) => upsertMessage(prev, message, pendingSnapshot));
+        // Un mensaje que llega por el bus ya está persistido: la fusión retira
+        // la marca de optimista si la hubiera, porque el mensaje entrante no la
+        // trae (design D1/D3).
+        setMessages((prev) => upsertMessage(prev, message));
       },
       onBusyChange: (value) => {
         setBusy(value);

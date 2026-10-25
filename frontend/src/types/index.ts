@@ -21,6 +21,12 @@ export interface Message {
    * en el servidor: la burbuja vive solo en memoria y una recarga la pierde.
    */
   interrupted?: boolean;
+  /**
+   * `true` mientras la fila es una burbuja **optimista** sin fila canónica en el
+   * servidor (change `chat-pending-flag-leak`). Es un detalle interno del
+   * cliente: NO se persiste ni se envía al servidor.
+   */
+  pending?: boolean;
 }
 
 export interface CreateMessage {

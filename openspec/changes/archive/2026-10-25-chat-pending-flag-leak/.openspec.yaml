@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-10-25
+goal: "Que una fila canónica nunca quede marcada como pendiente: la marca de
+  optimista viaja en el propio mensaje, no en un ref aparte"
