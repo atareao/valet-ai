@@ -1,0 +1,29 @@
+# Configuración de Dependabot (version updates).
+#
+# Dependabot lee este fichero **desde la rama por defecto** (`main`), por eso
+# vive aquí aunque los PRs apunten a la rama de integración.
+#
+# Las actualizaciones llegan a `development` (no a `main`) para que sigan el
+# flujo del repo: feature/dep → development → release → main.
+#
+# Nota: las *security updates* (alertas de seguridad) NO respetan
+# `target-branch`: siempre apuntan a la rama por defecto y se configuran aparte,
+# en la página de alertas de seguridad del repositorio.
+
+version: 2
+updates:
+  # Backend — Rust
+  - package-ecosystem: "cargo"
+    directory: "/"
+    target-branch: "development"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # Frontend — React + TypeScript
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    target-branch: "development"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
