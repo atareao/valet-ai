@@ -215,7 +215,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log | ⏸️ Pending |
 | `plans/PLAN-005-COMPLETED.md` | Activity Timeline & Life Journal (línea temporal de hechos) (PR #169) | ✅ Completado |
 | `plans/PLAN-006-COMPLETED.md` | `LocationWidget`: de «Guardar» a «Abrir» (change `location-widget-open-action`) | ✅ Completado |
-| `plans/PLAN-007.md` | Bitácora autónoma: la app escribe el diario por su cuenta | 🔜 Activo |
+| `plans/PLAN-007-COMPLETED.md` | Bitácora autónoma: la app escribe el diario por su cuenta (PRs #215 y #218) | ✅ Completado |
 | `plans/PLAN-008-COMPLETED.md` | Sincronización del chat entre dispositivos (change `chat-cross-device-sync`) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
