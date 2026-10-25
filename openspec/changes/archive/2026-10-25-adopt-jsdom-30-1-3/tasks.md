@@ -24,5 +24,5 @@
 
 - [x] 4.1 `openspec validate adopt-jsdom-30-1-3 --strict`.
 - [x] 4.2 `just check-spec`.
-- [ ] 4.3 PR a `development` con CI verde.
-- [ ] 4.4 Cerrar el PR de Dependabot #248 como *superseded* y archivar el change.
+- [x] 4.3 PR a `development` con CI verde.
+- [x] 4.4 Cerrar el PR de Dependabot #248 como *superseded* y archivar el change.
