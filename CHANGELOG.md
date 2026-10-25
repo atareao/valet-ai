@@ -1,4 +1,15 @@
 # Changelog
+## [0.20.0] - 2026-10-25
+
+### Documentation
+
+- *(openspec)* Propone notes-crud (interfaz de notas + update_note)
+- *(openspec)* Archiva notes-crud
+
+### Features
+
+- *(notes)* `update_note` en la tool y API `/api/notes`
+- *(frontend)* La vista de Notas
 ## [0.19.0] - 2026-10-25
 
 ### Documentation
