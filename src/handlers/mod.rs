@@ -3,6 +3,7 @@ pub mod events;
 pub mod journal;
 pub mod memories;
 pub mod messages;
+pub mod notes;
 pub mod profile;
 pub mod search;
 pub mod skills;
