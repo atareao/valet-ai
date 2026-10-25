@@ -454,6 +454,99 @@ describe("useChatSync — resincronización", () => {
   });
 });
 
+describe("useChatSync — la marca de optimista no se filtra a la fila canónica", () => {
+  beforeEach(() => {
+    stream = fakeStream();
+    fetchMock = stubFetch();
+    fetchMock.mockResolvedValue(stream.response);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("el `done` del stream no deja al asistente anterior saltando por debajo del mensaje nuevo", async () => {
+    // Regresión de `chat-pending-flag-leak` (design D5).
+    //
+    // La fila canónica del asistente llega por el bus ANTES que el `done` del
+    // stream. HOY FALLA: el `done` entra por la rama de descarte de `upsert`
+    // (`return prev`) y deja el id del asistente marcado en `pendingIdsRef` para
+    // siempre, de modo que `sortMessages` lo empuja al final en cada reordenado
+    // y el asistente anterior cae POR DEBAJO del mensaje nuevo
+    // (`["cli-1","cli-2","a1"]`). Con la marca viajando en el mensaje el residuo
+    // desaparece y el orden correcto es `["cli-1","a1","cli-2"]`.
+    const NAVEGADOR = "2000-01-01T00:00:00.000Z";
+
+    const { result } = renderHook(() => useChatSync());
+    await settle();
+
+    // 1. Burbuja optimista del usuario (hora del navegador, marcada pendiente).
+    act(() => {
+      result.current.upsert(message("cli-1", NAVEGADOR, "Hola"), {
+        pending: true,
+      });
+    });
+    expect(result.current.messages.map((m) => m.id)).toEqual(["cli-1"]);
+
+    // 2. El bus entrega el usuario canónico y, acto seguido, el asistente
+    //    canónico (marca temporal del servidor, posterior).
+    await act(async () => {
+      stream.push(
+        messageEvent(message("cli-1", "2026-10-24 10:00:05", "Hola"), "c1") +
+          messageEvent(
+            {
+              id: "a1",
+              role: "assistant",
+              content: "respuesta",
+              created_at: "2026-10-24 10:00:07",
+            },
+            "c2",
+          ),
+      );
+    });
+    await settle();
+    expect(result.current.messages.map((m) => m.id)).toEqual(["cli-1", "a1"]);
+
+    // 3. El `done` del stream llega DESPUÉS que el bus, con la hora del
+    //    navegador y marcado como pendiente (la fila canónica ya está).
+    act(() => {
+      result.current.upsert(
+        {
+          id: "a1",
+          role: "assistant",
+          content: "respuesta",
+          created_at: NAVEGADOR,
+        },
+        { pending: true },
+      );
+    });
+    await settle();
+
+    // 4. Envío del mensaje nuevo y su fila canónica por el bus.
+    act(() => {
+      result.current.upsert(message("cli-2", NAVEGADOR, "Otra vez"), {
+        pending: true,
+      });
+    });
+    await act(async () => {
+      stream.push(
+        messageEvent(message("cli-2", "2026-10-24 10:00:09", "Otra vez"), "c3"),
+      );
+    });
+    await settle();
+
+    // El asistente anterior debe quedar POR ENCIMA del mensaje nuevo.
+    expect(result.current.messages.map((m) => m.id)).toEqual([
+      "cli-1",
+      "a1",
+      "cli-2",
+    ]);
+
+    // Y ninguna fila conserva la marca de optimista tras el `done`.
+    expect(result.current.messages.some((m) => m.pending === true)).toBe(false);
+  });
+});
+
 describe("useChatSync — sesión caducada", () => {
   beforeEach(() => {
     vi.useFakeTimers();
