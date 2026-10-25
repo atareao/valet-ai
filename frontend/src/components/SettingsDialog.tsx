@@ -127,6 +127,10 @@ export interface SettingsFormValues {
   GENERATION_TIMELINE_TEMPERATURE: number;
   GENERATION_TIMELINE_REASONING: string;
   GENERATION_TIMELINE_MAX_TOKENS: number;
+  REACT_TOOL_FINGERPRINT_LIMIT: number;
+  REACT_TOOL_FAILURE_LIMIT: number;
+  REACT_TOOL_SUCCESS_LIMIT: number;
+  REACT_TOOL_TOTAL_LIMIT: number;
 }
 
 export const SettingsDialog: React.FC<SettingsDialogProps> = ({
@@ -235,6 +239,18 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           settings.GENERATION_TIMELINE_REASONING || "off",
         GENERATION_TIMELINE_MAX_TOKENS: parseInt(
           settings.GENERATION_TIMELINE_MAX_TOKENS || "2048",
+        ),
+        REACT_TOOL_FINGERPRINT_LIMIT: parseInt(
+          settings.REACT_TOOL_FINGERPRINT_LIMIT ?? "2",
+        ),
+        REACT_TOOL_FAILURE_LIMIT: parseInt(
+          settings.REACT_TOOL_FAILURE_LIMIT ?? "3",
+        ),
+        REACT_TOOL_SUCCESS_LIMIT: parseInt(
+          settings.REACT_TOOL_SUCCESS_LIMIT ?? "50",
+        ),
+        REACT_TOOL_TOTAL_LIMIT: parseInt(
+          settings.REACT_TOOL_TOTAL_LIMIT ?? "100",
         ),
       });
     }
@@ -374,6 +390,22 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         GENERATION_TIMELINE_MAX_TOKENS: (
           values.GENERATION_TIMELINE_MAX_TOKENS ??
           parseInt(settings?.GENERATION_TIMELINE_MAX_TOKENS || "2048")
+        ).toString(),
+        REACT_TOOL_FINGERPRINT_LIMIT: (
+          values.REACT_TOOL_FINGERPRINT_LIMIT ??
+          parseInt(settings?.REACT_TOOL_FINGERPRINT_LIMIT ?? "2")
+        ).toString(),
+        REACT_TOOL_FAILURE_LIMIT: (
+          values.REACT_TOOL_FAILURE_LIMIT ??
+          parseInt(settings?.REACT_TOOL_FAILURE_LIMIT ?? "3")
+        ).toString(),
+        REACT_TOOL_SUCCESS_LIMIT: (
+          values.REACT_TOOL_SUCCESS_LIMIT ??
+          parseInt(settings?.REACT_TOOL_SUCCESS_LIMIT ?? "50")
+        ).toString(),
+        REACT_TOOL_TOTAL_LIMIT: (
+          values.REACT_TOOL_TOTAL_LIMIT ??
+          parseInt(settings?.REACT_TOOL_TOTAL_LIMIT ?? "100")
         ).toString(),
       };
       await updateSettings(payload);
@@ -822,6 +854,79 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     ),
                   }))}
                 />
+                <Divider>Límites del agente</Divider>
+                <Form.Item
+                  label="REACT_TOOL_FINGERPRINT_LIMIT"
+                  name="REACT_TOOL_FINGERPRINT_LIMIT"
+                  rules={[
+                    {
+                      type: "integer",
+                      min: 1,
+                      message: "Debe ser un entero ≥ 1",
+                    },
+                  ]}
+                >
+                  <InputNumber
+                    min={1}
+                    step={1}
+                    precision={0}
+                    style={{ width: "100%" }}
+                  />
+                </Form.Item>
+                <Form.Item
+                  label="REACT_TOOL_FAILURE_LIMIT"
+                  name="REACT_TOOL_FAILURE_LIMIT"
+                  rules={[
+                    {
+                      type: "integer",
+                      min: 1,
+                      message: "Debe ser un entero ≥ 1",
+                    },
+                  ]}
+                >
+                  <InputNumber
+                    min={1}
+                    step={1}
+                    precision={0}
+                    style={{ width: "100%" }}
+                  />
+                </Form.Item>
+                <Form.Item
+                  label="REACT_TOOL_SUCCESS_LIMIT"
+                  name="REACT_TOOL_SUCCESS_LIMIT"
+                  rules={[
+                    {
+                      type: "integer",
+                      min: 1,
+                      message: "Debe ser un entero ≥ 1",
+                    },
+                  ]}
+                >
+                  <InputNumber
+                    min={1}
+                    step={1}
+                    precision={0}
+                    style={{ width: "100%" }}
+                  />
+                </Form.Item>
+                <Form.Item
+                  label="REACT_TOOL_TOTAL_LIMIT"
+                  name="REACT_TOOL_TOTAL_LIMIT"
+                  rules={[
+                    {
+                      type: "integer",
+                      min: 1,
+                      message: "Debe ser un entero ≥ 1",
+                    },
+                  ]}
+                >
+                  <InputNumber
+                    min={1}
+                    step={1}
+                    precision={0}
+                    style={{ width: "100%" }}
+                  />
+                </Form.Item>
                 <Button type="primary" htmlType="submit" loading={saving}>
                   Guardar
                 </Button>

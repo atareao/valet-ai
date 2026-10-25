@@ -77,6 +77,10 @@ const defaultSettings: Record<string, string> = {
   GENERATION_TIMELINE_TEMPERATURE: "0.2",
   GENERATION_TIMELINE_REASONING: "off",
   GENERATION_TIMELINE_MAX_TOKENS: "2048",
+  REACT_TOOL_FINGERPRINT_LIMIT: "2",
+  REACT_TOOL_FAILURE_LIMIT: "3",
+  REACT_TOOL_SUCCESS_LIMIT: "50",
+  REACT_TOOL_TOTAL_LIMIT: "100",
   ROUTER_ENABLED: "false",
   ROUTER_MODEL: "typesafe/jev-1.13",
   ROUTER_TIMEOUT_MS: "800",
@@ -2275,5 +2279,179 @@ describe("SettingsDialog", () => {
       await screen.findByRole("switch", { name: ROUTER_SWITCH }),
     ).not.toBeChecked();
     expect(mockGetSettings.mock.calls.length).toBeGreaterThan(readsBefore);
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // change `react-tool-guards` — sección «Límites del agente»
+  // Escenario: los cuatro umbrales de las guardas del bucle ReAct se
+  // exponen en el diálogo y se persisten como cualquier ajuste.
+  // ════════════════════════════════════════════════════════════════
+
+  const AGENT_LIMIT_KEYS = [
+    "REACT_TOOL_FINGERPRINT_LIMIT",
+    "REACT_TOOL_FAILURE_LIMIT",
+    "REACT_TOOL_SUCCESS_LIMIT",
+    "REACT_TOOL_TOTAL_LIMIT",
+  ] as const;
+
+  it("renders the «Límites del agente» section with the four numeric fields", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    expect(screen.getByText("Límites del agente")).toBeInTheDocument();
+    for (const key of AGENT_LIMIT_KEYS) {
+      expect(screen.getByLabelText(key)).toBeInTheDocument();
+    }
+  });
+
+  it("loads the agent limit values from the settings response", async () => {
+    const user = userEvent.setup();
+    mockSettings = {
+      ...mockSettings,
+      REACT_TOOL_FINGERPRINT_LIMIT: "5",
+      REACT_TOOL_FAILURE_LIMIT: "7",
+      REACT_TOOL_SUCCESS_LIMIT: "80",
+      REACT_TOOL_TOTAL_LIMIT: "150",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    expect(screen.getByLabelText("REACT_TOOL_FINGERPRINT_LIMIT")).toHaveValue("5");
+    expect(screen.getByLabelText("REACT_TOOL_FAILURE_LIMIT")).toHaveValue("7");
+    expect(screen.getByLabelText("REACT_TOOL_SUCCESS_LIMIT")).toHaveValue("80");
+    expect(screen.getByLabelText("REACT_TOOL_TOTAL_LIMIT")).toHaveValue("150");
+  });
+
+  it("saves the four agent limit keys via updateSettings", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    const fingerprint = screen.getByLabelText("REACT_TOOL_FINGERPRINT_LIMIT");
+    await user.clear(fingerprint);
+    await user.type(fingerprint, "4");
+
+    const failure = screen.getByLabelText("REACT_TOOL_FAILURE_LIMIT");
+    await user.clear(failure);
+    await user.type(failure, "6");
+
+    const success = screen.getByLabelText("REACT_TOOL_SUCCESS_LIMIT");
+    await user.clear(success);
+    await user.type(success, "60");
+
+    const total = screen.getByLabelText("REACT_TOOL_TOTAL_LIMIT");
+    await user.clear(total);
+    await user.type(total, "120");
+
+    const form = fingerprint.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          REACT_TOOL_FINGERPRINT_LIMIT: "4",
+          REACT_TOOL_FAILURE_LIMIT: "6",
+          REACT_TOOL_SUCCESS_LIMIT: "60",
+          REACT_TOOL_TOTAL_LIMIT: "120",
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Ajustes guardados")).toBeInTheDocument();
+  });
+
+  it("falls back to the compiled defaults when the agent limit keys are missing", async () => {
+    const user = userEvent.setup();
+    const next: Record<string, string> = { ...defaultSettings };
+    for (const key of AGENT_LIMIT_KEYS) delete next[key];
+    mockSettings = next;
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    expect(screen.getByLabelText("REACT_TOOL_FINGERPRINT_LIMIT")).toHaveValue("2");
+    expect(screen.getByLabelText("REACT_TOOL_FAILURE_LIMIT")).toHaveValue("3");
+    expect(screen.getByLabelText("REACT_TOOL_SUCCESS_LIMIT")).toHaveValue("50");
+    expect(screen.getByLabelText("REACT_TOOL_TOTAL_LIMIT")).toHaveValue("100");
+  });
+
+  // `precision={0}` + `min={1}` ya impiden que se persista un literal inválido
+  // al perder el foco (0 se ajusta a 1 y los decimales se redondean). La `rules`
+  // de entero ≥ 1 es la red que rechaza el valor cuando se envía sin que el
+  // campo pierda el foco (p. ej. con Intro): no se guarda y se muestra el error.
+  it("rechaza un decimal en los límites del agente y no guarda", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    const field = screen.getByLabelText("REACT_TOOL_SUCCESS_LIMIT");
+    await user.clear(field);
+    await user.type(field, "2.5");
+
+    // Se envía sin que el campo pierda el foco: la `rules` valida el valor
+    // crudo (2.5) en vez del redondeado que aplicaría `precision` al hacer blur.
+    const form = field.closest("form") as HTMLFormElement;
+    fireEvent.submit(form);
+
+    expect(await screen.findByText("Debe ser un entero ≥ 1")).toBeInTheDocument();
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
+  });
+
+  // El peligro real es persistir `0` (en el backend `successes >= 0` bloquea la
+  // herramienta al instante). Con `min={1}` el `0` tecleado se ajusta a `1`: el
+  // valor inválido nunca llega a guardarse.
+  it.each([
+    "REACT_TOOL_FINGERPRINT_LIMIT",
+    "REACT_TOOL_FAILURE_LIMIT",
+    "REACT_TOOL_SUCCESS_LIMIT",
+    "REACT_TOOL_TOTAL_LIMIT",
+  ])("no persiste «0» en %s: se ajusta al mínimo 1", async (key) => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    const field = screen.getByLabelText(key);
+    await user.clear(field);
+    await user.type(field, "0");
+
+    const form = field.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalled();
+    });
+    const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, string>;
+    expect(payload[key]).toBe("1");
+    expect(payload[key]).not.toBe("0");
+  });
+
+  it("guarda un valor válido (entero ≥ 1) en los límites del agente", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("Generación"));
+
+    const field = screen.getByLabelText("REACT_TOOL_SUCCESS_LIMIT");
+    await user.clear(field);
+    await user.type(field, "7");
+
+    const form = field.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ REACT_TOOL_SUCCESS_LIMIT: "7" }),
+      );
+    });
   });
 });
