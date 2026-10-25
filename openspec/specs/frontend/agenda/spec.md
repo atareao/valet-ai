@@ -7,7 +7,13 @@ Interfaz de agenda de Valet: componente de calendario con vistas de día, semana
 
 ### Requirement: Calendar view component
 
-El componente SHALL mostrar un calendario de Ant Design con vistas mensual, semanal y diaria, permitiendo crear, editar y eliminar eventos y filtrarlos por categoría.
+El componente SHALL mostrar un calendario de Ant Design con vistas mensual, semanal y diaria,
+permitiendo crear, editar y eliminar eventos y filtrarlos por categoría. El **borrado** SHALL
+ejecutarse de verdad: al confirmar en el detalle del evento, la vista SHALL llamar a
+`api.deleteEvent(id)` (a través de `useDeleteEvent`), SHALL cerrar el detalle y SHALL recargar el
+listado (`refetch`) cuando el borrado tenga éxito. Si el borrado **falla**, la vista SHALL mostrar
+un aviso de error y el modal de detalle SHALL permanecer abierto (no SHALL cerrarse ni recargarse
+fingiendo el borrado).
 
 New React component for agenda visualization using Ant Design Calendar with day/week/month views.
 
@@ -88,10 +94,18 @@ Then a modal opens with pre-filled fields
 And on save the event is updated
 
 #### Scenario: Delete event from calendar
-Given an existing event
-When the user clicks delete in the event modal
-Then a confirmation dialog appears
-And on confirm the event is removed from the calendar
+**Given** un evento existente mostrado en el detalle del calendario
+**When** el usuario pulsa «Delete» y confirma
+**Then** SHALL llamarse a `deleteEvent` con el `id` del evento
+**And** al terminar con éxito SHALL cerrarse el detalle y recargarse el listado
+**And** el evento SHALL dejar de aparecer
+
+#### Scenario: Un borrado fallido avisa y no finge el borrado
+**Given** un evento existente mostrado en el detalle
+**When** el usuario confirma el borrado y `deleteEvent` **rechaza**
+**Then** SHALL mostrarse un aviso de error
+**And** el modal de detalle SHALL permanecer abierto
+**And** NO SHALL recargarse el listado como si se hubiera borrado
 
 #### Scenario: Filter events by category
 Given the calendar has events of multiple categories

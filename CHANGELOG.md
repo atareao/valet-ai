@@ -1,4 +1,14 @@
 # Changelog
+## [0.20.1] - 2026-10-25
+
+### Bug Fixes
+
+- *(tools)* Get_events respeta `end` y normaliza el rango a UTC
+- *(frontend)* El borrado de eventos llama a la API de verdad
+
+### Documentation
+
+- *(openspec)* Archiva calendar-event-delete
 ## [0.20.0] - 2026-10-25
 
 ### Documentation
