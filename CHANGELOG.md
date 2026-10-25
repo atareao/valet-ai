@@ -1,5 +1,10 @@
 # Changelog
-## [0.18.0] - 2026-10-24
+## [0.18.1] - 2026-10-25
+
+### Bug Fixes
+
+- *(chat)* La marca de optimista deja de filtrarse a la fila canónica
+## [0.18.0] - 2026-10-25
 
 ### Bug Fixes
 
