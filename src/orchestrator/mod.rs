@@ -4,3 +4,4 @@ pub mod context_classifier;
 pub mod guardrails;
 pub mod skill_router;
 pub mod skills;
+pub mod tool_limits;
