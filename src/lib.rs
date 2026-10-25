@@ -575,6 +575,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::tasks::routes())
         // Journal (bitácora): listado, lectura, alta/reemplazo y borrado por día
         .merge(routes::journal::routes())
+        // Notes: listado, alta, lectura, actualización parcial y borrado
+        .merge(routes::notes::routes())
         // Stats
         .merge(routes::stats::routes())
         // Search
