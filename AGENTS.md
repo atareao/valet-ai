@@ -183,6 +183,8 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 
 **9. MCP no se implanta. Descartado por decisión del usuario (2026-10-18).** Se estudió el ecosistema y se llegó a proponer un plan de tres changes (añadir, habilitar/deshabilitar y borrar servidores MCP, con importación por pegado), pero el hilo queda **cerrado**: no se implementa soporte de MCP y no se reabre sin orden explícita. Lo que conviene no volver a investigar si alguien lo replantea: la imagen de producción es `alpine:3.21` con solo `ca-certificates` —nada de Node ni Python—, así que los servidores MCP por **stdio no pueden correr ahí** y una v1 tendría que ser forzosamente **HTTP remoto**; los formatos de importación de facto son `mcpServers` (Claude Desktop y Cursor), `servers` (VS Code) y `mcp` (OpenCode); el router de skills **falla abierto** ante un timeout, así que expondría de golpe las herramientas de todos los servidores conectados; y el punto de equilibrio entre una plataforma MCP genérica y seguir con integraciones nativas estaba en torno a 7-8 integraciones, con un inventario hoy de 29 herramientas y 10 skills. La alternativa que se venía usando —integración nativa por herramienta— sigue siendo la vigente.
 
+**10. El límite de llamadas a herramientas del bucle ReAct ya no es un contador único.** Decidido el 2026-10-25 (change `react-tool-guards`, archivado). El antiguo `MAX_TOOL_RETRIES = 5` por nombre de herramienta era **ciego a los argumentos y al resultado**: no distinguía el *progreso* (marcar 10 correos distintos) del *bucle* (la misma llamada reintentada), así que cortaba trabajo legítimo. Se sustituye por **tres guardas ortogonales** —huella de llamada idéntica, presupuesto por `tool::operation` (techo alto de éxitos / umbral bajo de fallos **consecutivos**) y tope global del turno— con sus umbrales en `settings` (`REACT_TOOL_FINGERPRINT_LIMIT`=2, `REACT_TOOL_FAILURE_LIMIT`=3, `REACT_TOOL_SUCCESS_LIMIT`=50, `REACT_TOOL_TOTAL_LIMIT`=100), editables en Ajustes y leídos **en cada turno**. Subir el número a secas se descartó: con la clave antigua un bucle real quemaba el presupuesto y todo el corte recaía en `max_iterations`. No se reabre salvo que aparezca un patrón real que las tres capas no cubran.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
@@ -215,7 +217,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log | ⏸️ Pending |
 | `plans/PLAN-005-COMPLETED.md` | Activity Timeline & Life Journal (línea temporal de hechos) (PR #169) | ✅ Completado |
 | `plans/PLAN-006-COMPLETED.md` | `LocationWidget`: de «Guardar» a «Abrir» (change `location-widget-open-action`) | ✅ Completado |
-| `plans/PLAN-007.md` | Bitácora autónoma: la app escribe el diario por su cuenta | 🔜 Activo |
+| `plans/PLAN-007-COMPLETED.md` | Bitácora autónoma: la app escribe el diario por su cuenta (PRs #215 y #218) | ✅ Completado |
 | `plans/PLAN-008-COMPLETED.md` | Sincronización del chat entre dispositivos (change `chat-cross-device-sync`) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si

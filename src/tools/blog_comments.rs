@@ -666,8 +666,6 @@ mod tests {
     use serial_test::serial;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use sqlx::SqlitePool;
-    use std::cell::RefCell;
-    use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use wiremock::matchers::{body_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1038,89 +1036,7 @@ mod tests {
     // 4.4 — registro de traza (captura con un suscriptor global y buffer por hilo)
     // -----------------------------------------------------------------------
 
-    thread_local! {
-        /// Buffer del hilo actual al que el suscriptor global vuelca los registros
-        /// mientras un guardián de captura está activo.
-        static ACTIVE_CAPTURE: RefCell<Option<Arc<Mutex<Vec<u8>>>>> = const { RefCell::new(None) };
-    }
-
-    /// `MakeWriter` que crea un escritor que enruta cada registro al buffer del
-    /// **hilo** que lo emite.
-    struct ThreadWriters;
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ThreadWriters {
-        type Writer = ThreadWriter;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            ThreadWriter
-        }
-    }
-
-    /// Escritor de un registro: lo vuelca al buffer del hilo emisor, si hay uno
-    /// activo. Con un buffer por hilo, tests concurrentes no se pisan.
-    struct ThreadWriter;
-
-    impl std::io::Write for ThreadWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            ACTIVE_CAPTURE.with(|cell| {
-                if let Some(shared) = cell.borrow().as_ref() {
-                    shared.lock().unwrap().extend_from_slice(buf);
-                }
-            });
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// Guardián de captura: activa el buffer del hilo actual y lo desactiva al
-    /// caer. Expone los registros capturados por el hilo.
-    struct CaptureGuard {
-        buffer: Arc<Mutex<Vec<u8>>>,
-    }
-
-    impl CaptureGuard {
-        fn contents(&self) -> String {
-            String::from_utf8_lossy(&self.buffer.lock().unwrap()).into_owned()
-        }
-    }
-
-    impl Drop for CaptureGuard {
-        fn drop(&mut self) {
-            ACTIVE_CAPTURE.with(|cell| *cell.borrow_mut() = None);
-        }
-    }
-
-    /// Activa la captura de trazas del hilo actual y devuelve el guardián.
-    ///
-    /// El suscriptor es **global** y se instala una sola vez: `set_global_default`
-    /// reconstruye la caché de interés de `tracing`, mientras que un suscriptor
-    /// por hilo (`set_default`) **no** lo hace y un `callsite` visitado antes por
-    /// otro test sin suscriptor quedaría cacheado como «nunca», dejando el buffer
-    /// vacío de forma intermitente. El `MakeWriter` enruta cada registro al
-    /// buffer del hilo emisor, así que la captura es determinista incluso con
-    /// tests en paralelo.
-    fn capture_traces() -> CaptureGuard {
-        use std::sync::Once;
-
-        static ONCE: Once = Once::new();
-        ONCE.call_once(|| {
-            let subscriber = tracing_subscriber::fmt()
-                .with_writer(ThreadWriters)
-                .with_ansi(false)
-                .with_env_filter(tracing_subscriber::EnvFilter::new("valet=trace"))
-                .finish();
-            // Si otro suscriptor global existiera, la captura no aplicaría; en el
-            // binario de test de la librería no hay ninguno.
-            let _ = tracing::subscriber::set_global_default(subscriber);
-        });
-
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-        ACTIVE_CAPTURE.with(|cell| *cell.borrow_mut() = Some(buffer.clone()));
-        CaptureGuard { buffer }
-    }
+    use crate::test_support::capture_traces;
 
     /// Scenario: el registro de un éxito lleva los identificadores y la latencia,
     /// pero **no** el contenido de la respuesta.
