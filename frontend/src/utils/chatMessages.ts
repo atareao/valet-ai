@@ -9,6 +9,10 @@ import { parseSqliteTimestamp } from "./sqliteTimestamp";
  * (`GET /api/chat/events`). Como el evento canónico es la fila persistida
  * (design D2), la fusión es un **upsert por id** y el orden relativo entre
  * ambas fuentes deja de importar: el resultado converge.
+ *
+ * La condición de «optimista» viaja **en el propio mensaje** (`Message.pending`,
+ * change `chat-pending-flag-leak`), no en un `Set` de identificadores aparte:
+ * así una fila canónica nunca puede conservar la marca (design D1).
  */
 
 /**
@@ -48,15 +52,13 @@ function instantOf(message: Message): number {
  * sobre la columna. Un mensaje **pendiente** (optimista, sin fila canónica
  * todavía) va al final de la lista hasta que su fila llegue y lo sustituya: su
  * marca temporal es la del reloj del navegador y no debe colocarlo en medio del
- * historial.
+ * historial. La marca viaja en el propio mensaje (`Message.pending`), no en un
+ * `Set` de identificadores aparte (design D1).
  */
-export function sortMessages(
-  messages: readonly Message[],
-  pendingIds: ReadonlySet<string> = new Set(),
-): Message[] {
+export function sortMessages(messages: readonly Message[]): Message[] {
   return [...messages].sort((a, b) => {
-    const aPending = pendingIds.has(a.id);
-    const bPending = pendingIds.has(b.id);
+    const aPending = a.pending === true;
+    const bPending = b.pending === true;
     if (aPending !== bPending) return aPending ? 1 : -1;
 
     const diff = instantOf(a) - instantOf(b);
@@ -78,11 +80,16 @@ export function sortMessages(
  * La fusión es **idempotente** —la misma fila dos veces deja la lista igual—,
  * así que recibir un mensaje por el stream del turno propio y por el bus de
  * eventos no lo duplica.
+ *
+ * La condición de «optimista» viaja en el propio mensaje (`Message.pending`,
+ * design D1): una escritura optimista (`pending: true`) no pisa una fila
+ * canónica ya recibida (design D2) y una fila canónica (sin la marca) **retira**
+ * la marca de una optimista (design D3), de modo que ninguna fila del servidor
+ * la conserva.
  */
 export function upsertMessages(
   current: readonly Message[],
   incoming: readonly Message[],
-  pendingIds: ReadonlySet<string> = new Set(),
 ): Message[] {
   const byId = new Map<string, Message>(
     current.map((message) => [message.id, message]),
@@ -91,13 +98,25 @@ export function upsertMessages(
   for (const message of incoming) {
     const normalized = normalizeMessage(message);
     const existing = byId.get(normalized.id);
-    byId.set(
-      normalized.id,
-      existing ? { ...existing, ...normalized } : normalized,
-    );
+
+    // D2: una escritura optimista no pisa una fila canónica ya recibida.
+    // Se descarta la entrante y la fila del servidor se conserva intacta.
+    if (normalized.pending === true && existing && existing.pending !== true) {
+      continue;
+    }
+
+    if (!existing) {
+      byId.set(normalized.id, normalized);
+      continue;
+    }
+
+    const merged: Message = { ...existing, ...normalized };
+    // D3: una fila canónica (sin la marca) retira la marca de una optimista.
+    if (normalized.pending !== true) delete merged.pending;
+    byId.set(normalized.id, merged);
   }
 
-  return sortMessages([...byId.values()], pendingIds);
+  return sortMessages([...byId.values()]);
 }
 
 /**
@@ -107,7 +126,6 @@ export function upsertMessages(
 export function upsertMessage(
   current: readonly Message[],
   incoming: Message,
-  pendingIds: ReadonlySet<string> = new Set(),
 ): Message[] {
-  return upsertMessages(current, [incoming], pendingIds);
+  return upsertMessages(current, [incoming]);
 }
