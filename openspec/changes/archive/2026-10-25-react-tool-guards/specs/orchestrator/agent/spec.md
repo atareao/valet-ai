@@ -15,8 +15,9 @@ ortogonales** en lugar de un contador único por nombre de herramienta, de modo 
 (muchas llamadas con argumentos distintos) no se confunda con un **bucle** (la misma llamada
 repetida o un fallo repetido). Los umbrales SHALL leerse de `settings` **en cada turno**
 (`REACT_TOOL_FINGERPRINT_LIMIT` default `2`, `REACT_TOOL_FAILURE_LIMIT` default `3`,
-`REACT_TOOL_SUCCESS_LIMIT` default `50`, `REACT_TOOL_TOTAL_LIMIT` default `100`), cayendo al default
-con un `warn!` si la clave falta o no es parseable. Los contadores SHALL vivir en memoria y
+`REACT_TOOL_SUCCESS_LIMIT` default `50`, `REACT_TOOL_TOTAL_LIMIT` default `100`), cayendo al default en silencio si la clave
+**falta**, y al default con un `warn!` si el valor **no es parseable** (mismo contrato que los
+`GENERATION_*`). Los contadores SHALL vivir en memoria y
 reiniciarse en cada turno. Las tres guardas son:
 
 1. **Huella** — la repetición de la **misma** llamada (mismo nombre de tool, misma `operation` y

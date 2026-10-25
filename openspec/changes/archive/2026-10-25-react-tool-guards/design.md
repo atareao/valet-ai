@@ -51,8 +51,9 @@ Problema: la clave no mira argumentos ni resultado, así que «progreso» y «bu
 - Módulo nuevo `src/orchestrator/tool_limits.rs`, patrón `src/generation.rs`:
   - `struct ToolLimits { fingerprint, failure, success, total: usize }` y
     `read_tool_limits(pool) -> ToolLimits`.
-  - Lee las cuatro claves `REACT_TOOL_*` **en cada turno**; clave ausente o no parseable →
-    default + `tracing::warn!`.
+  - Lee las cuatro claves `REACT_TOOL_*` **en cada turno**; una clave **ausente** cae al default en
+    silencio, y un valor **no parseable** (o un error de lectura de la BD) cae al default con un
+    `tracing::warn!` — el mismo contrato que `src/generation.rs`.
 - No se cachea: mismo contrato que los `GENERATION_*` (editar en la UI y que surta efecto sin
   reiniciar).
 
