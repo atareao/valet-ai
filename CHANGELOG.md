@@ -1,4 +1,16 @@
 # Changelog
+## [0.19.0] - 2026-10-25
+
+### Documentation
+
+- *(plans)* Cierra el PLAN-007 (bitácora autónoma)
+- *(openspec)* Propone react-tool-guards (tres guardas del bucle ReAct)
+- *(openspec)* Archiva react-tool-guards
+
+### Features
+
+- *(orchestrator)* Tres guardas para las llamadas a herramientas del bucle ReAct
+- *(frontend)* Los límites del agente, en Ajustes
 ## [0.18.2] - 2026-10-25
 
 ### Documentation
