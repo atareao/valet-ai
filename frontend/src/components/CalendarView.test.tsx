@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App as AntdApp } from "antd";
 import type { ReactNode } from "react";
@@ -143,5 +143,130 @@ describe("CalendarView — borrado de eventos", () => {
     expect(
       within(screen.getByRole("dialog")).getByText("Reunión"),
     ).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Change `calendar-range-boundaries` — el rango consultado se envía en hora
+// local (RFC 3339 con offset) y como intervalo semiabierto. El fallo original:
+// `end` se formateaba como `YYYY-MM-DD` y, cuando el último día del mes caía en
+// sábado (octubre de 2026), todo evento que **terminaba** ese día desaparecía
+// de la rejilla porque el backend comparaba las cadenas como texto.
+// ---------------------------------------------------------------------------
+
+/** RFC 3339 con offset de zona (`+HH:MM` o `-HH:MM`), nunca una fecha suelta. */
+const RFC3339_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/;
+
+/**
+ * Devuelve los dos límites que la vista pasa a `useEvents`. Se aserta en
+ * `api.listEvents` porque es el borde observable: `useEvents` reenvía sus
+ * argumentos tal cual (`useEvents(start, end)` → `api.listEvents(start, end)`),
+ * así que equivale a observar lo que recibe el hook sin mockearlo.
+ */
+const requestedRange = (): [string, string] => {
+  const call = mockApi.listEvents.mock.calls[0] as [string, string] | undefined;
+  if (!call) throw new Error("CalendarView no ha consultado los eventos");
+  return call;
+};
+
+describe("CalendarView — límites del rango consultado", () => {
+  it("envía los dos límites como RFC 3339 con el offset local, no como YYYY-MM-DD", async () => {
+    mockApi.listEvents.mockResolvedValue([]);
+
+    render(<CalendarView />, { wrapper: AppWrapper });
+
+    await waitFor(() => {
+      expect(mockApi.listEvents).toHaveBeenCalledTimes(1);
+    });
+
+    const [start, end] = requestedRange();
+
+    expect(start).toMatch(RFC3339_WITH_OFFSET);
+    expect(end).toMatch(RFC3339_WITH_OFFSET);
+    // El formato viejo (fecha suelta) no SHALL volver: el offset es obligatorio.
+    expect(start).not.toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(end).not.toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Tampoco se fabrica un `23:59:59` (perdería el último segundo del día).
+    expect(dayjs(end).format("HH:mm:ss")).toBe("00:00:00");
+  });
+
+  it("usa un intervalo semiabierto: el extremo superior es el inicio del día siguiente al último visible", async () => {
+    mockApi.listEvents.mockResolvedValue([]);
+
+    render(<CalendarView />, { wrapper: AppWrapper });
+
+    await waitFor(() => {
+      expect(mockApi.listEvents).toHaveBeenCalledTimes(1);
+    });
+
+    const [start, end] = requestedRange();
+
+    // Los valores esperados se recalculan con `dayjs` (la misma librería y la
+    // misma lógica de calendario que la vista) en lugar de fijar una fecha:
+    // `CalendarView` arranca con `useState(dayjs())`, así que el mes visible es
+    // «ahora». Fijarlo con temporizadores falsos haría frágil toda la suite
+    // (los tests de borrado usan `userEvent`); la invariante que se aserta
+    // —inicio del primer día visible / inicio del día siguiente al último— se
+    // cumple sea cual sea el mes en que se ejecuten las pruebas.
+    const now = dayjs();
+    const firstVisibleDay = now.startOf("month").startOf("week").startOf("day");
+    const lastVisibleDay = now.endOf("month").endOf("week").startOf("day");
+
+    expect(start).toBe(firstVisibleDay.format());
+    expect(end).toBe(lastVisibleDay.add(1, "day").format());
+
+    // Semiabierto y cubriendo el último día del mes visible: el inicio de ese
+    // día cae estrictamente dentro del rango pedido, así que ningún evento de
+    // ese día puede quedar fuera por el borde superior.
+    const lastDayOfMonth = now.endOf("month").startOf("day");
+    expect(dayjs(start).isBefore(lastDayOfMonth)).toBe(true);
+    expect(dayjs(end).isAfter(lastDayOfMonth)).toBe(true);
+  });
+
+  describe("regresión de octubre de 2026 (el día 31 cae en sábado)", () => {
+    // Solo se falsea `Date`: el mes visible se fija con `useState(dayjs())`, así
+    // que congelar el reloj basta para que la vista arranque en octubre de 2026.
+    // Los temporizadores se dejan reales para no romper `waitFor`/`userEvent`
+    // (falsearlos obligaría a `advanceTimers` y colgaría los tests de borrado).
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(2026, 9, 15, 12, 0, 0));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("el extremo superior es posterior al inicio del 31 de octubre y el evento de ese día aparece en la rejilla", async () => {
+      const oct31Start = dayjs("2026-10-31T09:00:00");
+      mockApi.listEvents.mockResolvedValue([
+        event({
+          id: "ev-oct31",
+          title: "Rodaje cómodo — 8 km",
+          start_time: oct31Start.format("YYYY-MM-DDTHH:mm:ss"),
+          end_time: oct31Start.add(1, "hour").format("YYYY-MM-DDTHH:mm:ss"),
+        }),
+      ]);
+
+      render(<CalendarView />, { wrapper: AppWrapper });
+
+      // Se vacía la cola de microtasks con `act` en lugar de `waitFor`: con
+      // `Date` falseado el reloj no avanza y `waitFor` no podría caducar.
+      await act(async () => {});
+
+      const [start, end] = requestedRange();
+      expect(start).toMatch(RFC3339_WITH_OFFSET);
+      expect(end).toMatch(RFC3339_WITH_OFFSET);
+
+      // Regresión: con el código viejo `end` era "2026-10-31" (fecha suelta) y
+      // el backend descartaba todo evento que terminase ese día.
+      expect(end).not.toBe("2026-10-31");
+      expect(dayjs(end).isAfter(dayjs("2026-10-31T00:00:00"))).toBe(true);
+      // Exactamente el inicio del día siguiente al último día visible.
+      expect(dayjs(end).isSame(dayjs("2026-11-01T00:00:00"))).toBe(true);
+
+      // Y el evento del 31 sigue apareciendo en la celda del calendario.
+      expect(screen.getByText("Rodaje cómodo — 8 km")).toBeInTheDocument();
+    });
   });
 });

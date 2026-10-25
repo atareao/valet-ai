@@ -204,3 +204,172 @@ async fn test_delete_event_not_found() {
 
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+// ── calendar-range-boundaries ──────────────────────────────────────────
+
+#[tokio::test]
+async fn test_list_events_bare_date_covers_last_day() {
+    // Regression: two events on the last day of a bare-date range must appear.
+    let app = TestApp::new_empty().await;
+
+    let create_resp = app
+        .post("/api/events")
+        .json(&serde_json::json!({
+            "title": "Rodaje cómodo",
+            "start_time": "2026-10-31T08:00:00Z",
+            "end_time": "2026-10-31T09:00:00Z"
+        }))
+        .send()
+        .await;
+    assert_eq!(create_resp.status(), StatusCode::CREATED);
+
+    let resp = app.get("/api/events?start=2026-09-27&end=2026-10-31").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<serde_json::Value>().await;
+    let titles: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["title"].as_str())
+        .collect();
+    assert!(
+        titles.contains(&"Rodaje cómodo"),
+        "the event ending on 2026-10-31 must be in the range, got {titles:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_list_events_unparseable_bound_returns_422() {
+    let app = TestApp::new_empty().await;
+
+    let resp = app
+        .get("/api/events?start=2026-09-25&end=no-es-una-fecha")
+        .await;
+
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn test_list_events_offset_bound_matches_instant() {
+    let app = TestApp::new_empty().await;
+
+    let create_resp = app
+        .post("/api/events")
+        .json(&serde_json::json!({
+            "title": "Con offset",
+            "start_time": "2026-10-31T08:00:00Z",
+            "end_time": "2026-10-31T09:00:00Z"
+        }))
+        .send()
+        .await;
+    assert_eq!(create_resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .get("/api/events?start=2026-10-31T00:00:00%2B02:00&end=2026-10-31T23:59:59%2B01:00")
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<serde_json::Value>().await;
+    let titles: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["title"].as_str())
+        .collect();
+    assert!(titles.contains(&"Con offset"));
+}
+
+#[tokio::test]
+async fn test_list_events_partial_overlap() {
+    let app = TestApp::new_empty().await;
+
+    let create_resp = app
+        .post("/api/events")
+        .json(&serde_json::json!({
+            "title": "Solape",
+            "start_time": "2026-09-26T23:00:00Z",
+            "end_time": "2026-09-27T01:00:00Z"
+        }))
+        .send()
+        .await;
+    assert_eq!(create_resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .get("/api/events?start=2026-09-27T00:00:00Z&end=2026-09-28T00:00:00Z")
+        .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<serde_json::Value>().await;
+    let titles: Vec<&str> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["title"].as_str())
+        .collect();
+    assert!(titles.contains(&"Solape"));
+}
+
+#[tokio::test]
+async fn test_create_event_normalizes_instant_to_utc() {
+    let app = TestApp::new_empty().await;
+
+    let resp = app
+        .post("/api/events")
+        .json(&serde_json::json!({
+            "title": "Normalizado",
+            "start_time": "2026-10-06T19:00:00+02:00",
+            "end_time": "2026-10-06T20:00:00+02:00"
+        }))
+        .send()
+        .await;
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = resp.json::<serde_json::Value>().await;
+    assert_eq!(body["start_time"], "2026-10-06T17:00:00Z");
+    assert_eq!(body["end_time"], "2026-10-06T18:00:00Z");
+}
+
+#[tokio::test]
+async fn test_create_event_unparseable_start_returns_422() {
+    let app = TestApp::new_empty().await;
+
+    let resp = app
+        .post("/api/events")
+        .json(&serde_json::json!({
+            "title": "Mala fecha",
+            "start_time": "no-es-una-fecha",
+            "end_time": "2026-10-06T18:00:00Z"
+        }))
+        .send()
+        .await;
+
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn test_update_event_normalizes_instant_to_utc() {
+    let app = TestApp::new_empty().await;
+
+    let create_resp = app
+        .post("/api/events")
+        .json(&serde_json::json!({
+            "title": "Original",
+            "start_time": "2026-10-06T10:00:00Z",
+            "end_time": "2026-10-06T11:00:00Z"
+        }))
+        .send()
+        .await;
+    assert_eq!(create_resp.status(), StatusCode::CREATED);
+    let created = create_resp.json::<serde_json::Value>().await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .put(&format!("/api/events/{id}"))
+        .json(&serde_json::json!({
+            "start_time": "2026-10-06T19:00:00+02:00"
+        }))
+        .send()
+        .await;
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<serde_json::Value>().await;
+    assert_eq!(body["start_time"], "2026-10-06T17:00:00Z");
+}

@@ -1,6 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -8,6 +9,17 @@ use crate::db::repos::events::EventsRepo;
 use crate::db::repos::profiles::ProfilesRepo;
 use crate::errors::AppError;
 use crate::AppState;
+
+/// Normalize an RFC 3339 instant to canonical UTC (`...Z`).
+///
+/// Returns `422 Unprocessable Entity` when the value is not RFC 3339.
+fn normalize_rfc3339(raw: &str, field: &str) -> Result<String, AppError> {
+    let dt = DateTime::parse_from_rfc3339(raw)
+        .map_err(|_| AppError::UnprocessableEntity(format!("Invalid {field}: must be RFC 3339")))?;
+    Ok(dt
+        .with_timezone(&Utc)
+        .to_rfc3339_opts(SecondsFormat::Secs, true))
+}
 
 #[derive(Debug, Deserialize)]
 pub struct CreateEventRequest {
@@ -46,15 +58,22 @@ pub async fn list_events(
     State(state): State<AppState>,
     Query(range): Query<DateRange>,
 ) -> Result<Json<Vec<crate::db::repos::events::Event>>, AppError> {
-    let start = range.start.filter(|s| !s.is_empty()).ok_or_else(|| {
+    let start_raw = range.start.filter(|s| !s.is_empty()).ok_or_else(|| {
         AppError::UnprocessableEntity("Missing required query parameter: start".into())
     })?;
-    let end = range.end.filter(|s| !s.is_empty()).ok_or_else(|| {
+    let end_raw = range.end.filter(|s| !s.is_empty()).ok_or_else(|| {
         AppError::UnprocessableEntity("Missing required query parameter: end".into())
     })?;
 
+    let start =
+        crate::db::repos::events::parse_range_bound(&start_raw, false).ok_or_else(|| {
+            AppError::UnprocessableEntity(format!("Invalid start bound: {start_raw}"))
+        })?;
+    let end = crate::db::repos::events::parse_range_bound(&end_raw, true)
+        .ok_or_else(|| AppError::UnprocessableEntity(format!("Invalid end bound: {end_raw}")))?;
+
     let profile = ProfilesRepo::get_or_create(&state.db).await?;
-    let events = EventsRepo::list_by_date_range(&state.db, &profile.id, &start, &end).await?;
+    let events = EventsRepo::list_by_date_range(&state.db, &profile.id, start, end).await?;
     Ok(Json(events))
 }
 
@@ -62,6 +81,10 @@ pub async fn create_event(
     State(state): State<AppState>,
     Json(payload): Json<CreateEventRequest>,
 ) -> Result<(StatusCode, Json<crate::db::repos::events::Event>), AppError> {
+    // Normalize both instants to canonical UTC and reject non-RFC 3339 input.
+    let start_time = normalize_rfc3339(&payload.start_time, "start_time")?;
+    let end_time = normalize_rfc3339(&payload.end_time, "end_time")?;
+
     let profile = ProfilesRepo::get_or_create(&state.db).await?;
     let now = chrono::Utc::now().to_rfc3339();
     let event = crate::db::repos::events::Event {
@@ -69,8 +92,8 @@ pub async fn create_event(
         profile_id: profile.id,
         title: payload.title,
         description: payload.description,
-        start_time: payload.start_time,
-        end_time: payload.end_time,
+        start_time,
+        end_time,
         location: payload.location,
         scope: payload.scope.unwrap_or_else(|| "personal".to_string()),
         category: payload.category.unwrap_or_else(|| "default".to_string()),
@@ -93,6 +116,18 @@ pub async fn update_event(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Event {} not found", id)))?;
 
+    // Normalize present instants to canonical UTC; reject non-RFC 3339 input.
+    let start_time = payload
+        .start_time
+        .as_deref()
+        .map(|value| normalize_rfc3339(value, "start_time"))
+        .transpose()?;
+    let end_time = payload
+        .end_time
+        .as_deref()
+        .map(|value| normalize_rfc3339(value, "end_time"))
+        .transpose()?;
+
     EventsRepo::update(
         &state.db,
         &id,
@@ -103,8 +138,8 @@ pub async fn update_event(
         payload.all_day,
         payload.rrule.as_deref(),
         payload.reminder_minutes_before,
-        payload.start_time.as_deref(),
-        payload.end_time.as_deref(),
+        start_time.as_deref(),
+        end_time.as_deref(),
     )
     .await?;
 

@@ -15,6 +15,15 @@ listado (`refetch`) cuando el borrado tenga éxito. Si el borrado **falla**, la 
 un aviso de error y el modal de detalle SHALL permanecer abierto (no SHALL cerrarse ni recargarse
 fingiendo el borrado).
 
+El **rango consultado** SHALL cubrir el rango visible de la cuadrícula mensual y SHALL enviarse en
+**hora local** del navegador: la vista SHALL calcular los límites con `dayjs` y SHALL pasarlos a
+`useEvents` como RFC 3339 con el offset local (`format()`), formando un intervalo **semiabierto**
+que va desde el inicio del primer día visible hasta el **inicio del día siguiente** al último día
+visible. El rango SHALL incluir el último día del mes visible, con independencia de en qué día de la
+semana caiga. (La vista consulta siempre la cuadrícula mensual completa; en las vistas semanal,
+diaria y anual ese rango es un superconjunto o subconjunto del rango visible, lo cual es aceptable
+porque el backend filtra por solape.)
+
 New React component for agenda visualization using Ant Design Calendar with day/week/month views.
 
 **Contracts:**
@@ -23,15 +32,19 @@ New React component for agenda visualization using Ant Design Calendar with day/
 // Types
 interface CalendarEvent {
   id: string;
+  profile_id: string;
   title: string;
   description?: string;
-  start: string;          // ISO 8601
-  end: string;
+  start_time: string;     // ISO 8601
+  end_time: string;
   location?: string;
   scope: 'shared' | 'personal';
   category: 'default' | 'work' | 'personal' | 'health' | 'birthday' | 'holiday';
-  allDay: boolean;
+  all_day: boolean;
   rrule?: string;
+  reminder_minutes_before?: number;
+  created_at: string;
+  updated_at: string;
 }
 
 // Category color mapping
@@ -45,10 +58,11 @@ const CATEGORY_COLORS: Record<string, string> = {
 };
 
 // Hooks
-function useEvents(dateRange: [string, string]): {
+// start/end: RFC 3339 con el offset local, intervalo semiabierto [start, end)
+function useEvents(start: string, end: string): {
   events: CalendarEvent[];
   loading: boolean;
-  error: Error | null;
+  error: string | null;
   refetch: () => void;
 }
 
@@ -58,7 +72,7 @@ function useCreateEvent(): {
 }
 
 function useUpdateEvent(): {
-  update: (id: string, changes: Partial<CalendarEvent>) => Promise<void>;
+  update: (id: string, changes: Partial<CalendarEvent>) => Promise<CalendarEvent>;
   loading: boolean;
 }
 
@@ -106,6 +120,16 @@ And on save the event is updated
 **Then** SHALL mostrarse un aviso de error
 **And** el modal de detalle SHALL permanecer abierto
 **And** NO SHALL recargarse el listado como si se hubiera borrado
+
+#### Scenario: El rango se envía en hora local
+**When** el calendario consulta los eventos del mes visible
+**Then** los dos límites pasados a `useEvents` SHALL ser RFC 3339 con offset (`+HH:MM` o `-HH:MM`), no fechas sueltas `YYYY-MM-DD`
+
+#### Scenario: El rango cubre el último día del mes visible
+**Given** el mes visible es octubre de 2026, cuyo último día (31) cae en sábado
+**When** el calendario consulta los eventos
+**Then** el límite superior SHALL ser posterior al inicio del 31 de octubre de 2026 en hora local
+**And** un evento del 31 de octubre de 2026 SHALL aparecer en la rejilla
 
 #### Scenario: Filter events by category
 Given the calendar has events of multiple categories
