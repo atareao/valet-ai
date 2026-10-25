@@ -7,6 +7,7 @@ import {
   BarChartOutlined,
   BellOutlined,
   BookOutlined,
+  FileTextOutlined,
   LogoutOutlined,
 } from "@ant-design/icons";
 import { ChatView } from "./ChatView";
@@ -38,6 +39,9 @@ const NotificationsView = lazy(() =>
 );
 const JournalView = lazy(() =>
   import("./JournalView").then((m) => ({ default: m.JournalView })),
+);
+const NotesView = lazy(() =>
+  import("./NotesView").then((m) => ({ default: m.NotesView })),
 );
 
 // Fallback de carga de las vistas diferidas. antd ya está cargado en este punto
@@ -89,6 +93,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const [statsOpenKey, setStatsOpenKey] = useState(0);
   const [notificationsVisible, setNotificationsVisible] = useState(false);
   const [journalVisible, setJournalVisible] = useState(false);
+  const [notesVisible, setNotesVisible] = useState(false);
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -138,6 +143,14 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             aria-label="Bitácora"
             title="Bitácora"
             onClick={() => setJournalVisible(true)}
+            style={{ color: "rgba(255,255,255,0.65)" }}
+          />
+          <Button
+            type="text"
+            icon={<FileTextOutlined />}
+            aria-label="Notas"
+            title="Notas"
+            onClick={() => setNotesVisible(true)}
             style={{ color: "rgba(255,255,255,0.65)" }}
           />
           <Button
@@ -248,6 +261,17 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
       >
         <Suspense fallback={lazyViewFallback}>
           <JournalView />
+        </Suspense>
+      </Modal>
+      <Modal
+        title="📝 Notas"
+        open={notesVisible}
+        onCancel={() => setNotesVisible(false)}
+        footer={null}
+        width={1000}
+      >
+        <Suspense fallback={lazyViewFallback}>
+          <NotesView />
         </Suspense>
       </Modal>
       {settingsLoaded && (

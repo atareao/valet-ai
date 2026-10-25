@@ -8,6 +8,9 @@ import type {
   LastApiCall,
   MemoryStats,
   Message,
+  Note,
+  NoteCategory,
+  NoteInput,
   Notification,
   PaginatedResponse,
   Profile,
@@ -280,4 +283,31 @@ export const api = {
 
   deleteJournalEntry: (date: string) =>
     request<void>(`/journal/${date}`, { method: "DELETE" }),
+
+  // --- Notas ---------------------------------------------------------------
+  // `GET /api/notes` lista las notas del perfil, de la más reciente a la más
+  // antigua. `category` filtra por una de las tres válidas; `limit` por defecto
+  // 100 y máximo 500 (fuera de rango → `400`).
+  listNotes: (params?: { category?: NoteCategory; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.category) qs.set("category", params.category);
+    if (params?.limit !== undefined) qs.set("limit", String(params.limit));
+    const suffix = qs.toString();
+    return request<Note[]>(`/notes${suffix ? `?${suffix}` : ""}`);
+  },
+
+  // `tags` viaja como cadena coma-separada (o ausente); `content` es obligatorio.
+  createNote: (data: NoteInput) =>
+    request<Note>("/notes", { method: "POST", body: JSON.stringify(data) }),
+
+  // `PUT` actualiza de forma **parcial**: un campo ausente deja el valor
+  // anterior y `tags: ""` vacía las etiquetas (la cadena vacía es un valor).
+  updateNote: (id: string, data: NoteInput) =>
+    request<Note>(`/notes/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+
+  deleteNote: (id: string) =>
+    request<void>(`/notes/${id}`, { method: "DELETE" }),
 };
