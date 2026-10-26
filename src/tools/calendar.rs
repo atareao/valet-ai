@@ -31,9 +31,10 @@ impl CalendarTool {
             .map_err(|_| ToolError::InvalidArguments("Invalid start format".into()))?
             .with_timezone(&Utc);
 
-        // Bounds must be normalized to UTC: events are stored normalized to UTC
-        // with a `Z` suffix and `list_by_date_range` compares them lexicographically,
-        // so passing an offset-bearing string verbatim would yield wrong results.
+        // Bounds are normalized to UTC canonical form so the tool always works
+        // with a single representation. The repository compares by *instant*
+        // (not lexicographically), so an offset-bearing bound would also be
+        // correct; normalizing here just keeps the tool's output stable.
         let start_utc = start_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
 
         // `end` (if present and valid) is the upper bound and takes precedence
@@ -52,7 +53,15 @@ impl CalendarTool {
             }
         };
 
-        let events = EventsRepo::list_by_date_range(&self.db, profile_id, &start_utc, &end).await?;
+        let events = EventsRepo::list_by_date_range(
+            &self.db,
+            profile_id,
+            DateTime::parse_from_rfc3339(&start_utc)
+                .map_err(|_| ToolError::InvalidArguments("Invalid start format".into()))?,
+            DateTime::parse_from_rfc3339(&end)
+                .map_err(|_| ToolError::InvalidArguments("Invalid end format".into()))?,
+        )
+        .await?;
 
         Ok(ToolResult {
             success: true,
@@ -124,7 +133,7 @@ impl CalendarTool {
                 .get("description")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
-            start_time: start.to_string(),
+            start_time: start_dt.to_rfc3339_opts(SecondsFormat::Secs, true),
             end_time: end.to_string(),
             location: args
                 .get("location")
@@ -193,6 +202,17 @@ impl CalendarTool {
             None // No end change — EventsRepo::update handles None
         };
 
+        // Normalize a present `start` to canonical UTC; reject non-RFC 3339.
+        let start_normalized: Option<String> = match args.get("start").and_then(|v| v.as_str()) {
+            Some(value) => Some(
+                DateTime::parse_from_rfc3339(value)
+                    .map_err(|_| ToolError::InvalidArguments("Invalid start format".into()))?
+                    .with_timezone(&Utc)
+                    .to_rfc3339_opts(SecondsFormat::Secs, true),
+            ),
+            None => None,
+        };
+
         if !EventsRepo::update(
             &self.db,
             id,
@@ -205,7 +225,7 @@ impl CalendarTool {
             args.get("reminder_minutes_before")
                 .and_then(|v| v.as_i64())
                 .map(|n| n as i32),
-            args.get("start").and_then(|v| v.as_str()),
+            start_normalized.as_deref(),
             end_str.as_deref(),
         )
         .await?
@@ -1284,5 +1304,101 @@ mod tests {
         );
         assert_eq!(events[0]["title"].as_str().unwrap(), "Madrugada");
         Ok(())
+    }
+
+    // ── calendar-range-boundaries: escritura canónica UTC ────────────────
+
+    #[tokio::test]
+    async fn test_create_event_saves_start_in_canonical_utc(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Canónico",
+                "start": "2026-10-06T19:00:00+02:00",
+                "duration": 60
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        // 19:00+02:00 == 17:00Z
+        assert_eq!(result.data["start_time"], "2026-10-06T17:00:00Z");
+        assert_eq!(result.data["end_time"], "2026-10-06T18:00:00Z");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_update_event_saves_start_in_canonical_utc(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let created = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Original",
+                "start": "2026-10-06T10:00:00Z",
+                "duration": 60
+            }))
+            .await
+            .unwrap();
+        let id = created.data["id"].as_str().unwrap().to_string();
+
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "update_event",
+                "id": id,
+                "start": "2026-10-06T19:00:00+02:00"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["start_time"], "2026-10-06T17:00:00Z");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_update_event_without_start_keeps_it() -> Result<(), Box<dyn std::error::Error>> {
+        let (_, tool) = setup().await?;
+        let created = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Original",
+                "start": "2026-10-06T10:00:00Z",
+                "duration": 60
+            }))
+            .await
+            .unwrap();
+        let id = created.data["id"].as_str().unwrap().to_string();
+
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "update_event",
+                "id": id,
+                "title": "Renombrado"
+            }))
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.data["start_time"], "2026-10-06T10:00:00Z");
+        assert_eq!(result.data["title"], "Renombrado");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_create_event_unparseable_start_is_invalid_arguments() {
+        let (_, tool) = setup().await.unwrap();
+        let result = tool
+            .execute(serde_json::json!({
+                "operation": "create_event",
+                "profile_id": "profile-1",
+                "title": "Mala fecha",
+                "start": "no-es-una-fecha",
+                "duration": 60
+            }))
+            .await;
+        assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
     }
 }

@@ -1,4 +1,9 @@
 # Changelog
+## [0.20.2] - 2026-10-26
+
+### Bug Fixes
+
+- *(calendar)* Consultar el rango en hora local con intervalo semiabierto [start, end)
 ## [0.20.1] - 2026-10-25
 
 ### Bug Fixes

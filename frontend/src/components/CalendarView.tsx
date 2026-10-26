@@ -51,15 +51,23 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
 
   const isMobile = useMediaQuery("(max-width: 767px)");
 
-  // Fetch events for the visible month (expand to full weeks around it)
-  const monthStart = currentDate
-    .startOf("month")
-    .startOf("week")
-    .format("YYYY-MM-DD");
+  // Fetch events for the visible month (expand to full weeks around it).
+  // El rango se pide en hora local del navegador y como RFC 3339 con su offset
+  // (`format()` sin argumentos), en un intervalo semiabierto: desde el inicio
+  // del primer día visible hasta el **inicio del día siguiente** al último
+  // visible. Formatear como `YYYY-MM-DD` (lo anterior) perdía la hora y dejaba
+  // fuera todo evento que terminase el último día visible cuando este caía en
+  // sábado (octubre de 2026); `endOf("week")` tampoco vale porque devuelve
+  // `23:59:59.999` y al formatear se pierden los milisegundos.
+  // `startOf("week")` ya cae en el inicio del día, así que el límite inferior
+  // es el inicio del primer día visible sin más ajuste.
+  const monthStart = currentDate.startOf("month").startOf("week").format();
   const monthEnd = currentDate
     .endOf("month")
     .endOf("week")
-    .format("YYYY-MM-DD");
+    .startOf("day")
+    .add(1, "day")
+    .format();
 
   const { events, loading, error, refetch } = useEvents(monthStart, monthEnd);
   const { delete: deleteEvent } = useDeleteEvent();
