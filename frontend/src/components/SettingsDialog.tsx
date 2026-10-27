@@ -22,6 +22,7 @@ import { SkillsTab } from "./SkillsTab";
 import { StravaIntegration } from "./StravaIntegration";
 import { NotificationsTab } from "./NotificationsTab";
 import { IngestKeysSection } from "./IngestKeysSection";
+import { ZennotesSection } from "./ZennotesSection";
 
 const { TextArea } = Input;
 
@@ -733,6 +734,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
               </Form>
                 <Divider />
                 <IngestKeysSection />
+                <Divider />
+                <ZennotesSection />
               </section>
             ),
           },
