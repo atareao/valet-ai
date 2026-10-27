@@ -1,4 +1,13 @@
 # Changelog
+## [0.22.0] - 2026-10-27
+
+### Documentation
+
+- *(openspec)* Archiva settings-integrations-tabs
+
+### Features
+
+- *(settings)* Sub-pestañas de integraciones y «Claves» solo con ingesta
 ## [0.21.0] - 2026-10-27
 
 ### Documentation

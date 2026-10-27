@@ -19,10 +19,9 @@ import { useProfileContext } from "../contexts/ProfileContext";
 import { PersistentMemoryPanel } from "./PersistentMemoryPanel";
 import { RouterControl } from "./RouterControl";
 import { SkillsTab } from "./SkillsTab";
-import { StravaIntegration } from "./StravaIntegration";
+import { IntegrationsTab } from "./IntegrationsTab";
 import { NotificationsTab } from "./NotificationsTab";
 import { IngestKeysSection } from "./IngestKeysSection";
-import { ZennotesSection } from "./ZennotesSection";
 
 const { TextArea } = Input;
 
@@ -147,8 +146,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     updateSettings,
     resetToDefaults,
   } = useSettings();
-  // El catálogo lo posee el diálogo y lo consume la pestaña «Skills». Un único
-  // `GET /api/skills` por apertura del diálogo.
+  // El catálogo lo posee el diálogo y lo consume la pestaña «Skills». `useSkills`
+  // vive en `SettingsDialog`, que no se desmonta al cerrar el `Modal`, así que
+  // es una única lectura de `GET /api/skills` por montaje del diálogo (sesión),
+  // no por apertura.
   const {
     skills,
     loading: skillsLoading,
@@ -166,10 +167,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
     getMissingConsolidatorPlaceholders(consolidatorPrompt);
   const [resetting, setResetting] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
-  // Contador de aperturas: el `Modal` no se desmonta al cerrar y las panes de
-  // `Tabs` siguen montadas, así que `RouterControl` se remonta en cada apertura
-  // (patrón `statsOpenKey` de `AppLayout`) para que siempre relea lo persistido.
-  const [routerOpenKey, setRouterOpenKey] = useState(0);
 
   // Load settings into form when visible changes
   useEffect(() => {
@@ -462,13 +459,15 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         </div>
       }
       open={visible}
+      // Desmonta el contenido al cerrar: el diálogo no se destruye, pero sus
+      // paneles sí. Así cada apertura remonta los hooks que leen del servidor
+      // (Strava, ZenNotes, enrutador de skills) y los indicadores nacen
+      // frescos, sin contadores de aperturas ni señales de visibilidad.
+      destroyOnHidden
       onCancel={onClose}
       closable={false}
       footer={null}
       width={1000}
-      afterOpenChange={(open) => {
-        if (open) setRouterOpenKey((k) => k + 1);
-      }}
     >
       <Tabs
         items={[
@@ -675,67 +674,13 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             ),
           },
           {
-            key: "api-keys",
-            label: "API Keys",
+            key: "claves",
+            label: "Claves",
             children: settingsLoading ? (
               renderSettingsLoading()
             ) : (
-              <section aria-label="Claves de API">
-                <Form
-                  form={settingsForm}
-                  layout="vertical"
-                  onFinish={handleSettingsSubmit}
-                >
-                  <Form.Item
-                    label="OpenWeatherMap API Key"
-                    name="openweather_api_key"
-                  >
-                  <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
-                </Form.Item>
-                <Form.Item
-                  label="Google Places API Key"
-                  name="google_places_api_key"
-                >
-                  <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
-                </Form.Item>
-                <Form.Item
-                  label="Brave Search API Key"
-                  name="brave_search_api_key"
-                >
-                  <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
-                </Form.Item>
-                <Form.Item
-                  label="apimail · URL base"
-                  name="apimail_base_url"
-                >
-                  <Input placeholder="https://apimail.territoriolinux.es" />
-                </Form.Item>
-                <Form.Item
-                  label="apimail · API Key"
-                  name="apimail_api_key"
-                >
-                  <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
-                </Form.Item>
-                <Form.Item
-                  label="Miniflux · URL base"
-                  name="miniflux_base_url"
-                >
-                  <Input placeholder="https://miniflux.territoriolinux.es" />
-                </Form.Item>
-                <Form.Item
-                  label="Miniflux · API Key"
-                  name="miniflux_api_key"
-                >
-                  <Input.Password placeholder="Dejar vacío para usar variable de entorno" />
-                </Form.Item>
-                <Button type="primary" htmlType="submit" loading={saving}>
-                  Guardar
-                </Button>
-              </Form>
-                <Divider />
+              <section aria-label="Claves">
                 <IngestKeysSection />
-                <Divider />
-                <ZennotesSection />
               </section>
             ),
           },
@@ -943,7 +888,6 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
               renderSettingsLoading()
             ) : (
               <SkillsTab
-                key={routerOpenKey}
                 settings={settings}
                 skills={skills}
                 loading={skillsLoading}
@@ -956,7 +900,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           {
             key: "router",
             label: "Enrutador de skills",
-            children: <RouterControl key={routerOpenKey} />,
+            children: <RouterControl />,
           },
           {
             key: "integrations",
@@ -964,11 +908,17 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             children: settingsLoading ? (
               renderSettingsLoading()
             ) : (
-              <StravaIntegration
-                key={routerOpenKey}
-                settings={settings}
-                updateSettings={updateSettings}
-              />
+              <Form
+                form={settingsForm}
+                layout="vertical"
+                onFinish={handleSettingsSubmit}
+              >
+                <IntegrationsTab
+                  settings={settings}
+                  updateSettings={updateSettings}
+                  saving={saving}
+                />
+              </Form>
             ),
           },
           {

@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { api } from "../api/client";
+import type { SettingsMap } from "../types";
 
 interface UseSettingsReturn {
-  settings: Record<string, string> | null;
+  settings: SettingsMap;
   loading: boolean;
   saving: boolean;
   error: string | null;
@@ -11,7 +12,7 @@ interface UseSettingsReturn {
 }
 
 export function useSettings(): UseSettingsReturn {
-  const [settings, setSettings] = useState<Record<string, string> | null>(null);
+  const [settings, setSettings] = useState<SettingsMap>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

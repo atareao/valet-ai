@@ -12,6 +12,7 @@ import {
   Typography,
 } from "antd";
 import { usePersistentMemory } from "../hooks/usePersistentMemory";
+import type { SettingsMap } from "../types";
 
 const { Text } = Typography;
 const { TextArea } = Input;
@@ -19,7 +20,7 @@ const { TextArea } = Input;
 const DEFAULT_BUDGET_TOKENS = 500;
 
 export interface PersistentMemoryPanelProps {
-  settings: Record<string, string> | null;
+  settings: SettingsMap;
   updateSettings: (data: Record<string, string>) => Promise<void>;
   savingSettings: boolean;
 }

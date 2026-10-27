@@ -46,6 +46,13 @@ export interface Settings {
   [key: string]: string;
 }
 
+/**
+ * Mapa de ajustes tal como llega de `GET /api/settings`: pares clave/valor en
+ * texto, o `null` mientras la primera lectura no ha resuelto. Se declara una
+ * sola vez para que las interfaces que lo reciben no puedan divergir.
+ */
+export type SettingsMap = Record<string, string> | null;
+
 export interface Profile {
   id: string;
   name: string;
