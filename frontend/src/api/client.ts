@@ -28,6 +28,8 @@ import type {
   StravaCheckResult,
   StravaStatus,
   ZennotesStatus,
+  OpentodoStatus,
+  OpentodoCheckResult,
 } from "../types";
 import type { AuthUser } from "../contexts/AuthContext";
 
@@ -267,6 +269,27 @@ export const api = {
   // Un token vacío → `400`; uno válido guarda y responde `204`.
   setZennotesToken: (token: string) =>
     request<void>("/zennotes/token", {
+      method: "PUT",
+      body: JSON.stringify({ token }),
+    }),
+
+  // --- OpenTodo ------------------------------------------------------------
+  // `opentodo_token` NO viaja en `GET /api/settings` (es sensible) y
+  // `PUT /api/settings` lo ignora, así que el token tiene su propio endpoint:
+  // `status` devuelve el estado sin el token y `setOpentodoToken` lo guarda.
+  // `opentodo_base_url`, en cambio, es un ajuste normal (viaja por settings).
+  getOpentodoStatus: () => request<OpentodoStatus>("/opentodo/status"),
+
+  // Sondeo activo del estado real de la conexión. **Siempre** `200`: el
+  // diagnóstico viaja en `ok`/`detail`, por eso no rechaza ante un fallo de
+  // OpenTodo (solo si la propia petición HTTP falla). Es distinto de
+  // `getOpentodoStatus`: aquel solo lee la configuración local de Valet, este
+  // toca la instancia remota.
+  checkOpentodo: () => request<OpentodoCheckResult>("/opentodo/check"),
+
+  // Un token vacío → `400`; uno válido guarda y responde `204`.
+  setOpentodoToken: (token: string) =>
+    request<void>("/opentodo/token", {
       method: "PUT",
       body: JSON.stringify({ token }),
     }),

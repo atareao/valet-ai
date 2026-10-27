@@ -229,3 +229,11 @@ path = "tests/api/notes.rs"
 [[test]]
 name = "zennotes-migration"
 path = "tests/db/zennotes_migration.rs"
+
+[[test]]
+name = "opentodo-api"
+path = "tests/api/opentodo.rs"
+
+[[test]]
+name = "opentodo-migration"
+path = "tests/db/opentodo_migration.rs"

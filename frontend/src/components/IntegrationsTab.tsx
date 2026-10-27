@@ -2,11 +2,13 @@ import { Tabs, Tag } from "antd";
 
 import { useStrava } from "../hooks/useStrava";
 import { useZennotes } from "../hooks/useZennotes";
+import { useOpentodo } from "../hooks/useOpentodo";
 import type { SettingsMap } from "../types";
 import { KeyIntegration } from "./KeyIntegration";
 import { StravaIntegration } from "./StravaIntegration";
 import { ZennotesSection } from "./ZennotesSection";
-import { isKeyConfigured, keyStatusLabel } from "./integrationStatus";
+import { OpentodoSection } from "./OpentodoSection";
+import { isKeyConfigured, keyStatusLabel, UNAVAILABLE_LABEL } from "./integrationStatus";
 import { KEY_INTEGRATIONS } from "./keyIntegrations";
 
 export interface IntegrationsTabProps {
@@ -20,15 +22,6 @@ export interface IntegrationsTabProps {
 
 /** Texto del indicador mientras el estado remoto aún no ha llegado. */
 const PENDING_LABEL = "Consultando…";
-
-/**
- * Texto del indicador cuando la lectura del estado remoto falló.
- *
- * Sin él, un fallo de `GET /api/strava/status` o `GET /api/zennotes/status`
- * dejaría el indicador en «Consultando…» para siempre, que miente dos veces: ni
- * se está consultando, ni se sabe el estado.
- */
-const UNAVAILABLE_LABEL = "Sin datos";
 
 interface StatusTagProps {
   label: string;
@@ -82,21 +75,24 @@ function remoteLabel(state: RemoteState, yes: string, no: string): string {
 /**
  * Pestaña «Integraciones» del diálogo de ajustes: un `Tabs` **anidado
  * horizontal** con una sub-pestaña por servicio, en el orden cerrado Strava,
- * OpenWeatherMap, Google Places, Brave Search, apimail, Miniflux y ZenNotes.
+ * OpenWeatherMap, Google Places, Brave Search, apimail, Miniflux, ZenNotes y
+ * OpenTodo.
  *
  * Los `Form.Item` de las cinco integraciones de clave cuelgan del formulario de
  * ajustes del padre (`SettingsForm`), que envuelve a este componente; por eso
  * cada sub-pestaña tiene su propio botón «Guardar» con `htmlType="submit"`.
  * Las cinco se pintan con el mismo `KeyIntegration`, guiado por la tabla
- * `KEY_INTEGRATIONS`.
+ * `KEY_INTEGRATIONS`. La URL base de OpenTodo cuelga igualmente del formulario
+ * compartido; su token, en cambio, se guarda por su endpoint dedicado.
  *
- * **Estado de los indicadores.** Los de Strava y ZenNotes salen de sus
- * endpoints dedicados: este contenedor llama a `useStrava()` y `useZennotes()`
- * una sola vez y pasa el resultado a los componentes, que en ese caso no
- * vuelven a consultar (patrón envoltorio `*State`). Así se evita duplicar
- * `GET /api/strava/status` y `GET /api/zennotes/status`. El de las cinco
- * integraciones de clave se deriva de `settings` en cada render, de modo que el
- * indicador cambia en cuanto el padre refresca `settings` tras guardar.
+ * **Estado de los indicadores.** Los de Strava, ZenNotes y OpenTodo salen de sus
+ * endpoints dedicados: este contenedor llama a `useStrava()`, `useZennotes()` y
+ * `useOpentodo()` una sola vez y pasa el resultado a los componentes, que en ese
+ * caso no vuelven a consultar (patrón envoltorio `*State`). Así se evita
+ * duplicar `GET /api/strava/status`, `GET /api/zennotes/status` y
+ * `GET /api/opentodo/status`. El de las cinco integraciones de clave se deriva
+ * de `settings` en cada render, de modo que el indicador cambia en cuanto el
+ * padre refresca `settings` tras guardar.
  *
  * Los hooks se leen una vez al montar, y el montaje ocurre por apertura: el
  * `Modal` del diálogo usa `destroyOnHidden`, así que cerrar desmonta este panel
@@ -117,6 +113,7 @@ export function IntegrationsTab({
   // cargado y no vuelven a llamar al hook.
   const stravaState = useStrava();
   const zennotesState = useZennotes();
+  const opentodoState = useOpentodo();
 
   const strava: RemoteState = {
     ok: stravaState.status ? stravaState.status.connected : null,
@@ -126,9 +123,14 @@ export function IntegrationsTab({
     ok: zennotesState.status ? zennotesState.status.configured : null,
     error: zennotesState.error,
   };
+  const opentodo: RemoteState = {
+    ok: opentodoState.status ? opentodoState.status.configured : null,
+    error: opentodoState.error,
+  };
 
   const stravaLabel = remoteLabel(strava, "Conectada", "No conectada");
   const zennotesLabel = remoteLabel(zennotes, "Configurado", "Sin configurar");
+  const opentodoLabel = remoteLabel(opentodo, "Configurado", "Sin configurar");
 
   return (
     <Tabs
@@ -168,6 +170,12 @@ export function IntegrationsTab({
           label: tabLabel("ZenNotes", zennotesLabel, zennotes.ok === true),
           forceRender: true,
           children: <ZennotesSection zennotesState={zennotesState} />,
+        },
+        {
+          key: "opentodo",
+          label: tabLabel("OpenTodo", opentodoLabel, opentodo.ok === true),
+          forceRender: true,
+          children: <OpentodoSection opentodoState={opentodoState} saving={saving} />,
         },
       ]}
     />
