@@ -1,6 +1,6 @@
 # PLAN-011 — Integrar OpenTodo y retirar el TODO local
 
-> Estado: **pendiente de aprobación**. No se escribe código hasta aprobar el change proposal OpenSpec.
+> Estado: **fase 1 cerrada**. Change `opentodo-integration` aprobado, validado, implementado, auditado y archivado; fusionado en `development` con el PR #265 (`99383c7`). Queda pendiente la verificación E2E real, **aplazada al despliegue**.
 > Convención de repo: si se aprueba se renombra a `plans/PLAN-011.md`; al completarse, a `plans/PLAN-011-COMPLETED.md`.
 > Origen: petición del 2026-10-27 («quitar el TODO actual e integrar OpenTodo»), con cuatro decisiones tomadas por el usuario y una batería de pruebas contra la instancia real.
 
@@ -153,15 +153,15 @@ Ninguna queda abierta. Las cinco últimas las tomó el usuario el 2026-10-27 al 
 - **Permisos**: `NoConfirm` en lecturas, `Notify` en escrituras y `ExplicitApproval` en `delete_task`, también con `purge`.
 - **`opentodo_base_url` no es sensible** y viaja en `PUT /api/settings`; solo el token tiene endpoint dedicado.
 
-## 8. Tareas (sin empezar)
+## 8. Tareas
 
-- [x] 1. Aprobar alcance y las preguntas de §7. — Diseño cerrado el 2026-10-27; las preguntas eran las de §7, hoy decisiones.
-- [ ] 2. Crear el change `opentodo-integration` con delta de spec (servicio, tool, ajustes, fragmento de prompt, UI).
-- [ ] 3. RED — tests del cliente (errores, timeout, deserialización con campos ausentes), de las vistas calculadas y de `set_label` (que no borre etiquetas ajenas y que cada grupo sea excluyente).
-- [ ] 4. GREEN — servicio, ajustes sensibles, endpoints de token/estado, herramienta y fragmento de prompt.
-- [ ] 5. GREEN — octava sub-pestaña de Integraciones.
-- [ ] 6. REFACTOR — `cargo clippy -- -D warnings`, `cargo fmt --check`, `npx tsc --noEmit`, `npm run lint`.
-- [ ] 7. Archivar el change y verificar en producción con turnos reales.
-- [ ] 8. Phase 0: spec de caracterización de `tasks` local.
-- [ ] 9. Change `remove-local-tasks`: volcado de datos, retirada de tabla/API/tool/vista y enlace a OpenTodo.
-- [ ] 10. Archivar y release.
+- [x] 1. Aprobar alcance y las decisiones de §7. — Diseño cerrado el 2026-10-27.
+- [x] 2. Crear el change `opentodo-integration` con delta de spec (servicio, tool, ajustes, fragmento de prompt, UI). — 4 deltas: `tools/tasks`, `opentodo-service`, `opentodo-api`, `frontend`.
+- [x] 3. RED — tests del cliente (errores, timeout, deserialización con campos ausentes), de las vistas calculadas y de `set_label` (que no borre etiquetas ajenas y que cada grupo sea excluyente).
+- [x] 4. GREEN — servicio, ajustes sensibles, endpoints de token/estado/sonda, migración, herramienta y fragmento de prompt.
+- [x] 5. GREEN — octava sub-pestaña de Integraciones.
+- [x] 6. REFACTOR — `cargo clippy -- -D warnings`, `cargo fmt --check`, `npx tsc --noEmit`, `npm run lint`. — 1947 tests backend y 644 frontend en verde.
+- [ ] 7. Archivar el change y verificar en producción con turnos reales. — Archivado el 2026-10-27 y fusionado en `development` (PR #265, `99383c7`). La verificación contra la instancia real (tarea 9.3 de `tasks.md` del change archivado) queda **aplazada al despliegue** por decisión del usuario: el token ya está rotado y se pegará en Ajustes → Integraciones → OpenTodo para verificarlo desde la UI.
+- [ ] 8. **Fase 2** — Phase 0: spec de caracterización de `tasks` local.
+- [ ] 9. **Fase 2** — Change `remove-local-tasks`: volcado de datos, retirada de tabla/API/tool/vista y enlace a OpenTodo.
+- [ ] 10. **Fase 2** — Archivar y release.
