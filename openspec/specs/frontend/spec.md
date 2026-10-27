@@ -467,7 +467,7 @@ SettingsDialog SHALL display a "Prompts" tab with one sub-tab per editable promp
 
 ### Requirement: SettingsDialog SHALL display API Keys tab
 
-SettingsDialog SHALL display an "API Keys" tab with password fields for API keys, the apimail connection settings and the Miniflux connection settings.
+SettingsDialog SHALL display an "API Keys" tab with password fields for API keys, the apimail connection settings, the Miniflux connection settings and the ZenNotes token.
 
 **Given** el SettingsDialog está abierto en la tab "API Keys"
 **When** se renderiza
@@ -476,9 +476,10 @@ SettingsDialog SHALL display an "API Keys" tab with password fields for API keys
 - "Google Places API Key"
 - "Brave Search API Key"
 - "apimail · API Key"
-- "Miniflux · token de API"
+- "Miniflux · API Key"
 **And** muestra un campo de texto para "apimail · URL base"
 **And** muestra un campo de texto para "Miniflux · URL base"
+**And** muestra el campo del token de ZenNotes, que nunca revela el valor guardado
 
 #### Scenario: API Keys se guardan
 **Given** el usuario introduce una API key de OpenWeatherMap
@@ -508,6 +509,18 @@ SettingsDialog SHALL display an "API Keys" tab with password fields for API keys
 **Given** el SettingsDialog abierto en la tab "API Keys" sin `miniflux_base_url` en settings
 **When** se renderiza el campo de URL base de Miniflux
 **Then** su placeholder es `https://miniflux.territoriolinux.es`
+
+#### Scenario: El token de ZenNotes nunca muestra el valor guardado
+**Given** el SettingsDialog abierto en la tab "API Keys" con el token de ZenNotes configurado
+**When** se renderiza
+**Then** el campo del token está vacío y muestra el estado "Configurado"
+**And** el valor del token NO se lee desde `GET /api/settings`
+
+#### Scenario: Guardar el token de ZenNotes usa su endpoint dedicado
+**Given** el usuario escribe un token de ZenNotes en el campo
+**When** guarda
+**Then** se llama a `PUT /api/zennotes/token` con el token
+**And** NO se envía `zennotes_token` en `PUT /api/settings`
 
 ### Requirement: SettingsDialog SHALL unify profile and settings buttons
 

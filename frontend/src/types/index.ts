@@ -397,6 +397,17 @@ export interface StravaCheckResult {
   error: string | null;
 }
 
+/**
+ * Estado de la configuración de ZenNotes (`GET /api/zennotes/status`). Espejo
+ * del contrato del backend: **nunca** incluye el token, solo si hay uno
+ * resuelto (`configured`) y los valores efectivos de `base_url`/`folder`.
+ */
+export interface ZennotesStatus {
+  configured: boolean;
+  base_url: string;
+  folder: string;
+}
+
 /** Respuesta de `GET /api/push/vapid-key`: la clave pública VAPID en base64url. */
 export interface VapidKeyResponse {
   public_key: string;
