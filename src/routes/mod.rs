@@ -18,3 +18,4 @@ pub mod strava;
 pub mod stream;
 pub mod tasks;
 pub mod tools;
+pub mod zennotes;

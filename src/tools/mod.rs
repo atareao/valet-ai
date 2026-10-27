@@ -22,3 +22,4 @@ pub mod unified_search;
 pub mod weather;
 pub mod web_search;
 pub mod widget;
+pub mod zennotes;

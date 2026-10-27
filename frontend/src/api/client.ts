@@ -27,6 +27,7 @@ import type {
   SkillsResponse,
   StravaCheckResult,
   StravaStatus,
+  ZennotesStatus,
 } from "../types";
 import type { AuthUser } from "../contexts/AuthContext";
 
@@ -256,6 +257,19 @@ export const api = {
       "/strava/disconnect",
       { method: "POST" },
     ),
+
+  // --- ZenNotes ------------------------------------------------------------
+  // `zennotes_token` NO viaja en `GET /api/settings` (es sensible) y
+  // `PUT /api/settings` lo ignora, así que el token tiene su propio endpoint:
+  // `status` devuelve el estado sin el token y `setZennotesToken` lo guarda.
+  getZennotesStatus: () => request<ZennotesStatus>("/zennotes/status"),
+
+  // Un token vacío → `400`; uno válido guarda y responde `204`.
+  setZennotesToken: (token: string) =>
+    request<void>("/zennotes/token", {
+      method: "PUT",
+      body: JSON.stringify({ token }),
+    }),
 
   // --- Bitácora ------------------------------------------------------------
   // `GET /api/journal` lista por rango **inclusivo**, de la entrada más reciente

@@ -101,3 +101,60 @@ async fn put_settings_ignores_strava_token_keys() {
         "las claves no sensibles deben seguir siendo escribibles"
     );
 }
+
+/// `GET /api/settings` NO debe incluir `zennotes_token` (se gestiona por su
+/// endpoint dedicado), pero sí `zennotes_base_url` y `zennotes_folder`, que son
+/// ajustes no sensibles y editables.
+#[tokio::test]
+async fn get_settings_hides_zennotes_token_but_keeps_other_zennotes_keys() {
+    let app = TestApp::new_empty().await;
+    seed(&app, "zennotes_token", "SECRET_ZENNOTES").await;
+
+    let body = app
+        .get("/api/settings")
+        .await
+        .json::<serde_json::Value>()
+        .await;
+
+    assert!(
+        body.get("zennotes_token").is_none(),
+        "el token de ZenNotes no debe viajar en los ajustes: {body}"
+    );
+    assert!(
+        body.get("zennotes_base_url").is_some(),
+        "la URL base de ZenNotes es un ajuste no sensible: {body}"
+    );
+    assert!(
+        body.get("zennotes_folder").is_some(),
+        "la carpeta de ZenNotes es un ajuste no sensible: {body}"
+    );
+}
+
+/// `PUT /api/settings` con `zennotes_token` en el cuerpo NO lo modifica: solo
+/// `PUT /api/zennotes/token` puede escribirlo.
+#[tokio::test]
+async fn put_settings_ignores_zennotes_token() {
+    let app = TestApp::new_empty().await;
+    seed(&app, "zennotes_token", "ORIGINAL_ZENNOTES").await;
+
+    let resp = app
+        .put("/api/settings")
+        .json(&json!({
+            "zennotes_token": "INJECTED_ZENNOTES",
+            "max_window_tokens": "12345",
+        }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), 200, "el PUT de ajustes debe responder 200");
+    let body = resp.json::<serde_json::Value>().await;
+    assert!(
+        body.get("zennotes_token").is_none(),
+        "la respuesta del PUT tampoco debe exponer el token: {body}"
+    );
+
+    assert_eq!(
+        SettingsRepo::get(&app.db, "zennotes_token").await.unwrap(),
+        Some("ORIGINAL_ZENNOTES".to_string()),
+        "el token de ZenNotes no debe poder escribirse desde los ajustes"
+    );
+}

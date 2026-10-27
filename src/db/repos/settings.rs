@@ -2,9 +2,9 @@ use sqlx::Row;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 
-/// Claves de `settings` cuyo valor es **material sensible** (tokens OAuth) y
-/// que por tanto **nunca** deben salir por la API de ajustes ni aceptarse por
-/// escritura desde un cliente.
+/// Claves de `settings` cuyo valor es **material sensible** (tokens OAuth y el
+/// token de ZenNotes) y que por tanto **nunca** deben salir por la API de ajustes
+/// ni aceptarse por escritura desde un cliente.
 ///
 /// Es la única fuente de verdad: añadir aquí una clave la excluye de
 /// `GET /api/settings` y hace que `PUT /api/settings` la ignore. El
@@ -14,6 +14,7 @@ pub const SENSITIVE_KEYS: &[&str] = &[
     "strava_access_token",
     "strava_refresh_token",
     "push_vapid_private_key",
+    "zennotes_token",
 ];
 
 /// `true` si `key` es sensible y por tanto debe omitirse en las respuestas y
@@ -133,8 +134,14 @@ mod tests {
     fn test_sensitive_keys_are_the_oauth_tokens() {
         assert!(is_sensitive_key("strava_access_token"));
         assert!(is_sensitive_key("strava_refresh_token"));
+        // El token de ZenNotes solo se gestiona por su endpoint dedicado
+        // (`PUT /api/zennotes/token`): no viaja por la API de ajustes.
+        assert!(is_sensitive_key("zennotes_token"));
         // El client_secret se edita desde la UI y por eso no es sensible aquí.
         assert!(!is_sensitive_key("strava_client_secret"));
+        // La URL y la carpeta de ZenNotes son ajustes normales, editables.
+        assert!(!is_sensitive_key("zennotes_base_url"));
+        assert!(!is_sensitive_key("zennotes_folder"));
         assert!(!is_sensitive_key("max_window_tokens"));
     }
 

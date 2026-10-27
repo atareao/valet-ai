@@ -36,6 +36,12 @@ const mockGetSkills = vi.fn();
 // Spy sobre la lectura de settings del `RouterControl` autocontenido: permite
 // contar las relecturas (p. ej. al remontarlo) además de servir el fixture.
 const mockGetSettings = vi.fn();
+// Spies sobre los endpoints dedicados de ZenNotes: la sección de token es
+// autocontenida y no usa `updateSettings`, así que se controla el cliente para
+// comprobar que guardar el token va a `PUT /api/zennotes/token` y nunca a
+// `PUT /api/settings`.
+const mockGetZennotesStatus = vi.fn();
+const mockSetZennotesToken = vi.fn();
 
 // Fixture de settings devuelta por el hook mockeado (equivale a lo que
 // responde `GET /settings`). Es mutable para que cada test pueda simular
@@ -252,6 +258,11 @@ vi.mock("../api/client", async () => {
         const result = mockUpdateSettings(data);
         return Promise.resolve(result).then(() => mockSettings);
       },
+      // Endpoints dedicados de ZenNotes: mismo diferido que `getSkills` (el
+      // factory se hoisted); solo se toca el spy cuando el hook los invoca.
+      getZennotesStatus: (...args: unknown[]) =>
+        mockGetZennotesStatus(...args),
+      setZennotesToken: (...args: unknown[]) => mockSetZennotesToken(...args),
     },
   };
 });
@@ -280,6 +291,14 @@ describe("SettingsDialog", () => {
     mockSettings = { ...defaultSettings };
     mockGetSkills.mockResolvedValue(skillsFixture);
     mockGetSettings.mockImplementation(() => Promise.resolve(mockSettings));
+    // Por defecto ZenNotes no está configurado; los tests que lo necesiten
+    // fijan `configured: true` con `mockResolvedValueOnce`/`mockResolvedValue`.
+    mockGetZennotesStatus.mockResolvedValue({
+      configured: false,
+      base_url: "https://zennotes.territoriolinux.es",
+      folder: "Valet",
+    });
+    mockSetZennotesToken.mockResolvedValue(undefined);
   });
 
   it("is not visible when visible=false", () => {
@@ -834,6 +853,60 @@ describe("SettingsDialog", () => {
           apimail_base_url: "https://apimail.test.local",
         }),
       );
+    });
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // change `zennotes-notes` — token de ZenNotes en la pestaña «API Keys»
+  // Escenarios:
+  //  - «El token de ZenNotes nunca muestra el valor guardado»
+  //  - «Guardar el token de ZenNotes usa su endpoint dedicado»
+  // (openspec/changes/zennotes-notes/specs/frontend/spec.md)
+  // ════════════════════════════════════════════════════════════════
+
+  it("nunca muestra el valor guardado del token de ZenNotes y muestra «Configurado»", async () => {
+    const user = userEvent.setup();
+    // El estado sale de `GET /api/zennotes/status` (sin el token): configurado.
+    mockGetZennotesStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://zennotes.territoriolinux.es",
+      folder: "Valet",
+    });
+    // Aunque el token estuviera en settings, el campo NO debe leerlo de ahí.
+    mockSettings = { ...mockSettings, zennotes_token: "SECRETO-no-mostrar" };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("API Keys"));
+
+    // El campo existe y arranca vacío: no revela el valor guardado.
+    const field = await screen.findByLabelText("ZenNotes · token de API");
+    expect(field).toHaveValue("");
+    // El estado se lee desde el endpoint dedicado, no desde settings.
+    expect(mockGetZennotesStatus).toHaveBeenCalled();
+    expect(await screen.findByText("Configurado")).toBeInTheDocument();
+  });
+
+  it("guarda el token de ZenNotes por su endpoint dedicado y no por PUT /api/settings", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByText("API Keys"));
+
+    const field = await screen.findByLabelText("ZenNotes · token de API");
+    await user.type(field, "nuevo-token-zennotes");
+
+    await user.click(screen.getByRole("button", { name: /guardar token/i }));
+
+    // Se llama al endpoint dedicado con el token tecleado…
+    await waitFor(() => {
+      expect(mockSetZennotesToken).toHaveBeenCalledWith("nuevo-token-zennotes");
+    });
+    // …y NUNCA a `PUT /api/settings` (ni con `zennotes_token` ni sin él).
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
+
+    // Tras guardar, el campo se limpia (no relee el valor guardado).
+    await waitFor(() => {
+      expect(screen.getByLabelText("ZenNotes · token de API")).toHaveValue("");
     });
   });
 

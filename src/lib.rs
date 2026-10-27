@@ -95,7 +95,7 @@ fn build_env_llm_provider() -> Arc<dyn crate::llm::provider::LLMProvider> {
     }
 }
 
-/// Build the production tool registry with all 32 built-in tools.
+/// Build the production tool registry with all 33 built-in tools.
 ///
 /// Exposed so the evaluation harness (`valet-route-eval`) can resolve the same
 /// advertised tool set the running application uses.
@@ -188,6 +188,9 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     registry.register(Box::new(
         crate::tools::blog_comments::BlogCommentDeleteTool::new(pool.clone()),
     ));
+    registry.register(Box::new(crate::tools::zennotes::ZennotesTool::new(
+        pool.clone(),
+    )));
     registry
 }
 
@@ -587,6 +590,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::auth::routes())
         // Strava integration (OAuth authorize/callback, status, disconnect)
         .merge(routes::strava::routes())
+        // ZenNotes integration (config status + token endpoint)
+        .merge(routes::zennotes::routes())
         // WebPush (VAPID public key, subscribe, unsubscribe)
         .merge(routes::push::routes())
         // Notifications inbox: ingest (ingest-token authenticated) + session reads
