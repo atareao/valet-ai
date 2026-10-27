@@ -5,3 +5,4 @@ pub mod miniflux;
 pub mod push;
 pub mod strava;
 pub mod wordpress;
+pub mod zennotes;

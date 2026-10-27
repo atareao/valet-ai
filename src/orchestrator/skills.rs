@@ -25,6 +25,7 @@ pub enum Skill {
     Email,
     Rss,
     Blog,
+    Zennotes,
 }
 
 /// Especificación cerrada de una skill.
@@ -59,7 +60,7 @@ pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 11] = [
+static CATALOG: [SkillSpec; 12] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
@@ -203,6 +204,17 @@ static CATALOG: [SkillSpec; 11] = [
         prompt_key: "SKILL_BLOG_PROMPT",
         prompt_heading: "# SKILL ACTIVA: BLOG",
     },
+    SkillSpec {
+        skill: Skill::Zennotes,
+        id: "zennotes",
+        instructions: "¿La respuesta requiere leer o escribir en el vault de ZenNotes del usuario (sus notas, sus artículos y sus apuntes) —no en la store interna de recuerdos?",
+        criteria_true: "El mensaje menciona **explícitamente el vault de ZenNotes** —por su nombre («ZenNotes») o con las hablas «mi vault», «mis notas del vault», «mis notas de ZenNotes» o «mis apuntes del vault»— y pide leer, buscar o listar notas del vault, o apuntar, crear, alargar o editar una nota o un artículo **en ese vault**. Si el mensaje no nombra el vault, la respuesta es «no», aunque pida apuntar o guardar algo.",
+        criteria_false: "El mensaje no menciona el vault de ZenNotes ni ninguna de sus hablas («mi vault», «mis notas del vault», «mis notas de ZenNotes», «mis apuntes del vault»); que turnos anteriores hablen del vault no basta, la referencia tiene que estar en el propio mensaje. En particular, apuntar, guardar o recuperar una idea, un recordatorio o una nota suelta **sin referencia al vault de ZenNotes** («Apúntame una idea», «guarda esto», «recuérdame esto») no es esta skill, sino la store interna de `recuerdos`.",
+        threshold: 0.10,
+        tools: &["zennotes"],
+        prompt_key: "SKILL_ZENNOTES_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: ZENNOTES",
+    },
 ];
 
 /// Catálogo cerrado de skills, en el orden canónico del sistema.
@@ -244,9 +256,9 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las once variantes del enum, para exigir que el catálogo las cubra
+    /// Las doce variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 11] = [
+    const ALL_SKILLS: [Skill; 12] = [
         Skill::Agenda,
         Skill::Pendientes,
         Skill::Recuerdos,
@@ -258,6 +270,7 @@ mod tests {
         Skill::Email,
         Skill::Rss,
         Skill::Blog,
+        Skill::Zennotes,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -472,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_declares_exactly_the_eleven_wide_domain_ids() {
+    fn catalog_declares_exactly_the_twelve_wide_domain_ids() {
         let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
 
         for id in [
@@ -487,6 +500,7 @@ mod tests {
             "email",
             "rss",
             "blog",
+            "zennotes",
         ] {
             assert!(
                 ids.contains(&id),
@@ -495,8 +509,8 @@ mod tests {
         }
         assert_eq!(
             ids.len(),
-            11,
-            "el catálogo debe tener exactamente once skills; tiene {ids:?}"
+            12,
+            "el catálogo debe tener exactamente doce skills; tiene {ids:?}"
         );
     }
 
@@ -668,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_thirty_two_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_thirty_three_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -680,8 +694,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            32,
-            "el core más las once skills deben cubrir las treinta y dos herramientas: {covered:?}"
+            33,
+            "el core más las doce skills deben cubrir las treinta y tres herramientas: {covered:?}"
         );
         assert!(
             covered.iter().any(|t| t == "blog_comment_reply"),
@@ -690,6 +704,10 @@ mod tests {
         assert!(
             covered.iter().any(|t| t == "blog_comment_delete"),
             "la cobertura debe incluir `blog_comment_delete`: {covered:?}"
+        );
+        assert!(
+            covered.iter().any(|t| t == "zennotes"),
+            "la cobertura debe incluir `zennotes`: {covered:?}"
         );
         for spec in catalog() {
             assert!(
@@ -701,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_keys_are_the_eleven_canonical_keys() {
+    fn prompt_keys_are_the_twelve_canonical_keys() {
         let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
 
         for key in [
@@ -716,6 +734,7 @@ mod tests {
             "SKILL_EMAIL_PROMPT",
             "SKILL_RSS_PROMPT",
             "SKILL_BLOG_PROMPT",
+            "SKILL_ZENNOTES_PROMPT",
         ] {
             assert!(
                 keys.contains(&key),
@@ -724,8 +743,8 @@ mod tests {
         }
         assert_eq!(
             keys.len(),
-            11,
-            "el catálogo debe declarar exactamente once claves de fragmento; tiene {keys:?}"
+            12,
+            "el catálogo debe declarar exactamente doce claves de fragmento; tiene {keys:?}"
         );
         let mut unique = keys.clone();
         unique.sort_unstable();
@@ -776,6 +795,7 @@ mod tests {
             "running",
             "timeline",
             "email",
+            "zennotes",
         ] {
             let t = threshold_of(id).unwrap_or(-1.0);
             assert_eq!(
@@ -1005,6 +1025,85 @@ mod tests {
         assert!(
             criteria.contains("papelera"),
             "el criteria_true debe cubrir mandar a la papelera el comentario notificado: {criteria:?}"
+        );
+    }
+
+    // ─── RED: la skill de ZenNotes (zennotes-notes, tarea 5.1) ───────────────
+    //
+    // El vault de ZenNotes es un dominio propio —`zennotes`— y no la store de
+    // notas interna de `recuerdos`: si viviera allí, un apunte interno ganaría
+    // acceso al vault real. Estas pruebas describen ese contrato.
+
+    /// Scenario: la skill de ZenNotes cubre su herramienta, y solo ella.
+    #[test]
+    fn zennotes_skill_covers_only_its_tool() {
+        let spec = spec_of("zennotes").expect("el catálogo debe declarar la skill `zennotes`");
+        assert_eq!(
+            spec.tools,
+            &["zennotes"][..],
+            "zennotes debe cubrir la herramienta `zennotes` y ninguna otra: {:?}",
+            spec.tools
+        );
+        assert_eq!(
+            pct(spec.threshold),
+            10,
+            "zennotes debe declarar el umbral 0.10 de las skills de dominio"
+        );
+        assert_eq!(spec.prompt_key, "SKILL_ZENNOTES_PROMPT");
+        assert_eq!(spec.prompt_heading, "# SKILL ACTIVA: ZENNOTES");
+        assert!(
+            !CORE_TOOLS.contains(&"zennotes"),
+            "zennotes es enrutable: no pertenece al core"
+        );
+
+        let owners: Vec<&str> = catalog()
+            .iter()
+            .filter(|spec| spec.tools.contains(&"zennotes"))
+            .map(|spec| spec.id)
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["zennotes"],
+            "`zennotes` no puede repartirse entre skills distintas: {owners:?}"
+        );
+    }
+
+    /// Scenario: la skill de ZenNotes distingue el vault del apunte interno.
+    ///
+    /// La referencia explícita al vault en el propio mensaje es obligatoria: un
+    /// apunte suelto («Apúntame una idea») sin mención del vault no es esta
+    /// skill, sino la store interna de `recuerdos`.
+    #[test]
+    fn zennotes_criteria_distinguish_the_vault_from_internal_notes() {
+        let spec = spec_of("zennotes").expect("el catálogo debe declarar la skill `zennotes`");
+        let criteria = spec.criteria_true.to_lowercase();
+        assert!(
+            criteria.contains("vault"),
+            "las criteria deben reconocer el vault de ZenNotes: {criteria:?}"
+        );
+        assert!(
+            criteria.contains("artícul") || criteria.contains("articul"),
+            "las criteria deben reconocer los artículos del vault: {criteria:?}"
+        );
+        assert!(
+            criteria.contains("notas"),
+            "las criteria deben reconocer las notas del vault: {criteria:?}"
+        );
+        assert!(
+            spec.instructions.to_lowercase().contains("zennotes"),
+            "la pregunta debe nombrar el vault de ZenNotes: {:?}",
+            spec.instructions
+        );
+
+        // El «no» excluye expresamente el apunte suelto sin referencia al vault.
+        let negative = spec.criteria_false.to_lowercase();
+        assert!(
+            negative.contains("sin referencia al vault"),
+            "las criteria_false deben excluir el apunte sin referencia al vault: {negative:?}"
+        );
+        assert!(
+            negative.contains("recuerdos"),
+            "las criteria_false deben remitir el apunte suelto a `recuerdos`: {negative:?}"
         );
     }
 }
