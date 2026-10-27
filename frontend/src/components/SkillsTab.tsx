@@ -12,7 +12,8 @@ import {
   Tabs,
   Tag,
 } from "antd";
-import type { SkillInfo, SkillsResponse } from "../types";import {
+import type { SkillInfo, SettingsMap, SkillsResponse } from "../types";
+import {
   changedSkillFields,
   isSkillFieldOverridden,
   skillEffectiveValues,
@@ -25,7 +26,7 @@ const { TextArea } = Input;
 
 export interface SkillsTabProps {
   /** Settings vigentes; de aquí sale el valor efectivo del fragmento. */
-  settings: Record<string, string> | null;
+  settings: SettingsMap;
   /** Catálogo de skills (`GET /api/skills`); una pestaña por skill. */
   skills: SkillInfo[];
   /** Estado de carga del catálogo. */
@@ -41,7 +42,7 @@ export interface SkillsTabProps {
 interface SkillPaneProps {
   skill: SkillInfo;
   /** Settings vigentes; deciden la marca de sobrescritura del fragmento. */
-  settings: Record<string, string> | null;
+  settings: SettingsMap;
   /** Clave de settings cuyo «Restaurar» está en curso (para el spinner). */
   restoringKey: string | null;
   onRestoreField: (key: string) => Promise<void>;

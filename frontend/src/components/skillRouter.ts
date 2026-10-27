@@ -1,4 +1,4 @@
-import type { SkillInfo } from "../types";
+import type { SettingsMap, SkillInfo } from "../types";
 
 // Módulo de lógica pura (sin componentes): aloja las constantes y funciones que
 // comparten `RouterControl.tsx` y `SkillsTab.tsx`. Se separan del fichero del
@@ -89,7 +89,7 @@ export function skillFields(skill: SkillInfo): SkillFieldDescriptor[] {
  */
 export function skillEffectiveValues(
   skill: SkillInfo,
-  settings: Record<string, string> | null,
+  settings: SettingsMap,
 ): Record<string, string> {
   const keys = skillFieldKeys(skill);
   return {
@@ -109,7 +109,7 @@ export function skillEffectiveValues(
 export function isSkillFieldOverridden(
   skill: SkillInfo,
   kind: SkillFieldKind,
-  settings: Record<string, string> | null,
+  settings: SettingsMap,
 ): boolean {
   if (kind === "prompt") {
     return (settings?.[skill.prompt_key] ?? "") !== "";
@@ -130,7 +130,7 @@ export function isSkillFieldOverridden(
 export function changedSkillFields(
   values: Record<string, unknown>,
   skills: SkillInfo[],
-  settings: Record<string, string> | null,
+  settings: SettingsMap,
 ): Record<string, string> {
   const changed: Record<string, string> = {};
   for (const skill of skills) {
