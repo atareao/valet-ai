@@ -1,4 +1,15 @@
 # Changelog
+## [0.21.0] - 2026-10-27
+
+### Documentation
+
+- *(agents)* Anota el entorno de producción real (co1, Dockge) y cierra la verificación del calendario
+- *(zennotes)* Specs fusionadas, plan completado y decisiones
+
+### Features
+
+- *(zennotes)* Integración del vault de ZenNotes en el agente
+- *(zennotes)* Campo del token en Ajustes → API Keys
 ## [0.20.2] - 2026-10-26
 
 ### Bug Fixes
