@@ -8,6 +8,7 @@ pub mod memories;
 pub mod messages;
 pub mod notes;
 pub mod notifications;
+pub mod opentodo;
 pub mod persistent_memory;
 pub mod profile;
 pub mod push;
