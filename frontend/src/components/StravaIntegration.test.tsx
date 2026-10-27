@@ -161,6 +161,31 @@ describe("StravaIntegration", () => {
     });
   });
 
+  it("Intro en los campos de credenciales envía el formulario de credenciales", async () => {
+    const user = userEvent.setup();
+    const updateSettings = vi.fn().mockResolvedValue(undefined);
+    mockGetStravaStatus.mockResolvedValue(disconnected);
+
+    renderSection(null, updateSettings);
+
+    // El `Form` va con `component={false}`: sin `onPressEnter`, Intro no
+    // enviaría nada por sí solo (y en el diálogo dispararía el submit implícito
+    // del formulario de ajustes del padre).
+    await user.type(screen.getByLabelText("Strava Client ID"), "12345{enter}");
+    await user.type(
+      screen.getByLabelText("Strava Client Secret"),
+      "top-secret{enter}",
+    );
+
+    await waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledTimes(2);
+    });
+    expect(updateSettings).toHaveBeenLastCalledWith({
+      strava_client_id: "12345",
+      strava_client_secret: "top-secret",
+    });
+  });
+
   it("«Desconectar» llama al endpoint y refresca el estado", async () => {
     const user = userEvent.setup();
     mockGetStravaStatus

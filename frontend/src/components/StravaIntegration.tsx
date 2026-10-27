@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { KeyboardEvent } from "react";
 import {
   Alert,
   App as AntdApp,
@@ -11,15 +12,24 @@ import {
 } from "antd";
 import { BASE_URL } from "../api/client";
 import { useStrava } from "../hooks/useStrava";
-import type { StravaCheckResult } from "../types";
+import type { UseStravaReturn } from "../hooks/useStrava";
+import type { SettingsMap, StravaCheckResult } from "../types";
 
 const { Text, Title } = Typography;
 
 export interface StravaIntegrationProps {
   /** Settings vigentes; de aquí salen `strava_client_id`/`strava_client_secret`. */
-  settings: Record<string, string> | null;
+  settings: SettingsMap;
   /** Persiste cambios (hook `useSettings`). */
   updateSettings: (data: Record<string, string>) => Promise<void>;
+  /**
+   * Estado de la conexión ya cargado por el contenedor («Integraciones»). Si
+   * llega, la sección **no** llama a `useStrava()`: así el indicador de la
+   * sub-pestaña y el panel comparten una única lectura de
+   * `GET /api/strava/status`. Si falta, el envoltorio la hace por su cuenta
+   * (compatibilidad con quien monte la sección suelta).
+   */
+  stravaState?: UseStravaReturn;
 }
 
 interface StravaCredentialsForm {
@@ -28,20 +38,45 @@ interface StravaCredentialsForm {
 }
 
 /**
- * Sección «Integraciones» del diálogo de ajustes: credenciales OAuth de Strava,
- * estado de la conexión, inicio del flujo OAuth y desconexión.
+ * Sección de Strava dentro de la sub-pestaña «Strava» de «Integraciones»:
+ * credenciales OAuth, estado de la conexión, inicio del flujo OAuth y
+ * desconexión.
  *
  * Los **tokens nunca se muestran**: la interfaz solo lee `GET /api/strava/status`
  * (que devuelve el atleta y el scope, sin tokens) y las credenciales que el
  * usuario teclea. «Connect with Strava» es un enlace de navegación al endpoint
  * `authorize` (el backend responde 302 hacia Strava), no una llamada `fetch`.
+ *
+ * Envoltorio: con `stravaState` renderiza la vista sin consultar el endpoint;
+ * sin él, delega en `StravaIntegrationConnected`, que llama al hook.
  */
-export function StravaIntegration({
+export function StravaIntegration(props: StravaIntegrationProps) {
+  if (props.stravaState) {
+    return <StravaIntegrationView {...props} state={props.stravaState} />;
+  }
+  return <StravaIntegrationConnected {...props} />;
+}
+
+function StravaIntegrationConnected(props: StravaIntegrationProps) {
+  const state = useStrava();
+  return <StravaIntegrationView {...props} state={state} />;
+}
+
+interface StravaIntegrationViewProps extends StravaIntegrationProps {
+  /** Estado ya resuelto (propio o heredado del contenedor). */
+  state: UseStravaReturn;
+}
+
+function StravaIntegrationView({
   settings,
   updateSettings,
-}: StravaIntegrationProps) {
+  state,
+}: StravaIntegrationViewProps) {
   const { message } = AntdApp.useApp();
-  const { status, loading, checking, error, check, disconnect } = useStrava();
+  const { status, loading, checking, error, check, disconnect } = state;
+  // Instancia propia para el formulario de credenciales: se envía con
+  // `submit()` explícito porque el `Form` se renderiza con `component={false}`.
+  const [credentialsForm] = Form.useForm<StravaCredentialsForm>();
   const [saving, setSaving] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
   const [checkResult, setCheckResult] = useState<StravaCheckResult | null>(null);
@@ -86,6 +121,21 @@ export function StravaIntegration({
     } finally {
       if (mountedRef.current) setDisconnecting(false);
     }
+  };
+
+  /**
+   * Intro en cualquiera de los dos campos de credenciales.
+   *
+   * Como el `Form` va con `component={false}`, sus inputs cuelgan del `<form>`
+   * real del formulario de ajustes del padre: sin interceptar la tecla, el
+   * navegador dispara el **submit implícito** de ese form
+   * (`handleSettingsSubmit` → `PUT /api/settings` **sin** las credenciales) y
+   * el diálogo se cierra sin guardar nada. `preventDefault()` corta ese camino
+   * y `submit()` envía el formulario correcto.
+   */
+  const handleCredentialsEnter = (event: KeyboardEvent<HTMLInputElement>) => {
+    event.preventDefault();
+    credentialsForm.submit();
   };
 
   const handleCheck = async () => {
@@ -175,13 +225,20 @@ export function StravaIntegration({
   };
 
   return (
-    <section role="region" aria-label="Integraciones">
+    <section role="region" aria-label="Strava">
       <Title level={5} style={{ marginTop: 0 }}>
-        Integraciones
+        Strava
       </Title>
       <Text type="secondary">Cuenta de Strava (solo lectura)</Text>
 
+      {/* `component={false}`: la sección vive dentro del `Form` de ajustes del
+          padre («Integraciones»), y un `<form>` anidado sería HTML inválido. El
+          envío se dispara con `submit()` sobre la instancia propia —también al
+          pulsar Intro en los campos, que si no dispararía el submit implícito
+          del formulario del padre—. */}
       <Form<StravaCredentialsForm>
+        form={credentialsForm}
+        component={false}
         layout="vertical"
         onFinish={handleSave}
         initialValues={{
@@ -190,15 +247,20 @@ export function StravaIntegration({
         }}
       >
         <Form.Item label="Strava Client ID" name="strava_client_id">
-          <Input autoComplete="off" />
+          <Input autoComplete="off" onPressEnter={handleCredentialsEnter} />
         </Form.Item>
         <Form.Item label="Strava Client Secret" name="strava_client_secret">
           <Input.Password
             autoComplete="off"
             placeholder="Dejar vacío para usar variable de entorno"
+            onPressEnter={handleCredentialsEnter}
           />
         </Form.Item>
-        <Button type="primary" htmlType="submit" loading={saving}>
+        <Button
+          type="primary"
+          loading={saving}
+          onClick={() => credentialsForm.submit()}
+        >
           Guardar credenciales
         </Button>
       </Form>

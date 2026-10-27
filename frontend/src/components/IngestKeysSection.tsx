@@ -33,7 +33,7 @@ function formatDate(value: string | null): string {
 }
 
 /**
- * Sección «Claves de ingesta» de la pestaña **API Keys** del diálogo de ajustes.
+ * Sección «Claves de ingesta» de la pestaña **Claves** del diálogo de ajustes.
  *
  * Es independiente del formulario de ajustes (no usa `updateSettings`): las
  * claves se crean y se revocan con llamadas **inmediatas** a la API. El token

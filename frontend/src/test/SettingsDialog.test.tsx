@@ -42,6 +42,10 @@ const mockGetSettings = vi.fn();
 // `PUT /api/settings`.
 const mockGetZennotesStatus = vi.fn();
 const mockSetZennotesToken = vi.fn();
+// Spy sobre `GET /api/strava/status`: `useStrava` es real (lo consume
+// `StravaIntegration`), así que se enruta al spy para que el indicador de la
+// sub-pestaña «Strava» sea determinista y ningún test abra una petición real.
+const mockGetStravaStatus = vi.fn();
 
 // Fixture de settings devuelta por el hook mockeado (equivale a lo que
 // responde `GET /settings`). Es mutable para que cada test pueda simular
@@ -191,23 +195,39 @@ vi.mock("../hooks/useProfile", () => ({
   })),
 }));
 
-vi.mock("../hooks/useSettings", () => ({
-  useSettings: vi.fn(() => ({
-    settings: mockSettings,
-    loading: false,
-    saving: false,
-    error: null,
+// El hook se mockea con estado real de React: `settings` vive en un
+// `useState` (como en el hook verdadero), de modo que un guardado refresca el
+// valor y repinta a los consumidores —por ejemplo el indicador de configuración
+// de las sub-pestañas de «Integraciones»— sin recargar la página. El estado se
+// siembra con `mockSettings`, que cada test ajusta antes de renderizar.
+vi.mock("../hooks/useSettings", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  const useSettings = () => {
+    const [settings, setSettings] = React.useState<Record<string, string>>(
+      mockSettings,
+    );
     // Reproduce el comportamiento real del hook: el PUT refresca `settings`
-    // con las claves enviadas. Así un `SkillsTab` que guarda vía este
-    // `updateSettings` ve el valor persistido al re-sembrar.
-    updateSettings: async (data: Record<string, string>) => {
-      const result = await mockUpdateSettings(data);
-      mockSettings = { ...mockSettings, ...data };
-      return result;
-    },
-    resetToDefaults: mockResetToDefaults,
-  })),
-}));
+    // con las claves enviadas.
+    const updateSettings = React.useCallback(
+      async (data: Record<string, string>) => {
+        const result = await mockUpdateSettings(data);
+        mockSettings = { ...mockSettings, ...data };
+        setSettings(mockSettings);
+        return result;
+      },
+      [],
+    );
+    return {
+      settings,
+      loading: false,
+      saving: false,
+      error: null,
+      updateSettings,
+      resetToDefaults: mockResetToDefaults,
+    };
+  };
+  return { useSettings: vi.fn(useSettings) };
+});
 
 // El panel de memoria persistente monta su propio hook; se mockea para que
 // abrir su pestaña sea determinista y no dispare `api.getPersistentMemory()`.
@@ -263,6 +283,9 @@ vi.mock("../api/client", async () => {
       getZennotesStatus: (...args: unknown[]) =>
         mockGetZennotesStatus(...args),
       setZennotesToken: (...args: unknown[]) => mockSetZennotesToken(...args),
+      // Estado de Strava: mismo diferido. Lo consume `useStrava` al montar
+      // `StravaIntegration` dentro de «Integraciones».
+      getStravaStatus: (...args: unknown[]) => mockGetStravaStatus(...args),
     },
   };
 });
@@ -280,6 +303,30 @@ const AppWrapper = ({ children }: { children: ReactNode }) => (
 );
 
 const renderDialog = (ui: ReactElement) => render(ui, { wrapper: AppWrapper });
+
+/**
+ * Termina la animación de cierre del `Modal` de ajustes.
+ *
+ * `destroyOnHidden` desmonta el contenido **al final** de la animación de
+ * salida. En un navegador ese final llega con el `transitionend` del propio
+ * `Modal`; jsdom no emite ese evento nunca, así que `rc-motion` se queda en
+ * `leave-start` y el desmontaje no se observaría. Aquí se espera a que la
+ * animación esté en su tramo activo y se notifica su final —un único evento,
+ * sin temporizadores ni `afterOpenChange`—, que es exactamente lo que hace el
+ * navegador. El mecanismo probado no depende de la animación: solo se le da
+ * por terminada.
+ */
+async function finishModalClose(): Promise<void> {
+  const panel = document.querySelector<HTMLElement>(".ant-modal");
+  expect(panel).not.toBeNull();
+  await waitFor(() => {
+    expect(panel).toHaveClass("ant-zoom-leave-active");
+  });
+  fireEvent.transitionEnd(panel as HTMLElement);
+  await waitFor(() => {
+    expect(panel).not.toBeInTheDocument();
+  });
+}
 
 describe("SettingsDialog", () => {
   beforeEach(() => {
@@ -299,6 +346,14 @@ describe("SettingsDialog", () => {
       folder: "Valet",
     });
     mockSetZennotesToken.mockResolvedValue(undefined);
+    // Por defecto Strava no está conectada; los tests que lo necesiten fijan el
+    // estado conectado con `mockResolvedValue`.
+    mockGetStravaStatus.mockResolvedValue({
+      connected: false,
+      athlete_id: null,
+      athlete_name: null,
+      scope: null,
+    });
   });
 
   it("is not visible when visible=false", () => {
@@ -655,11 +710,13 @@ describe("SettingsDialog", () => {
     });
   });
 
-  it("renders API Keys tab with the five password fields and the two URL base fields", async () => {
+  it("renders the five password fields and the two URL base fields in «Integraciones»", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByText("API Keys"));
+    // Las credenciales de integración viven ahora en «Integraciones» (una
+    // sub-pestaña por servicio), no en la antigua pestaña «API Keys».
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
     // Cada clave se comprueba por su propio campo (etiqueta), nunca por un
     // conteo global de `input[type="password"]`: así el test no se rompe si
@@ -706,7 +763,9 @@ describe("SettingsDialog", () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByText("API Keys"));
+    // Las credenciales de integración viven ahora en «Integraciones» (una
+    // sub-pestaña por servicio), no en la antigua pestaña «API Keys».
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
     // La URL base de Miniflux es un campo de texto con el endpoint por defecto
     // como marcador; sin `miniflux_base_url` en settings no hay valor pintado.
@@ -737,7 +796,11 @@ describe("SettingsDialog", () => {
     };
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByText("API Keys"));
+    // Las credenciales de integración viven ahora en «Integraciones» (una
+    // sub-pestaña por servicio), no en la antigua pestaña «API Keys».
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    // Los campos de Miniflux viven en su propia sub-pestaña.
+    await user.click(screen.getByRole("tab", { name: /^Miniflux(?![a-zA-Z])/ }));
 
     // El campo de URL base muestra el valor vigente.
     expect(screen.getByLabelText("Miniflux · URL base")).toHaveValue(
@@ -772,9 +835,11 @@ describe("SettingsDialog", () => {
     };
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    // Se abre «API Keys» para que los campos de Miniflux queden registrados en
-    // el formulario compartido.
-    await user.click(screen.getByText("API Keys"));
+    // Se abre «Integraciones» para que los campos de Miniflux queden
+    // registrados en el formulario compartido.
+    // Las credenciales de integración viven ahora en «Integraciones» (una
+    // sub-pestaña por servicio), no en la antigua pestaña «API Keys».
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
     // Se cambia a otra pestaña y se guarda desde ella: la URL base vigente no
     // debe perderse en el payload.
@@ -803,7 +868,11 @@ describe("SettingsDialog", () => {
     };
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByText("API Keys"));
+    // Las credenciales de integración viven ahora en «Integraciones» (una
+    // sub-pestaña por servicio), no en la antigua pestaña «API Keys».
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    // Los campos de apimail viven en su propia sub-pestaña.
+    await user.click(screen.getByRole("tab", { name: /^apimail(?![a-zA-Z])/ }));
 
     // El campo de URL base muestra el valor vigente.
     expect(screen.getByLabelText("apimail · URL base")).toHaveValue(
@@ -835,9 +904,11 @@ describe("SettingsDialog", () => {
     };
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    // Se abre «API Keys» para que los campos de apimail queden registrados en
-    // el formulario compartido.
-    await user.click(screen.getByText("API Keys"));
+    // Se abre «Integraciones» para que los campos de apimail queden
+    // registrados en el formulario compartido.
+    // Las credenciales de integración viven ahora en «Integraciones» (una
+    // sub-pestaña por servicio), no en la antigua pestaña «API Keys».
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
     // Se cambia a otra pestaña y se guarda desde ella: la URL base vigente no
     // debe perderse en el payload.
@@ -857,7 +928,7 @@ describe("SettingsDialog", () => {
   });
 
   // ════════════════════════════════════════════════════════════════
-  // change `zennotes-notes` — token de ZenNotes en la pestaña «API Keys»
+  // change `zennotes-notes` — token de ZenNotes en «Integraciones»
   // Escenarios:
   //  - «El token de ZenNotes nunca muestra el valor guardado»
   //  - «Guardar el token de ZenNotes usa su endpoint dedicado»
@@ -876,21 +947,35 @@ describe("SettingsDialog", () => {
     mockSettings = { ...mockSettings, zennotes_token: "SECRETO-no-mostrar" };
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByText("API Keys"));
+    // Las credenciales de integración viven ahora en «Integraciones» (una
+    // sub-pestaña por servicio), no en la antigua pestaña «API Keys».
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    // La sección vive en su propia sub-pestaña: se activa para que sus campos
+    // y su botón estén accesibles (las panes inactivas quedan ocultas).
+    await user.click(screen.getByRole("tab", { name: /^ZenNotes(?![a-zA-Z])/ }));
 
     // El campo existe y arranca vacío: no revela el valor guardado.
     const field = await screen.findByLabelText("ZenNotes · token de API");
     expect(field).toHaveValue("");
-    // El estado se lee desde el endpoint dedicado, no desde settings.
+    // El estado se lee desde el endpoint dedicado, no desde settings. Se acota
+    // a la sección porque el mismo texto viaja en el indicador de la etiqueta
+    // de la sub-pestaña.
     expect(mockGetZennotesStatus).toHaveBeenCalled();
-    expect(await screen.findByText("Configurado")).toBeInTheDocument();
+    expect(
+      await within(screen.getByRole("region", { name: "ZenNotes" })).findByText(
+        "Configurado",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("guarda el token de ZenNotes por su endpoint dedicado y no por PUT /api/settings", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
-    await user.click(screen.getByText("API Keys"));
+    // Las credenciales de integración viven ahora en «Integraciones» (una
+    // sub-pestaña por servicio), no en la antigua pestaña «API Keys».
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await user.click(screen.getByRole("tab", { name: /^ZenNotes(?![a-zA-Z])/ }));
 
     const field = await screen.findByLabelText("ZenNotes · token de API");
     await user.type(field, "nuevo-token-zennotes");
@@ -1321,7 +1406,7 @@ describe("SettingsDialog", () => {
       "Perfil",
       "Interfaz",
       "Prompts",
-      "API Keys",
+      "Claves",
       "Memoria",
       "Generación",
       "Skills",
@@ -2309,13 +2394,11 @@ describe("SettingsDialog", () => {
   // R1 — regresión: el borrador del enrutador se descarta al remontar el
   // control, que vuelve a leer lo persistido.
   //
-  // El mecanismo real incrementa `routerOpenKey` desde el `afterOpenChange` del
-  // `Modal` de antd. En jsdom ese callback NO dispara: `rc-motion` espera un
-  // `transitionend` que jsdom nunca emite y `Dialog` no pasa `motionDeadline`,
-  // así que la animación nunca «termina» y `onVisibleChanged` no se invoca. No
-  // se fabrica un test que dependa de ese evento. Se cubre el comportamiento
-  // observable equivalente: `RouterControl` remontado (lo que produce el cambio
-  // de `key`) descarta la edición sin guardar y re-lee `getSettings`.
+  // El mecanismo real es el remontaje: el `Modal` de antd usa `destroyOnHidden`,
+  // así que cada apertura vuelve a montar su contenido. Aquí se simula ese
+  // remontaje cambiando la `key` del control, que es el comportamiento
+  // observable equivalente: `RouterControl` remontado descarta la edición sin
+  // guardar y re-lee `getSettings`.
   it("remontar el control descarta la edición sin guardar y relee lo persistido", async () => {
     const user = userEvent.setup();
     mockSettings = { ...mockSettings, ROUTER_ENABLED: "false" };
@@ -2526,5 +2609,618 @@ describe("SettingsDialog", () => {
         expect.objectContaining({ REACT_TOOL_SUCCESS_LIMIT: "7" }),
       );
     });
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED — change `settings-integrations-tabs`
+  // Sub-pestañas horizontales en «Integraciones», indicador de configuración
+  // por integración y pestaña «Claves» solo con claves de ingesta.
+  // Escenarios: openspec/changes/settings-integrations-tabs/specs/frontend/spec.md
+  // ════════════════════════════════════════════════════════════════
+
+  // Orden cerrado de las sub-pestañas de «Integraciones» (spec aprobada).
+  const INTEGRATION_SUBTABS = [
+    "Strava",
+    "OpenWeatherMap",
+    "Google Places",
+    "Brave Search",
+    "apimail",
+    "Miniflux",
+    "ZenNotes",
+  ] as const;
+
+  // Etiquetas de los campos de credencial que, tras el change, viven SOLO en
+  // «Integraciones» y nunca en «Claves».
+  const CREDENTIAL_LABELS = [
+    "OpenWeatherMap API Key",
+    "Google Places API Key",
+    "Brave Search API Key",
+    "apimail · URL base",
+    "apimail · API Key",
+    "Miniflux · URL base",
+    "Miniflux · API Key",
+  ] as const;
+
+  /** Abre la sub-pestaña de «Integraciones» cuyo nombre empieza por `name`. */
+  const openIntegrationSubTab = async (
+    user: ReturnType<typeof userEvent.setup>,
+    name: string,
+  ): Promise<HTMLElement> => {
+    const tab = await screen.findByRole("tab", {
+      name: new RegExp(`^${name}(?![a-zA-Z])`),
+    });
+    await user.click(tab);
+    return tab;
+  };
+
+  it("organiza «Integraciones» en siete sub-pestañas horizontales en el orden acordado", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    const subTabs = INTEGRATION_SUBTABS.map((name) =>
+      screen.getByRole("tab", {
+        name: new RegExp(`^${name}(?![a-zA-Z])`),
+      }),
+    );
+
+    // Las siete cuelgan del mismo `tablist` anidado, distinto del de nivel
+    // superior (que ya aloja Perfil, Interfaz, …).
+    const nested = subTabs[0].closest('[role="tablist"]') as HTMLElement | null;
+    if (!nested) throw new Error("Las sub-pestañas no cuelgan de un tablist");
+    expect(nested).not.toBe(
+      screen.getByRole("tab", { name: "Integraciones" }).closest('[role="tablist"]'),
+    );
+    for (const tab of subTabs) {
+      expect(tab.closest('[role="tablist"]')).toBe(nested);
+    }
+
+    // Horizontales: antd no marca orientación vertical (no hay `tabPosition`).
+    expect(nested).not.toHaveAttribute("aria-orientation", "vertical");
+
+    // Orden: sus posiciones en el DOM son estrictamente crecientes.
+    const domTabs = screen.getAllByRole("tab");
+    const positions = subTabs.map((tab) => domTabs.indexOf(tab));
+    expect(positions.every((index) => index >= 0)).toBe(true);
+    expect(new Set(positions).size).toBe(INTEGRATION_SUBTABS.length);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+
+    // La sub-pestaña activa por defecto es la primera (Strava).
+    expect(subTabs[0]).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("cada sub-pestaña de clave muestra sus campos y su propio «Guardar»", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenWeatherMap");
+
+    const field = await screen.findByLabelText("OpenWeatherMap API Key");
+    // El panel activo no expone los campos de otras integraciones.
+    const panel = field.closest('[role="tabpanel"]') as HTMLElement | null;
+    expect(panel).not.toBeNull();
+    expect(
+      within(panel as HTMLElement).queryByLabelText("Brave Search API Key"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(panel as HTMLElement).queryByLabelText("apimail · URL base"),
+    ).not.toBeInTheDocument();
+
+    await user.type(field, "clave-openweather");
+
+    // El «Guardar» de la sub-pestaña envía su propia clave.
+    const form = field.closest("form") as HTMLFormElement;
+    expect(form).not.toBeNull();
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ openweather_api_key: "clave-openweather" }),
+      );
+    });
+  });
+
+  it("apimail muestra la URL base vigente, enmascara la clave y guarda con su botón", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    mockSettings = {
+      ...mockSettings,
+      apimail_base_url: "https://apimail.test.local",
+      apimail_api_key: "clave-previa",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "apimail");
+
+    expect(await screen.findByLabelText("apimail · URL base")).toHaveValue(
+      "https://apimail.test.local",
+    );
+
+    const apiKey = screen.getByLabelText("apimail · API Key");
+    expect(apiKey).toHaveAttribute("type", "password");
+
+    await user.clear(apiKey);
+    await user.type(apiKey, "nueva-clave-apimail");
+
+    const form = apiKey.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ apimail_api_key: "nueva-clave-apimail" }),
+      );
+    });
+  });
+
+  it("las URL base conservan su placeholder por defecto y las claves el suyo", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    await openIntegrationSubTab(user, "apimail");
+    expect(await screen.findByLabelText("apimail · URL base")).toHaveAttribute(
+      "placeholder",
+      "https://apimail.territoriolinux.es",
+    );
+    expect(screen.getByLabelText("apimail · API Key")).toHaveAttribute(
+      "placeholder",
+      "Dejar vacío para usar variable de entorno",
+    );
+
+    await openIntegrationSubTab(user, "Miniflux");
+    expect(await screen.findByLabelText("Miniflux · URL base")).toHaveAttribute(
+      "placeholder",
+      "https://miniflux.territoriolinux.es",
+    );
+
+    await openIntegrationSubTab(user, "OpenWeatherMap");
+    expect(
+      await screen.findByLabelText("OpenWeatherMap API Key"),
+    ).toHaveAttribute(
+      "placeholder",
+      "Dejar vacío para usar variable de entorno",
+    );
+  });
+
+  it("Miniflux guarda con su propia sub-pestaña y no envía el token de ZenNotes", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    mockSettings = {
+      ...mockSettings,
+      miniflux_base_url: "https://miniflux.test.local",
+      miniflux_api_key: "clave-previa",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "Miniflux");
+
+    const apiKey = await screen.findByLabelText("Miniflux · API Key");
+    await user.clear(apiKey);
+    await user.type(apiKey, "nueva-clave-miniflux");
+
+    const form = apiKey.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ miniflux_api_key: "nueva-clave-miniflux" }),
+      );
+    });
+
+    const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, string>;
+    expect(payload).not.toHaveProperty("zennotes_token");
+  });
+
+  it("ZenNotes conserva su endpoint dedicado desde su sub-pestaña", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "ZenNotes");
+
+    const field = await screen.findByLabelText("ZenNotes · token de API");
+    await user.type(field, "nuevo-token-zennotes");
+    await user.click(screen.getByRole("button", { name: /guardar token/i }));
+
+    await waitFor(() => {
+      expect(mockSetZennotesToken).toHaveBeenCalledWith("nuevo-token-zennotes");
+    });
+    // El token NUNCA viaja por `PUT /api/settings`.
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
+  });
+
+  // Los dos inputs de credenciales de Strava van con `component={false}`, así
+  // que cuelgan del `<form>` real de ajustes del padre: sin interceptar Intro,
+  // el navegador lanzaría el submit **implícito** de ese form
+  // (`PUT /api/settings` sin credenciales), el diálogo se cerraría y las
+  // credenciales no se guardarían.
+  it("Intro en las credenciales de Strava guarda sus credenciales y no envía el formulario de ajustes", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={onClose} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    await user.type(await screen.findByLabelText("Strava Client ID"), "12345{enter}");
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledTimes(1);
+    });
+    // El payload es el de las credenciales, no el de los ajustes generales: si
+    // hubiera entrado `handleSettingsSubmit`, llevaría `font_size` y compañía.
+    const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, string>;
+    expect(Object.keys(payload).sort()).toEqual([
+      "strava_client_id",
+      "strava_client_secret",
+    ]);
+    expect(payload.strava_client_id).toBe("12345");
+    expect(payload).not.toHaveProperty("font_size");
+    // Y el diálogo sigue abierto: el submit implícito ya no cierra nada.
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("Intro en el token de ZenNotes guarda por su endpoint y no envía el formulario de ajustes", async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={onClose} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "ZenNotes");
+
+    const field = await screen.findByLabelText("ZenNotes · token de API");
+    await user.type(field, "token-con-intro{enter}");
+
+    await waitFor(() => {
+      expect(mockSetZennotesToken).toHaveBeenCalledWith("token-con-intro");
+    });
+    expect(mockSetZennotesToken).toHaveBeenCalledTimes(1);
+    // Ni `PUT /api/settings` ni cierre del diálogo: una sola acción, no dos.
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("muestra el indicador de configuración en cada sub-pestaña desde el primer render", async () => {
+    const user = userEvent.setup();
+    // Strava conectada y ZenNotes configurado salen de sus endpoints dedicados.
+    mockGetStravaStatus.mockResolvedValue({
+      connected: true,
+      athlete_id: "12345",
+      athlete_name: "Ana Corredora",
+      scope: "read,activity:read_all",
+    });
+    mockGetZennotesStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://zennotes.territoriolinux.es",
+      folder: "Valet",
+    });
+    // Solo OpenWeatherMap tiene clave; apimail tiene URL base pero NO API key.
+    mockSettings = {
+      ...mockSettings,
+      openweather_api_key: "clave-openweather",
+      apimail_base_url: "https://apimail.test.local",
+      apimail_api_key: "",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    // Sin abrir ninguna sub-pestaña: los indicadores ya son correctos.
+    expect(
+      await screen.findByRole("tab", {
+        name: /^Strava(?![a-zA-Z])[\s\S]*Conectada/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", {
+        name: /^OpenWeatherMap(?![a-zA-Z])[\s\S]*Configurada/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", {
+        name: /^Google Places(?![a-zA-Z])[\s\S]*Sin configurar/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", {
+        name: /^Brave Search(?![a-zA-Z])[\s\S]*Sin configurar/,
+      }),
+    ).toBeInTheDocument();
+    // apimail se evalúa por su API key: con URL base pero sin clave, «Sin configurar».
+    expect(
+      screen.getByRole("tab", {
+        name: /^apimail(?![a-zA-Z])[\s\S]*Sin configurar/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", {
+        name: /^Miniflux(?![a-zA-Z])[\s\S]*Sin configurar/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", {
+        name: /^ZenNotes(?![a-zA-Z])[\s\S]*Configurado/,
+      }),
+    ).toBeInTheDocument();
+
+    // Invariante de no duplicación: un solo `GET` de cada estado remoto por
+    // apertura del panel, aunque el indicador y el panel compartan la lectura.
+    expect(mockGetStravaStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetZennotesStatus).toHaveBeenCalledTimes(1);
+  });
+
+  // El nombre accesible del `Tabs` anidado evita que un lector de pantalla
+  // anuncie siete pestañas sin decir de qué son (mismo patrón que el
+  // `aria-label="Rol de generación"` del `Tabs` de «Generación»).
+  //
+  // antd propaga el `aria-label` al `div` raíz del `Tabs`, mientras el
+  // `role="tablist"` vive en un hijo: etiquetar el atributo sin rol no crea un
+  // nodo navegable con nombre. Por eso el panel añade `role="group"` y el test
+  // aseverta sobre el **rol** (nombre accesible real), no sobre el atributo.
+  it("da un nombre accesible navegable al «Tabs» anidado de Integraciones", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    const group = screen.getByRole("group", { name: "Integraciones" });
+    // Las siete sub-pestañas viven dentro del grupo nombrado (no en el «Tabs»
+    // de nivel superior).
+    for (const name of INTEGRATION_SUBTABS) {
+      expect(
+        within(group).getByRole("tab", {
+          name: new RegExp(`^${name}(?![a-zA-Z])`),
+        }),
+      ).toBeInTheDocument();
+    }
+  });
+
+  // Los indicadores de Strava y ZenNotes se leen de sus endpoints al montar, y
+  // el control del enrutador relee `GET /api/settings` al montar su pestaña.
+  // La frescura no la da una señal de visibilidad, sino el ciclo de vida: el
+  // `Modal` del diálogo lleva `destroyOnHidden`, así que al cerrar se desmonta
+  // todo su contenido —`IntegrationsTab` y `RouterControl` incluidos— y al
+  // abrir se vuelve a montar. Como los hooks leen en el montaje, cada apertura
+  // gasta exactamente una lectura por endpoint, sin contadores, sin
+  // `afterOpenChange` y sin depender de la animación del `Modal` para decidir
+  // cuándo releer.
+  it("relee cada endpoint en cada apertura porque el contenido se desmonta al cerrar", async () => {
+    const user = userEvent.setup();
+    const renderAt = (open: boolean) => (
+      <ProfileProvider>
+        <SettingsDialog visible={open} onClose={vi.fn()} />
+      </ProfileProvider>
+    );
+
+    const { rerender } = renderDialog(renderAt(true));
+
+    // Primera apertura: entrar en «Integraciones» monta el panel, cuyos hooks
+    // hacen la única lectura de la apertura.
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await waitFor(() => {
+      expect(mockGetStravaStatus).toHaveBeenCalledTimes(1);
+    });
+    expect(mockGetZennotesStatus).toHaveBeenCalledTimes(1);
+
+    // Y entrar en «Enrutador de skills» monta su control, que relee
+    // `GET /api/settings` por su cuenta: la cuenta de lecturas al terminar la
+    // primera apertura queda registrada como línea base.
+    await user.click(screen.getByRole("tab", { name: "Enrutador de skills" }));
+    expect(
+      await screen.findByRole("switch", { name: ROUTER_SWITCH }),
+    ).toBeInTheDocument();
+    const settingsReadsAfterFirstOpen = mockGetSettings.mock.calls.length;
+
+    // Cerrar desmonta el contenido: el panel —y con él sus indicadores y el
+    // control del enrutador— deja de existir en el DOM. Es la garantía
+    // estructural del mecanismo: si el contenido sobreviviera al cierre, la
+    // reapertura no remontaría los hooks y no habría segunda lectura.
+    rerender(renderAt(false));
+    await finishModalClose();
+    expect(
+      screen.queryByRole("group", { name: "Integraciones" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Strava")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: ROUTER_SWITCH }),
+    ).not.toBeInTheDocument();
+    expect(mockGetStravaStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetZennotesStatus).toHaveBeenCalledTimes(1);
+
+    // Reabrir remonta el panel y añade exactamente una lectura más de cada
+    // endpoint: una por apertura, ni acumulada por sesión ni duplicada.
+    rerender(renderAt(true));
+    await user.click(await screen.findByRole("tab", { name: "Integraciones" }));
+    await waitFor(() => {
+      expect(mockGetStravaStatus).toHaveBeenCalledTimes(2);
+    });
+    expect(mockGetZennotesStatus).toHaveBeenCalledTimes(2);
+
+    // La pestaña del enrutador también se remonta de cero y su control relee
+    // lo persistido en esta apertura: la cuenta de `GET /api/settings` supera
+    // la línea base de la primera apertura.
+    await user.click(
+      await screen.findByRole("tab", { name: "Enrutador de skills" }),
+    );
+    expect(
+      await screen.findByRole("switch", { name: ROUTER_SWITCH }),
+    ).toBeInTheDocument();
+    expect(mockGetSettings.mock.calls.length).toBeGreaterThan(
+      settingsReadsAfterFirstOpen,
+    );
+  });
+
+  // Un fallo de lectura no puede dejar el indicador en «Consultando…» para
+  // siempre: eso afirmaría que se está consultando cuando ya no, y ocultaría
+  // que el estado es desconocido.
+  it("muestra «Sin datos» cuando falla la lectura del estado de Strava o ZenNotes", async () => {
+    const user = userEvent.setup();
+    mockGetStravaStatus.mockRejectedValue(new Error("Strava caído"));
+    mockGetZennotesStatus.mockRejectedValue(new Error("ZenNotes caído"));
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    expect(
+      await screen.findByRole("tab", {
+        name: /^Strava(?![a-zA-Z])[\s\S]*Sin datos/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", {
+        name: /^ZenNotes(?![a-zA-Z])[\s\S]*Sin datos/,
+      }),
+    ).toBeInTheDocument();
+    // El texto de pendiente desaparece: no hay consulta en curso.
+    expect(screen.queryByText("Consultando…")).not.toBeInTheDocument();
+  });
+
+  // La spec fija «Configurado»/«Sin configurar»: el panel y la etiqueta no
+  // pueden decir cosas distintas para el mismo estado.
+  it("usa «Sin configurar» en el panel de ZenNotes, igual que en la etiqueta", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "ZenNotes");
+
+    const section = await screen.findByRole("region", { name: "ZenNotes" });
+    expect(
+      await within(section).findByText("Sin configurar"),
+    ).toBeInTheDocument();
+    expect(within(section).queryByText("No configurado")).not.toBeInTheDocument();
+  });
+
+  it("marca «No conectada» la sub-pestaña de Strava cuando no hay conexión", async () => {
+    const user = userEvent.setup();
+    mockGetStravaStatus.mockResolvedValue({
+      connected: false,
+      athlete_id: null,
+      athlete_name: null,
+      scope: null,
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    expect(
+      await screen.findByRole("tab", {
+        name: /^Strava(?![a-zA-Z])[\s\S]*No conectada/,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("actualiza el indicador a «Configurada» tras guardar la clave de su sub-pestaña", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    // De partida, sin `google_places_api_key`, la sub-pestaña está sin configurar.
+    expect(
+      await screen.findByRole("tab", {
+        name: /^Google Places(?![a-zA-Z])[\s\S]*Sin configurar/,
+      }),
+    ).toBeInTheDocument();
+
+    await openIntegrationSubTab(user, "Google Places");
+    const field = await screen.findByLabelText("Google Places API Key");
+    await user.type(field, "clave-google-places");
+
+    const form = field.closest("form") as HTMLFormElement;
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    // Sin recargar la página, el indicador de la etiqueta refleja el guardado.
+    await waitFor(() => {
+      expect(
+        screen.getByRole("tab", {
+          name: /^Google Places(?![a-zA-Z])[\s\S]*Configurada/,
+        }),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("el estado de cada sub-pestaña se anuncia con texto accesible, no solo con color", async () => {
+    const user = userEvent.setup();
+    mockGetStravaStatus.mockResolvedValue({
+      connected: true,
+      athlete_id: "12345",
+      athlete_name: "Ana Corredora",
+      scope: "read,activity:read_all",
+    });
+    mockGetZennotesStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://zennotes.territoriolinux.es",
+      folder: "Valet",
+    });
+    mockSettings = {
+      ...mockSettings,
+      openweather_api_key: "clave-openweather",
+      google_places_api_key: "clave-places",
+      brave_search_api_key: "clave-brave",
+      apimail_base_url: "https://apimail.test.local",
+      apimail_api_key: "clave-apimail",
+      miniflux_base_url: "https://miniflux.test.local",
+      miniflux_api_key: "clave-miniflux",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    // El nombre accesible de la etiqueta lleva el estado en texto: un lector de
+    // pantalla lo anuncia sin depender del color del indicador.
+    const expected: Array<[string, RegExp]> = [
+      ["Strava", /Conectada/],
+      ["OpenWeatherMap", /Configurada/],
+      ["Google Places", /Configurada/],
+      ["Brave Search", /Configurada/],
+      ["apimail", /Configurada/],
+      ["Miniflux", /Configurada/],
+      ["ZenNotes", /Configurado/],
+    ];
+    for (const [name, state] of expected) {
+      const tab = await screen.findByRole("tab", {
+        name: new RegExp(`^${name}(?![a-zA-Z])`),
+      });
+      expect(tab).toHaveAccessibleName(state);
+    }
+  });
+
+  it("la pestaña «Claves» contiene solo la gestión de claves de ingesta", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Claves" }));
+
+    // Gestión de claves de ingesta: alta y listado con prefijo y fecha de uso.
+    const section = await screen.findByRole("region", {
+      name: "Claves de ingesta",
+    });
+    expect(
+      within(section).getByLabelText("Nombre de la aplicación"),
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByRole("button", { name: /crear clave/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByRole("columnheader", { name: "Prefijo" }),
+    ).toBeInTheDocument();
+    expect(
+      within(section).getByRole("columnheader", { name: "Último uso" }),
+    ).toBeInTheDocument();
+
+    // Ninguna credencial de integración vive ya en «Claves».
+    for (const label of CREDENTIAL_LABELS) {
+      expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
+    }
+    expect(
+      screen.queryByLabelText("ZenNotes · token de API"),
+    ).not.toBeInTheDocument();
   });
 });
