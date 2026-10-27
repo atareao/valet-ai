@@ -1883,6 +1883,7 @@ La pestaña «Integraciones» del SettingsDialog SHALL organizarse en **sub-pest
 5. **apimail**
 6. **Miniflux**
 7. **ZenNotes**
+8. **OpenTodo**
 
 Cada sub-pestaña SHALL contener únicamente los campos y acciones de su integración y SHALL tener
 **su propio botón «Guardar»**; no habrá un botón de guardado común a todas las sub-pestañas.
@@ -1901,6 +1902,19 @@ el mismo `Form` de ajustes y SHALL persistir con `PUT /api/settings`. Strava SHA
 actual y ZenNotes SHALL conservar su endpoint dedicado `PUT /api/zennotes/token`; `zennotes_token`
 NO SHALL enviarse en `PUT /api/settings`.
 
+La sub-pestaña «OpenTodo» SHALL mostrar un campo de URL base (`opentodo_base_url`, con placeholder
+`https://todo.territoriolinux.es`) que se persiste con `PUT /api/settings`, y un campo de token
+(`opentodo_token`) que SHALL arrancar **siempre vacío** y NO SHALL releer el valor guardado, de modo
+que el token solo SHALL persistirse con `PUT /api/opentodo/token` y NO SHALL enviarse nunca en
+`PUT /api/settings`.
+
+La sub-pestaña «OpenTodo» SHALL incluir un botón **«Probar conexión»** que SHALL consultar el
+endpoint de sonda `GET /api/opentodo/check` (no `GET /api/opentodo/status`) y SHALL mostrar el
+resultado —`detail`— como **texto** en la línea de estado de la región, que ya es una región viva
+(`aria-live`); el resultado NO SHALL comunicarse solo mediante un toast. Cuando el estado no se haya
+podido leer, la línea de estado del panel y el indicador de la etiqueta SHALL mostrar **la misma**
+etiqueta («Sin datos»), y no «Sin configurar»: «no lo sé» y «no está configurado» no son lo mismo.
+
 Los campos de URL base SHALL conservar sus placeholders por defecto
 (`https://apimail.territoriolinux.es` y `https://miniflux.territoriolinux.es`) y los campos de
 clave SHALL conservar el placeholder «Dejar vacío para usar variable de entorno».
@@ -1909,9 +1923,9 @@ clave SHALL conservar el placeholder «Dejar vacío para usar variable de entorn
 
 - **Given** el SettingsDialog está abierto
 - **When** el usuario hace clic en la tab «Integraciones»
-- **Then** se muestran siete sub-pestañas en horizontal
-- **And** su orden es Strava, OpenWeatherMap, Google Places, Brave Search, apimail, Miniflux
-  y ZenNotes
+- **Then** se muestran ocho sub-pestañas en horizontal
+- **And** su orden es Strava, OpenWeatherMap, Google Places, Brave Search, apimail, Miniflux,
+  ZenNotes y OpenTodo
 - **And** la sub-pestaña activa por defecto es la primera (Strava)
 
 #### Scenario: Cada sub-pestaña tiene sus propios campos y su propio botón Guardar
@@ -1951,6 +1965,42 @@ clave SHALL conservar el placeholder «Dejar vacío para usar variable de entorn
 - **Then** se llama a `PUT /api/zennotes/token` con el token
 - **And** `zennotes_token` NO se envía en `PUT /api/settings`
 
+#### Scenario: OpenTodo guarda el token por su endpoint dedicado
+
+- **Given** el usuario escribe un token en la sub-pestaña «OpenTodo»
+- **When** pulsa «Guardar»
+- **Then** se llama a `PUT /api/opentodo/token` con el token
+- **And** `opentodo_token` NO se envía en `PUT /api/settings`
+
+#### Scenario: El campo del token de OpenTodo arranca vacío
+
+- **Given** `opentodo_token` ya guardado en el servidor
+- **When** el usuario abre la sub-pestaña «OpenTodo»
+- **Then** el campo del token está vacío
+- **And** el estado «Configurado» se muestra en la línea de estado, no en el campo
+
+#### Scenario: La URL base de OpenTodo se guarda con los ajustes
+
+- **Given** el usuario edita la URL base en la sub-pestaña «OpenTodo»
+- **When** pulsa «Guardar»
+- **Then** `updateSettings` se llama con `opentodo_base_url`
+
+#### Scenario: Probar conexión sondea de verdad
+
+- **Given** el usuario está en la sub-pestaña «OpenTodo» con un token guardado pero caducado
+- **When** pulsa «Probar conexión»
+- **Then** se llama a `GET /api/opentodo/check`
+- **And** NO se llama a `GET /api/opentodo/status`
+- **And** la línea de estado muestra el `detail` devuelto como texto
+
+#### Scenario: El panel y la etiqueta coinciden cuando el estado no se puede leer
+
+- **Given** `GET /api/opentodo/status` no responde
+- **When** se abre la pestaña «Integraciones»
+- **Then** el indicador de la sub-pestaña «OpenTodo» muestra «Sin datos»
+- **And** la línea de estado del panel muestra también «Sin datos»
+- **And** NO muestra «Sin configurar»
+
 #### Scenario: Al cerrar y reabrir el diálogo, el contenido se monta de nuevo y los indicadores se releen
 
 - **Given** el SettingsDialog abierto, con las sub-pestañas de «Integraciones» ya visitadas
@@ -1959,9 +2009,9 @@ clave SHALL conservar el placeholder «Dejar vacío para usar variable de entorn
   abrir
 - **And** la pestaña superior vuelve a su estado inicial («Perfil») y la sub-pestaña activa de
   «Integraciones» vuelve a ser la primera (Strava)
-- **And** se relanza una lectura de `GET /api/strava/status` y de `GET /api/zennotes/status`, una
-  por apertura, de modo que los indicadores reflejan el estado remoto vigente y no el de la
-  apertura anterior
+- **And** se relanza una lectura de `GET /api/strava/status`, de `GET /api/zennotes/status` y de
+  `GET /api/opentodo/status`, una por apertura, de modo que los indicadores reflejan el estado
+  remoto vigente y no el de la apertura anterior
 
 ### Requirement: SettingsDialog SHALL show a configuration indicator per integration
 
@@ -1981,6 +2031,8 @@ El criterio de estado SHALL ser:
   determina el estado).
 - **ZenNotes** → «Configurado» / «Sin configurar», derivado del campo `configured` de
   `GET /api/zennotes/status`.
+- **OpenTodo** → «Configurado» / «Sin configurar», derivado del campo `configured` de
+  `GET /api/opentodo/status`.
 
 El indicador de la etiqueta SHALL ser correcto **desde el primer render** del panel Integraciones,
 es decir, **NO SHALL** depender de que el usuario abra la sub-pestaña correspondiente (el montaje
@@ -2019,6 +2071,12 @@ sub-pestaña, su indicador SHALL actualizarse sin necesidad de recargar la pági
 - **Given** `GET /api/zennotes/status` responde `{ configured: true, ... }`
 - **When** se abre la pestaña «Integraciones»
 - **Then** la sub-pestaña «ZenNotes» muestra «Configurado»
+
+#### Scenario: El indicador de OpenTodo sale de su endpoint de estado
+
+- **Given** `GET /api/opentodo/status` responde `{ configured: true, base_url: "…" }`
+- **When** se abre la pestaña «Integraciones»
+- **Then** la sub-pestaña «OpenTodo» muestra «Configurado»
 
 #### Scenario: Los indicadores son correctos sin abrir cada sub-pestaña
 
