@@ -77,8 +77,9 @@
 
 ## 5. Cierre
 
-- [ ] 5.1 Release `minor` → **v0.24.0**, CHANGELOG, PR a `main`, tag, imagen.
-- [ ] 5.2 Desplegar en `co1` con copia previa de la BD y verificar `/api/health`, `/api/tasks` → 404,
-      herramienta con token y enlace del header.
-- [ ] 5.3 `AGENTS.md` §V (estado 16 con la fase 2 cerrada) y §VI (plan completado);
-      `plans/PLAN-011.md` → `plans/PLAN-011-COMPLETED.md` con las tareas 8–10 cerradas.
+- [x] 5.1 Release `minor` → **v0.24.0**, CHANGELOG, PR a `main` (`627c68f`), tag `v0.24.0`, imagen
+      publicada por `image.yml`.
+- [x] 5.2 Desplegar en `co1` con copia previa de la BD y verificar `/api/health`, `/api/tasks`,
+      herramienta con token y enlace del header. — `/api/health` → `{"status":"ok","db":"connected","version":"0.24.0"}`; `GET /api/tasks` cae al fallback HTML de la SPA y `POST` responde `405`; `tasks` y `tasks_fts` ausentes en la BD, migración `20261028000001` aplicada, resto de tablas y FTS intactos; el chunk `AuthenticatedApp` servido contiene la URL de OpenTodo y `rel="noopener noreferrer"`. Copia previa en `/root/valet-2026-10-28-v0.23.0-pre-remove-tasks.db` (8 tareas).
+- [x] 5.3 `AGENTS.md` §V (estado 16 con la fase 2 cerrada) y §VI (plan completado);
+      `plans/PLAN-011-COMPLETED.md` con las tareas 8–10 cerradas.
