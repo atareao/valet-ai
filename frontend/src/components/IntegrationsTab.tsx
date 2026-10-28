@@ -134,6 +134,7 @@ export function IntegrationsTab({
 
   return (
     <Tabs
+      tabPosition="left"
       aria-label="Integraciones"
       role="group"
       items={[

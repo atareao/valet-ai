@@ -236,6 +236,7 @@ export function SkillsTab({
     <section role="region" aria-label="Skills">
       <Form form={form} layout="vertical" onFinish={handleSubmit}>
         <Tabs
+          tabPosition="left"
           aria-label="Configuración por skill"
           items={skills.map((skill) => ({
             key: skill.id,

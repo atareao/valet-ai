@@ -2692,7 +2692,8 @@ describe("SettingsDialog", () => {
     return tab;
   };
 
-  it("organiza «Integraciones» en ocho sub-pestañas horizontales en el orden acordado", async () => {
+  // change `settings-tabs-vertical`: pestañas verticales
+  it("organiza «Integraciones» en ocho sub-pestañas verticales en el orden acordado", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
@@ -2719,8 +2720,10 @@ describe("SettingsDialog", () => {
       expect(tab.closest('[role="tablist"]')).toBe(nested);
     }
 
-    // Horizontales: antd no marca orientación vertical (no hay `tabPosition`).
-    expect(nested).not.toHaveAttribute("aria-orientation", "vertical");
+    // Verticales: rc-tabs marca `aria-orientation="vertical"` en el `tablist`
+    // cuando `tabPosition` es lateral. Es el atributo que fija la orientación,
+    // así que el test falla si alguien quita el `tabPosition`.
+    expect(nested).toHaveAttribute("aria-orientation", "vertical");
 
     // Orden: sus posiciones en el DOM son estrictamente crecientes.
     const domTabs = screen.getAllByRole("tab");
@@ -2731,6 +2734,109 @@ describe("SettingsDialog", () => {
 
     // La sub-pestaña activa por defecto es la primera (Strava).
     expect(subTabs[0]).toHaveAttribute("aria-selected", "true");
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED — change `settings-tabs-vertical`: pestañas verticales
+  // Requisito: el diálogo de ajustes y sus `Tabs` anidados usan
+  // `tabPosition="left"`, que rc-tabs expone como
+  // `aria-orientation="vertical"` en el `tablist`.
+  // ════════════════════════════════════════════════════════════════
+
+  /** Devuelve el `tablist` del que cuelga la pestaña `tab`. */
+  const tablistOf = (tab: HTMLElement): HTMLElement => {
+    const tablist = tab.closest('[role="tablist"]') as HTMLElement | null;
+    if (!tablist) throw new Error(`La pestaña «${tab.textContent}» no cuelga de un tablist`);
+    return tablist;
+  };
+
+  it("organiza las diez pestañas superiores en vertical", () => {
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    const topTablist = tablistOf(screen.getByRole("tab", { name: "Perfil" }));
+    expect(topTablist).toHaveAttribute("aria-orientation", "vertical");
+
+    // Las diez pestañas superiores siguen existiendo, en el orden acordado.
+    const topNames = [
+      "Perfil",
+      "Interfaz",
+      "Prompts",
+      "Claves",
+      "Memoria",
+      "Generación",
+      "Skills",
+      "Enrutador de skills",
+      "Integraciones",
+      "Notificaciones",
+    ] as const;
+    expect(screen.getAllByRole("tab")).toHaveLength(topNames.length);
+
+    const domTabs = screen.getAllByRole("tab");
+    const positions = topNames.map((name) =>
+      domTabs.indexOf(screen.getByRole("tab", { name })),
+    );
+    expect(positions.every((index) => index >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it("las sub-pestañas de Prompts, Memoria y Generación también son verticales", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    const topTablist = tablistOf(screen.getByRole("tab", { name: "Perfil" }));
+
+    await user.click(screen.getByRole("tab", { name: "Prompts" }));
+    const systemTablist = tablistOf(screen.getByRole("tab", { name: "System" }));
+    expect(systemTablist).toHaveAttribute("aria-orientation", "vertical");
+    expect(systemTablist).not.toBe(topTablist);
+
+    await user.click(screen.getByRole("tab", { name: "Memoria" }));
+    const memoryTablist = tablistOf(screen.getByRole("tab", { name: "Episódica" }));
+    expect(memoryTablist).toHaveAttribute("aria-orientation", "vertical");
+    expect(memoryTablist).not.toBe(topTablist);
+
+    await user.click(screen.getByRole("tab", { name: "Generación" }));
+    const roleTablist = tablistOf(screen.getByRole("tab", { name: "Chat" }));
+    expect(roleTablist).toHaveAttribute("aria-orientation", "vertical");
+    expect(roleTablist).not.toBe(topTablist);
+  });
+
+  it("las sub-pestañas de Skills son verticales", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    const topTablist = tablistOf(screen.getByRole("tab", { name: "Perfil" }));
+
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+    // La primera skill del catálogo mockeado (`skillsFixture`).
+    const firstSkill = skillsFixture.skills[0].id;
+    const skillTab = await screen.findByRole("tab", { name: firstSkill });
+
+    const skillTablist = tablistOf(skillTab);
+    expect(skillTablist).toHaveAttribute("aria-orientation", "vertical");
+    expect(skillTablist).not.toBe(topTablist);
+  });
+
+  it("la orientación vertical no altera el comportamiento de los formularios", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenWeatherMap");
+
+    const field = await screen.findByLabelText("OpenWeatherMap API Key");
+    await user.type(field, "clave-vertical");
+
+    const form = field.closest("form") as HTMLFormElement;
+    expect(form).not.toBeNull();
+    await user.click(within(form).getByRole("button", { name: /guardar/i }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ openweather_api_key: "clave-vertical" }),
+      );
+    });
   });
 
   it("cada sub-pestaña de clave muestra sus campos y su propio «Guardar»", async () => {
