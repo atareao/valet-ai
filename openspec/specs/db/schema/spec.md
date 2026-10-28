@@ -362,28 +362,6 @@ La tabla `reminders` SHALL tener las columnas `id` (PK), `profile_id` (FK a `pro
 **When** se intenta insertar `status` distinto de `pending`/`dismissed`/`snoozed`
 **Then** la inserción DEBE fallar por el CHECK
 
-### Requirement: db/schema SHALL define the tasks table with GTD statuses
-
-La tabla `tasks` SHALL tener `id` (PK), `profile_id` (FK), `content`, `status` (enum GTD
-`inbox`/`todo`/`doing`/`waiting`/`someday`/`done`, por defecto `inbox`), `priority`
-(`low`/`medium`/`high`, por defecto `medium`), `project`, `due_date`, `scope`
-(`shared`/`personal`, por defecto `shared`), `created_at` y `updated_at`. El estado final proviene de
-la migración `20260926000001_gtd_statuses`, que recrea la tabla y mapea los estados antiguos.
-
-**Given** las migraciones aplicadas
-**When** se inspecciona `tasks`
-**Then** DEBE tener el CHECK GTD y `DEFAULT 'inbox'`
-
-#### Scenario: El CHECK GTD admite los seis estados
-**Given** la tabla `tasks`
-**When** se inserta con `status` en `inbox`/`todo`/`doing`/`waiting`/`someday`/`done`
-**Then** la inserción DEBE aceptarse
-
-#### Scenario: La migración GTD mapea estados antiguos
-**Given** una fila previa con `status = 'completed'`
-**When** se aplica `20260926000001_gtd_statuses`
-**Then** su `status` DEBE quedar como `done`
-
 ### Requirement: db/schema SHALL define the notes table
 
 La tabla `notes` SHALL tener `id` (PK), `profile_id` (FK), `content`, `category`
@@ -899,3 +877,21 @@ impl EventsRepo {
 **When** se piden huecos de 30 minutos para `2026-10-06`
 **Then** SHALL devolverse un hueco que termina en `2026-10-06T17:00:00Z`
 **And** ningún hueco SHALL solaparse con los dos eventos
+
+### Requirement: La migración SHALL retirar la tabla `tasks` y su índice FTS
+
+La migración `20261028000001_remove_local_tasks.sql` SHALL ejecutar `DROP TABLE IF EXISTS tasks_fts`
+**antes** de `DROP TABLE IF EXISTS tasks`, porque `tasks_fts` es una tabla FTS5 de contenido externo
+que apunta a `tasks`. SHALL ser idempotente (`IF EXISTS`) y NO SHALL tocar ninguna otra tabla.
+
+**Given** la base de datos con la migración aplicada
+**When** se consulta `sqlite_master`
+**Then** no existen `tasks` ni `tasks_fts`
+**And** `events`, `notes`, `messages`, `reminders`, `memory`, `journal_entries` y `timeline_events`
+siguen intactas
+
+#### Scenario: Un despliegue repetido no falla
+
+- **Given** una base de datos donde la migración ya se aplicó
+- **When** se vuelve a ejecutar el arranque
+- **Then** no devuelve error, porque ambos `DROP` llevan `IF EXISTS`

@@ -169,9 +169,10 @@ como hora local).
 
 ### Requirement: `AppLayout` SHALL integrar el botón de avisos
 
-`AppLayout` SHALL añadir en el header, junto a los botones de Tasks, Agenda y Stats, un botón de
-avisos con el icono `BellOutlined` que abre un `Modal title="🔔 Avisos"` con `NotificationsView`
-bajo `React.lazy` + `Suspense`, siguiendo el molde del modal de `TaskView`.
+`AppLayout` SHALL añadir en el header, junto al enlace de tareas a OpenTodo y a los botones de
+Agenda y Stats, un botón de avisos con el icono `BellOutlined` que abre un
+`Modal title="🔔 Avisos"` con `NotificationsView` bajo `React.lazy` + `Suspense`, siguiendo el molde
+del modal de Agenda.
 
 **Contracts:**
 
@@ -181,7 +182,7 @@ const NotificationsView = React.lazy(() => import('./NotificationsView'));
 
 const [notificationsVisible, setNotificationsVisible] = useState(false);
 
-// Nuevo botón en el header, junto a Tasks/Agenda/Stats
+// Nuevo botón en el header, junto al enlace de tareas y a Agenda/Stats
 <Button type="text" icon={<BellOutlined />} onClick={() => setNotificationsVisible(true)} />
 
 // Nuevo modal

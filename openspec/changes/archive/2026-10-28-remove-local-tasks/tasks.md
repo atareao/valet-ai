@@ -69,8 +69,11 @@
       `npx tsc --noEmit`, `npm run lint:ci`, `npx vitest run`. — **1925 tests backend** (1 ignored
       preexistente) y **635 frontend**, todo en verde; `just check-all` limpio, incluido el
       presupuesto de bundle inicial (47,77 kB de 70).
-- [ ] 4.3 `openspec validate --all --strict` y archivar el change; ajustar a mano el `## Purpose` de
-      `openspec/specs/frontend/tasks/spec.md`.
+- [x] 4.3 `openspec validate --all --strict` y archivar el change; ajustar a mano el `## Purpose` de
+      `openspec/specs/frontend/tasks/spec.md`. — Archivado el 2026-10-28 (`+4 / ~1 / −8` requisitos);
+      62 specs válidas. Ajustados también los propósitos de `db/schema`, `tools/tasks` y
+      `frontend/tasks`, y las referencias a `TaskView` que quedaban en `frontend/notifications` y
+      `frontend-lint`.
 
 ## 5. Cierre
 
