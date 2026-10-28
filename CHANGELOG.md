@@ -1,4 +1,14 @@
 # Changelog
+## [0.24.1] - 2026-10-28
+
+### Documentation
+
+- *(plans)* Cierra PLAN-011 y documenta el estado 16
+- *(openspec)* Archiva settings-tabs-vertical
+
+### Styling
+
+- *(settings)* Pestañas verticales en el diálogo de ajustes
 ## [0.24.0] - 2026-10-28
 
 ### Documentation
