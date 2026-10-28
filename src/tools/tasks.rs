@@ -1,11 +1,9 @@
-//! Herramienta `tasks`: gestión de tareas con **dos backends**.
+//! Herramienta `tasks`: gestión de tareas sobre **OpenTodo**.
 //!
-//! Si hay token de OpenTodo configurado (`opentodo_token` o `OPENTODO_TOKEN`),
-//! todas las operaciones van contra la API de OpenTodo a través de
-//! [`crate::services::opentodo`]. Si no lo hay, la herramienta conserva
-//! exactamente el comportamiento local vigente sobre la tabla `tasks` (con el
-//! `profile_id` que inyecta el orquestador), de modo que desplegar la
-//! integración sin configurar el token no cambia nada.
+//! Todas las operaciones van contra la API de OpenTodo a través de
+//! [`crate::services::opentodo`]; Valet no guarda tareas. Sin token configurado
+//! la herramienta devuelve un [`ToolError`] que explica dónde configurarlo: ya
+//! no hay almacén local de reserva.
 //!
 //! El servidor de OpenTodo **no filtra**: `GET /api/v1/tasks` devuelve la lista
 //! completa y las vistas del GTD se recalculan en Rust con
@@ -17,13 +15,11 @@
 //! la fusión la hace el servicio.
 
 use async_trait::async_trait;
-use chrono::{Local, NaiveDate, Utc};
+use chrono::{Local, NaiveDate};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use uuid::Uuid;
 
-use crate::db::repos::tasks::{Task, TasksRepo};
 use crate::services::opentodo as ot;
 use crate::tools::permission::Permission;
 use crate::tools::r#trait::{Tool, ToolError, ToolResult};
@@ -36,6 +32,20 @@ const MIN_LIMIT: u64 = 1;
 
 /// Cota superior aceptada para `limit`.
 const MAX_LIMIT: u64 = 50;
+
+/// Operaciones de la herramienta.
+///
+/// Es la única lista: la usan el esquema JSON de `parameters` y el despacho de
+/// `execute`, de modo que no pueden desincronizarse.
+const OPERATIONS: &[&str] = &[
+    "list_tasks",
+    "search_tasks",
+    "add_task",
+    "update_task",
+    "complete_task",
+    "delete_task",
+    "set_label",
+];
 
 /// «Hoy» en la hora local del servidor: las vistas del GTD se calculan contra el
 /// día del usuario, no contra UTC.
@@ -166,15 +176,12 @@ fn parse_group_and_value(args: &Value) -> Result<(ot::LabelGroup, Option<String>
     }
 }
 
-/// Valida los argumentos que **no** deben llegar a la red y que valen para los
-/// dos backends: el `limit` y el tipo de `view`/`project` de las lecturas, más
-/// el par grupo/valor de `set_label`.
+/// Valida los argumentos que **no** deben llegar a la red: el `limit` y el tipo
+/// de `view`/`project` de las lecturas, más el par grupo/valor de `set_label`.
 ///
 /// Lo específico del contrato de OpenTodo (`title`, `due`, `start`, la prioridad
-/// de cuatro valores) se valida **dentro** de cada operación de OpenTodo, antes
-/// de su primer viaje: el backend local conserva su contrato vigente
-/// (`content`, `status`, `scope`, `due_date`, `profile_id`) y no puede verse
-/// afectado por estas reglas.
+/// de cuatro valores) se valida **dentro** de cada operación, antes de su primer
+/// viaje.
 fn validate_args(operation: &str, args: &Value) -> Result<(), ToolError> {
     match operation {
         "list_tasks" => {
@@ -238,8 +245,8 @@ fn optional_str(args: &Value, key: &str) -> Result<Option<String>, ToolError> {
 fn opentodo_error(error: ot::OpentodoError) -> ToolError {
     match error {
         ot::OpentodoError::NotConfigured => ToolError::ExecutionError(
-            "No hay token de OpenTodo configurado. Añádelo en Ajustes → Integraciones → \
-             OpenTodo, o define la variable de entorno OPENTODO_TOKEN."
+            "OpenTodo no está configurado: pega el token en Ajustes → Integraciones → \
+             OpenTodo."
                 .to_string(),
         ),
         ot::OpentodoError::Unauthorized => ToolError::ExecutionError(
@@ -460,6 +467,7 @@ impl TasksTool {
     /// proyecto y acota la salida.
     async fn open_todo_list_tasks(
         &self,
+        client: &ot::Opentodo,
         args: &Value,
         limit: usize,
         view: ot::View,
@@ -467,11 +475,10 @@ impl TasksTool {
         // El tipo del filtro se comprueba antes de tocar la red.
         let project_filter = optional_str(args, "project")?;
 
-        let client = self.open_todo().await?;
-        let snapshot = Self::open_todo_snapshot(&client).await?;
+        let snapshot = Self::open_todo_snapshot(client).await?;
         let names = snapshot.names();
         let today = today();
-        let me_id = Self::current_user_id(&client).await;
+        let me_id = Self::current_user_id(client).await;
 
         // El resumen describe la cuenta entera: es lo que permite al agente
         // decidir qué vista mirar después.
@@ -508,17 +515,17 @@ impl TasksTool {
     /// sobre el listado y se acota igual que `list_tasks`.
     async fn open_todo_search_tasks(
         &self,
+        client: &ot::Opentodo,
         args: &Value,
         limit: usize,
     ) -> Result<ToolResult, ToolError> {
         let query = required_str(args, "query")?;
         let needle = query.to_lowercase();
 
-        let client = self.open_todo().await?;
-        let snapshot = Self::open_todo_snapshot(&client).await?;
+        let snapshot = Self::open_todo_snapshot(client).await?;
         let names = snapshot.names();
         let today = today();
-        let me_id = Self::current_user_id(&client).await;
+        let me_id = Self::current_user_id(client).await;
         let summary = ot::summarize(&snapshot.tasks, today, me_id.as_deref(), &snapshot.projects);
 
         let matches: Vec<&ot::Task> = snapshot
@@ -552,7 +559,11 @@ impl TasksTool {
     ///
     /// Todos los argumentos se validan **antes** de cualquier viaje de red: un
     /// tipo equivocado es un argumento inválido, nunca un campo ignorado.
-    async fn open_todo_add_task(&self, args: &Value) -> Result<ToolResult, ToolError> {
+    async fn open_todo_add_task(
+        &self,
+        client: &ot::Opentodo,
+        args: &Value,
+    ) -> Result<ToolResult, ToolError> {
         let title = required_str(args, "title")?;
         let priority = parse_priority(args, ot::Priority::Low)?;
         let description = optional_str(args, "description")?;
@@ -565,13 +576,11 @@ impl TasksTool {
             _ => None,
         };
 
-        let client = self.open_todo().await?;
-
         let project_id = match &project {
             None => None,
-            Some(name) => Some(Self::resolve_project_id(&client, name).await?),
+            Some(name) => Some(Self::resolve_project_id(client, name).await?),
         };
-        let due = Self::resolve_due(&client, due_arg).await?;
+        let due = Self::resolve_due(client, due_arg).await?;
 
         let task = ot::NewTask {
             title: title.to_string(),
@@ -607,7 +616,11 @@ impl TasksTool {
     ///
     /// Semántica de los campos anulables: ausente = no se toca, `null` = se
     /// limpia, valor = se fija. Cualquier otro tipo es un argumento inválido.
-    async fn open_todo_update_task(&self, args: &Value) -> Result<ToolResult, ToolError> {
+    async fn open_todo_update_task(
+        &self,
+        client: &ot::Opentodo,
+        args: &Value,
+    ) -> Result<ToolResult, ToolError> {
         let id = required_str(args, "id")?;
         let title = optional_str(args, "title")?;
         let description = optional_str(args, "description")?;
@@ -619,16 +632,14 @@ impl TasksTool {
         let start = parse_start(args)?;
         let due_arg = parse_due_arg(args)?;
 
-        let client = self.open_todo().await?;
-
         let project_id = match &project {
             None => None,
-            Some(name) => Some(Some(Self::resolve_project_id(&client, name).await?)),
+            Some(name) => Some(Some(Self::resolve_project_id(client, name).await?)),
         };
         let due = match due_arg {
             None => None,
             Some(None) => Some(None),
-            Some(Some(raw)) => Some(Self::resolve_due(&client, Some(raw)).await?),
+            Some(Some(raw)) => Some(Self::resolve_due(client, Some(raw)).await?),
         };
 
         let patch = ot::TaskPatch {
@@ -658,10 +669,13 @@ impl TasksTool {
     }
 
     /// `complete_task` contra OpenTodo.
-    async fn open_todo_complete_task(&self, args: &Value) -> Result<ToolResult, ToolError> {
+    async fn open_todo_complete_task(
+        &self,
+        client: &ot::Opentodo,
+        args: &Value,
+    ) -> Result<ToolResult, ToolError> {
         let id = required_str(args, "id")?;
 
-        let client = self.open_todo().await?;
         let outcome = client.complete_task(id).await.map_err(opentodo_error)?;
         let message = applied_message(
             &format!("Tarea {id} completada en OpenTodo"),
@@ -676,14 +690,17 @@ impl TasksTool {
     }
 
     /// `delete_task` contra OpenTodo: `purge` usa la purga definitiva.
-    async fn open_todo_delete_task(&self, args: &Value) -> Result<ToolResult, ToolError> {
+    async fn open_todo_delete_task(
+        &self,
+        client: &ot::Opentodo,
+        args: &Value,
+    ) -> Result<ToolResult, ToolError> {
         let id = required_str(args, "id")?;
         let purge = args
             .get("purge")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
 
-        let client = self.open_todo().await?;
         let outcome = client
             .delete_task(id, purge)
             .await
@@ -703,13 +720,16 @@ impl TasksTool {
     }
 
     /// `set_label` contra OpenTodo: grupo y valor, nunca ids de etiqueta.
-    async fn open_todo_set_label(&self, args: &Value) -> Result<ToolResult, ToolError> {
+    async fn open_todo_set_label(
+        &self,
+        client: &ot::Opentodo,
+        args: &Value,
+    ) -> Result<ToolResult, ToolError> {
         let id = required_str(args, "id")?;
         // La validación del par grupo/valor ya pasó en `validate_args`, antes de
         // cualquier viaje de red; aquí se vuelve a parsear para tener los valores.
         let (group, value) = parse_group_and_value(args)?;
 
-        let client = self.open_todo().await?;
         let outcome = client
             .set_label(id, group, value.as_deref())
             .await
@@ -735,145 +755,6 @@ impl TasksTool {
                 "created_label": outcome.created_label,
             }),
             message: Some(applied_message(&message, outcome.already_applied)),
-        })
-    }
-
-    // -- backend local (comportamiento vigente, sin token) -------------------
-
-    async fn list_tasks(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let profile_id = args
-            .get("profile_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
-
-        let tasks = TasksRepo::list(
-            &self.db,
-            profile_id,
-            args.get("status").and_then(|v| v.as_str()),
-            args.get("priority").and_then(|v| v.as_str()),
-            args.get("project").and_then(|v| v.as_str()),
-            args.get("scope").and_then(|v| v.as_str()),
-        )
-        .await?;
-
-        Ok(ToolResult {
-            success: true,
-            data: serde_json::to_value(tasks).unwrap_or_default(),
-            message: None,
-        })
-    }
-
-    async fn add_task(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let profile_id = args
-            .get("profile_id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing profile_id".into()))?;
-        let content = args
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing content".into()))?;
-
-        let now = Utc::now().to_rfc3339();
-        let task = Task {
-            id: Uuid::new_v4().to_string(),
-            profile_id: profile_id.to_string(),
-            content: content.to_string(),
-            status: "inbox".to_string(),
-            priority: args
-                .get("priority")
-                .and_then(|v| v.as_str())
-                .unwrap_or("medium")
-                .to_string(),
-            project: args
-                .get("project")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            due_date: args
-                .get("due_date")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string()),
-            scope: args
-                .get("scope")
-                .and_then(|v| v.as_str())
-                .unwrap_or("shared")
-                .to_string(),
-            created_at: now.clone(),
-            updated_at: now,
-        };
-
-        TasksRepo::create(&self.db, &task).await?;
-
-        Ok(ToolResult {
-            success: true,
-            data: serde_json::to_value(&task).unwrap_or_default(),
-            message: Some("Task created successfully".into()),
-        })
-    }
-
-    async fn update_task(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let id = args
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
-
-        TasksRepo::update(
-            &self.db,
-            id,
-            args.get("content").and_then(|v| v.as_str()),
-            args.get("status").and_then(|v| v.as_str()),
-            args.get("priority").and_then(|v| v.as_str()),
-            args.get("project").and_then(|v| v.as_str()),
-            args.get("due_date").and_then(|v| v.as_str()),
-            args.get("scope").and_then(|v| v.as_str()),
-        )
-        .await?;
-
-        let updated = TasksRepo::find_by_id(&self.db, id).await?.ok_or_else(|| {
-            ToolError::ExecutionError(format!("Task not found after update: {}", id))
-        })?;
-
-        Ok(ToolResult {
-            success: true,
-            data: serde_json::to_value(&updated).unwrap_or_default(),
-            message: Some("Task updated successfully".into()),
-        })
-    }
-
-    async fn complete_task(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let id = args
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
-
-        TasksRepo::complete(&self.db, id).await?;
-
-        let updated = TasksRepo::find_by_id(&self.db, id).await?.ok_or_else(|| {
-            ToolError::ExecutionError(format!("Task not found after complete: {}", id))
-        })?;
-
-        Ok(ToolResult {
-            success: true,
-            data: serde_json::to_value(&updated).unwrap_or_default(),
-            message: Some("Task completed successfully".into()),
-        })
-    }
-
-    async fn delete_task(&self, args: Value) -> Result<ToolResult, ToolError> {
-        let id = args
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments("Missing id".into()))?;
-
-        let task = TasksRepo::find_by_id(&self.db, id)
-            .await?
-            .ok_or_else(|| ToolError::ExecutionError(format!("No task found with id: {}", id)))?;
-
-        TasksRepo::delete(&self.db, id).await?;
-
-        Ok(ToolResult {
-            success: true,
-            data: serde_json::to_value(&task).unwrap_or_default(),
-            message: Some("Task deleted successfully".into()),
         })
     }
 }
@@ -904,41 +785,20 @@ impl Tool for TasksTool {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": [
-                        "list_tasks",
-                        "search_tasks",
-                        "add_task",
-                        "update_task",
-                        "complete_task",
-                        "delete_task",
-                        "set_label"
-                    ],
+                    "enum": OPERATIONS,
                     "description": "Acción a realizar. `title` es obligatorio para `add_task`; \
                         `id` para `update_task`, `complete_task`, `delete_task` y `set_label`; \
-                        `query` para `search_tasks`. En el backend local (sin token de OpenTodo) \
-                        `add_task` usa `content`."
+                        `query` para `search_tasks`. Todas las operaciones van a OpenTodo."
                 },
-                "profile_id": { "type": "string", "description": "ID del perfil (solo backend local)" },
-                "content": { "type": "string", "description": "Descripción o título de la tarea (solo backend local)" },
-                "status": {
-                    "type": "string",
-                    "enum": ["inbox", "todo", "doing", "waiting", "someday", "done"],
-                    "description": "Estado GTD de la tarea (solo backend local)"
-                },
+                "profile_id": { "type": "string", "description": "ID del perfil; lo inyecta el orquestador y la herramienta lo ignora" },
                 "priority": {
                     "type": "string",
                     "enum": ["critical", "high", "medium", "low"],
                     "description": "Prioridad de la tarea; sin indicarla se usa `low` en OpenTodo"
                 },
                 "project": { "type": "string", "description": "Proyecto asociado, por nombre" },
-                "due_date": { "type": "string", "description": "Fecha límite ISO 8601 o YYYY-MM-DD (solo backend local)" },
                 "due": { "type": "string", "description": "Fecha límite: YYYY-MM-DD, YYYY-MM-DDTHH:MM o una expresión como «el viernes a las 10»" },
                 "start": { "type": "string", "description": "Inicio de la tarea; `someday` la aparca en «Algún día»" },
-                "scope": {
-                    "type": "string",
-                    "enum": ["shared", "personal"],
-                    "description": "Ámbito de la tarea (solo backend local)"
-                },
                 "view": {
                     "type": "string",
                     "enum": ["all", "inbox", "today", "upcoming", "anytime", "someday", "doing", "waiting"],
@@ -985,44 +845,35 @@ impl Tool for TasksTool {
     async fn execute(&self, args: Value) -> Result<ToolResult, ToolError> {
         let operation = args.get("operation").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Validaciones que no deben tocar la red, para cualquier backend.
+        // Las validaciones que no salen a la red van primero.
         validate_args(operation, &args)?;
-
-        if ot::Opentodo::is_configured(&self.db).await {
-            return match operation {
-                "list_tasks" => {
-                    self.open_todo_list_tasks(&args, parse_limit(&args)?, parse_view(&args)?)
-                        .await
-                }
-                "search_tasks" => {
-                    self.open_todo_search_tasks(&args, parse_limit(&args)?)
-                        .await
-                }
-                "add_task" => self.open_todo_add_task(&args).await,
-                "update_task" => self.open_todo_update_task(&args).await,
-                "complete_task" => self.open_todo_complete_task(&args).await,
-                "delete_task" => self.open_todo_delete_task(&args).await,
-                "set_label" => self.open_todo_set_label(&args).await,
-                other => Err(ToolError::InvalidArguments(format!(
-                    "Unknown operation: {other}"
-                ))),
-            };
+        if !OPERATIONS.contains(&operation) {
+            return Err(ToolError::InvalidArguments(format!(
+                "Unknown operation: {operation}"
+            )));
         }
 
+        // Todas las operaciones viven en OpenTodo: sin token se dice aquí, antes
+        // de validar los campos propios de cada una (no hay nada más que hacer).
+        let client = self.open_todo().await?;
+
         match operation {
-            "list_tasks" => self.list_tasks(args).await,
-            "add_task" => self.add_task(args).await,
-            "update_task" => self.update_task(args).await,
-            "complete_task" => self.complete_task(args).await,
-            "delete_task" => self.delete_task(args).await,
-            // Operaciones que solo existen en OpenTodo: sin token se dice claro.
-            "search_tasks" | "set_label" => Err(ToolError::ExecutionError(format!(
-                "`{operation}` requiere OpenTodo: configura el token en Ajustes → \
-                 Integraciones → OpenTodo, o define OPENTODO_TOKEN."
-            ))),
-            op => Err(ToolError::InvalidArguments(format!(
-                "Unknown operation: {}",
-                op
+            "list_tasks" => {
+                self.open_todo_list_tasks(&client, &args, parse_limit(&args)?, parse_view(&args)?)
+                    .await
+            }
+            "search_tasks" => {
+                self.open_todo_search_tasks(&client, &args, parse_limit(&args)?)
+                    .await
+            }
+            "add_task" => self.open_todo_add_task(&client, &args).await,
+            "update_task" => self.open_todo_update_task(&client, &args).await,
+            "complete_task" => self.open_todo_complete_task(&client, &args).await,
+            "delete_task" => self.open_todo_delete_task(&client, &args).await,
+            "set_label" => self.open_todo_set_label(&client, &args).await,
+            // Inalcanzable: la lista de arriba se comprobó contra `OPERATIONS`.
+            other => Err(ToolError::InvalidArguments(format!(
+                "Unknown operation: {other}"
             ))),
         }
     }
@@ -1042,10 +893,10 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn setup() -> Result<(SqlitePool, TasksTool), sqlx::Error> {
-        // H5: el backend se elige leyendo `OPENTODO_TOKEN`, así que un token
-        // exportado en la shell del desarrollador convertiría estos tests
-        // locales en llamadas a la instancia real. Limpiarlo aquí es inocuo: los
-        // tests de OpenTodo siembran en `settings`, que gana al entorno.
+        // El servicio resuelve el token en `settings` y, si no hay, en
+        // `OPENTODO_TOKEN`. Limpiar el entorno aquí deja el pool en el estado
+        // «sin configurar» y evita que un token exportado por el desarrollador
+        // mande los tests a la instancia real.
         std::env::remove_var("OPENTODO_TOKEN");
         std::env::remove_var("OPENTODO_BASE_URL");
 
@@ -1054,83 +905,8 @@ mod tests {
             .connect("sqlite::memory:")
             .await?;
         run_migrations(&pool).await.unwrap();
-        sqlx::query(
-            "INSERT INTO profiles (id, name, preferences) VALUES ('profile-1', 'Test', '{}')",
-        )
-        .execute(&pool)
-        .await?;
         let tool = TasksTool::new(pool.clone());
         Ok((pool, tool))
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_list_empty() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, tool) = setup().await?;
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "list_tasks",
-                "profile_id": "profile-1"
-            }))
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.data.as_array().unwrap().len(), 0);
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_add_task() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, tool) = setup().await?;
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "add_task",
-                "profile_id": "profile-1",
-                "content": "Comprar leche",
-                "priority": "high",
-                "project": "Casa"
-            }))
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.data["content"], "Comprar leche");
-        assert_eq!(result.data["priority"], "high");
-        assert_eq!(result.data["project"], "Casa");
-        assert_eq!(result.data["status"], "inbox");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_complete_task_returns_full_object() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, tool) = setup().await?;
-        // Create a task with specific content and priority
-        let created = tool
-            .execute(serde_json::json!({
-                "operation": "add_task",
-                "profile_id": "profile-1",
-                "content": "Tarea para completar",
-                "priority": "high"
-            }))
-            .await
-            .unwrap();
-        let task_id = created.data["id"].as_str().unwrap().to_string();
-
-        // Complete it
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "complete_task",
-                "id": task_id
-            }))
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.data["id"], task_id);
-        assert_eq!(result.data["content"], "Tarea para completar");
-        assert_eq!(result.data["status"], "done");
-        assert_eq!(result.data["priority"], "high");
-        Ok(())
     }
 
     #[tokio::test]
@@ -1143,183 +919,6 @@ mod tests {
             }))
             .await;
         assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_update_task() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, tool) = setup().await?;
-        // Add a task first
-        let created = tool
-            .execute(serde_json::json!({
-                "operation": "add_task",
-                "profile_id": "profile-1",
-                "content": "Tarea original",
-                "priority": "low"
-            }))
-            .await
-            .unwrap();
-        let task_id = created.data["id"].as_str().unwrap().to_string();
-
-        // Update it
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "update_task",
-                "id": task_id,
-                "content": "Tarea actualizada",
-                "priority": "high"
-            }))
-            .await
-            .unwrap();
-        assert!(result.success);
-
-        // Verify via list
-        let list_result = tool
-            .execute(serde_json::json!({
-                "operation": "list_tasks",
-                "profile_id": "profile-1"
-            }))
-            .await
-            .unwrap();
-        let tasks = list_result.data.as_array().unwrap();
-        let updated = tasks.iter().find(|t| t["id"] == task_id).unwrap();
-        assert_eq!(updated["content"], "Tarea actualizada");
-        assert_eq!(updated["priority"], "high");
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_update_task_returns_full_object() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, tool) = setup().await?;
-        // Create a task first
-        let created = tool
-            .execute(serde_json::json!({
-                "operation": "add_task",
-                "profile_id": "profile-1",
-                "content": "Tarea original",
-                "priority": "low"
-            }))
-            .await
-            .unwrap();
-        let task_id = created.data["id"].as_str().unwrap().to_string();
-
-        // Update it
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "update_task",
-                "id": task_id,
-                "content": "Tarea actualizada",
-                "priority": "high"
-            }))
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.data["id"], task_id);
-        assert_eq!(result.data["content"], "Tarea actualizada");
-        assert_eq!(result.data["priority"], "high");
-        assert_eq!(result.data["status"], "inbox");
-        assert!(
-            result.data["project"].is_null() || result.data.get("project").is_none(),
-            "project should be null or missing"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_delete_task() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, tool) = setup().await?;
-        // Create a task first
-        let created = tool
-            .execute(serde_json::json!({
-                "operation": "add_task",
-                "profile_id": "profile-1",
-                "content": "Tarea para eliminar"
-            }))
-            .await
-            .unwrap();
-        let task_id = created.data["id"].as_str().unwrap().to_string();
-        let original_content = created.data["content"].as_str().unwrap().to_string();
-
-        // Delete it
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "delete_task",
-                "id": task_id
-            }))
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.data["id"], task_id);
-        assert_eq!(result.data["content"], original_content);
-
-        // Verify it's gone from listing
-        let list_result = tool
-            .execute(serde_json::json!({
-                "operation": "list_tasks",
-                "profile_id": "profile-1"
-            }))
-            .await
-            .unwrap();
-        let tasks = list_result.data.as_array().unwrap();
-        assert!(!tasks.iter().any(|t| t["id"] == task_id));
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_delete_task_not_found() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, tool) = setup().await?;
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "delete_task",
-                "id": "nonexistent-id"
-            }))
-            .await;
-        assert!(matches!(
-            result,
-            Err(ToolError::ExecutionError(ref msg)) if msg.contains("No task found")
-        ));
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[serial]
-    async fn test_list_tasks_with_filters() -> Result<(), Box<dyn std::error::Error>> {
-        let (_, tool) = setup().await?;
-        // Add two tasks with different projects
-        tool.execute(serde_json::json!({
-            "operation": "add_task",
-            "profile_id": "profile-1",
-            "content": "Tarea Alpha",
-            "project": "Alpha"
-        }))
-        .await
-        .unwrap();
-
-        tool.execute(serde_json::json!({
-            "operation": "add_task",
-            "profile_id": "profile-1",
-            "content": "Tarea Beta",
-            "project": "Beta"
-        }))
-        .await
-        .unwrap();
-
-        // Filter by project
-        let result = tool
-            .execute(serde_json::json!({
-                "operation": "list_tasks",
-                "profile_id": "profile-1",
-                "project": "Alpha"
-            }))
-            .await
-            .unwrap();
-        let tasks = result.data.as_array().unwrap();
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0]["project"], "Alpha");
         Ok(())
     }
 
@@ -1342,10 +941,6 @@ mod tests {
         assert!(
             !desc.is_empty(),
             "the `operation` parameter must carry a description"
-        );
-        assert!(
-            desc.contains("`content`"),
-            "the `operation` description must mention `content` for add_task, got: {desc}"
         );
         assert!(
             desc.contains("`id`"),
@@ -1381,11 +976,11 @@ mod tests {
         }
 
         assert!(
-            properties["content"]["description"]
+            properties["title"]["description"]
                 .as_str()
                 .unwrap_or("")
-                .contains("tarea"),
-            "`content` debe describir la tarea"
+                .contains("Título"),
+            "`title` debe describir el título de la tarea"
         );
         assert!(
             properties["id"]["description"]
@@ -1395,11 +990,11 @@ mod tests {
             "`id` debe describirse como «ID de la tarea»"
         );
         assert!(
-            properties["due_date"]["description"]
+            properties["due"]["description"]
                 .as_str()
                 .unwrap_or("")
                 .contains("Fecha"),
-            "`due_date` debe describirse como fecha límite"
+            "`due` debe describirse como fecha límite"
         );
         assert!(
             properties["priority"]["description"]
@@ -1409,25 +1004,11 @@ mod tests {
             "`priority` debe describirse en español"
         );
         assert!(
-            properties["status"]["description"]
-                .as_str()
-                .unwrap_or("")
-                .contains("Estado"),
-            "`status` debe describirse en español"
-        );
-        assert!(
             properties["project"]["description"]
                 .as_str()
                 .unwrap_or("")
                 .contains("Proyecto"),
             "`project` debe describirse en español"
-        );
-        assert!(
-            properties["scope"]["description"]
-                .as_str()
-                .unwrap_or("")
-                .contains("Ámbito"),
-            "`scope` debe describirse en español"
         );
         assert!(
             properties["profile_id"]["description"]
@@ -1556,12 +1137,8 @@ mod tests {
         let expected: BTreeSet<&str> = [
             "operation",
             "profile_id",
-            "content",
-            "status",
             "priority",
             "project",
-            "due_date",
-            "scope",
             "id",
             "view",
             "query",
@@ -1616,13 +1193,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // open-todo redux: el doble backend
+    // open-todo redux: el backend único
     // -----------------------------------------------------------------------
 
     /// Token que viajan los tests contra el `wiremock`.
     const TOKEN: &str = "test-token";
 
-    /// Pool local + servidor de prueba + herramienta con OpenTodo configurado en
+    /// Pool migrado + servidor de prueba + herramienta con OpenTodo configurado en
     /// `settings` (**no** en el entorno: el servicio resuelve la configuración en
     /// cada llamada y `settings` gana, así que los tests no dependen de variables
     /// de proceso).
@@ -1717,24 +1294,6 @@ mod tests {
         mount_labels(server, &[]).await;
         mount_projects(server, &[]).await;
     }
-
-    /// Crea una tarea en la tabla local: no debe leerse cuando hay token.
-    async fn seed_local_task(pool: &SqlitePool, id: &str, content: &str) {
-        let task = Task {
-            id: id.to_string(),
-            profile_id: "profile-1".to_string(),
-            content: content.to_string(),
-            status: "inbox".to_string(),
-            priority: "medium".to_string(),
-            project: None,
-            due_date: None,
-            scope: "shared".to_string(),
-            created_at: "2026-01-01T00:00:00Z".to_string(),
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-        };
-        TasksRepo::create(pool, &task).await.unwrap();
-    }
-
     /// Rutas golpeadas en el `wiremock`, en orden.
     async fn requested_paths(server: &MockServer) -> Vec<String> {
         server
@@ -1746,12 +1305,11 @@ mod tests {
             .collect()
     }
 
-    /// Scenario: con token, `list_tasks` va a OpenTodo y nunca a la tabla local.
+    /// Scenario: `list_tasks` va a OpenTodo.
     #[tokio::test]
     #[serial]
-    async fn test_list_tasks_goes_to_opentodo_and_not_to_the_local_table() {
-        let (pool, server, tool) = open_todo_setup().await;
-        seed_local_task(&pool, "local-1", "LOCAL-ONLY").await;
+    async fn test_list_tasks_goes_to_opentodo() {
+        let (_pool, server, tool) = open_todo_setup().await;
 
         let tasks: Vec<Value> = (1..=25)
             .map(|i| {
@@ -1785,12 +1343,6 @@ mod tests {
             .as_array()
             .expect("`tasks` es un array");
         assert_eq!(listed.len(), 20, "el tope por defecto es `limit: 20`");
-        assert!(
-            listed
-                .iter()
-                .all(|task| task["title"] != json!("LOCAL-ONLY")),
-            "con token no se lee la tabla local: {listed:?}"
-        );
 
         let keys: BTreeSet<&str> = listed[0]
             .as_object()
@@ -2345,7 +1897,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // open-todo redux: errores y camino local
+    // open-todo redux: errores del servicio
     // -----------------------------------------------------------------------
 
     /// Scenario: un fallo del servicio externo no rompe el turno y el mensaje no
@@ -2377,45 +1929,6 @@ mod tests {
             );
         }
     }
-
-    /// Scenario: sin token, el comportamiento local se conserva.
-    #[tokio::test]
-    #[serial]
-    async fn test_local_backend_is_preserved_without_a_token() {
-        std::env::remove_var("OPENTODO_TOKEN");
-        std::env::remove_var("OPENTODO_BASE_URL");
-        let (pool, tool) = setup().await.unwrap();
-
-        // `profile_id` se sigue exigiendo.
-        let error = tool
-            .execute(json!({ "operation": "add_task", "content": "Preparar informe" }))
-            .await
-            .expect_err("sin profile_id el camino local debe rechazar la llamada");
-        assert!(
-            matches!(error, ToolError::InvalidArguments(_)),
-            "err: {error:?}"
-        );
-
-        // Y la tarea se crea en la tabla local con sus valores por defecto.
-        let result = tool
-            .execute(json!({
-                "operation": "add_task", "profile_id": "profile-1", "content": "Preparar informe"
-            }))
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert_eq!(result.data["content"], json!("Preparar informe"));
-        assert_eq!(result.data["status"], json!("inbox"));
-        assert_eq!(result.data["priority"], json!("medium"));
-        assert_eq!(result.data["scope"], json!("shared"));
-
-        let local = TasksRepo::list(&pool, "profile-1", None, None, None, None)
-            .await
-            .unwrap();
-        assert_eq!(local.len(), 1, "la tarea vive en la tabla local");
-        assert_eq!(local[0].content, "Preparar informe");
-    }
-
     /// Las operaciones que solo existen en OpenTodo lo dicen claramente cuando
     /// no hay token, en vez de fallar por dentro.
     #[tokio::test]
@@ -2439,39 +1952,59 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Auditoría de opentodo-integration — H5, H6, H7, H9 y H10
+    // remove-local-tasks — sin OpenTodo no hay backend de reserva
     // -----------------------------------------------------------------------
 
-    /// H5 — una variable de entorno exportada por el desarrollador no puede
-    /// sacar a los tests locales de su backend (y mucho menos apuntarlos a la
-    /// instancia real).
+    /// Scenario: Sin token la herramienta lo dice y no toca la base de datos.
+    ///
+    /// El backend local desaparece con la tabla `tasks`, así que la ausencia de
+    /// `opentodo_token` deja de ser una bifurcación y pasa a ser un error de
+    /// configuración legible: menciona OpenTodo y la ruta exacta para
+    /// configurarlo, y ya no habla de `profile_id` (el argumento se ignora).
     #[tokio::test]
     #[serial]
-    async fn test_local_backend_ignores_a_stray_environment_token() {
-        std::env::set_var("OPENTODO_TOKEN", "SECRET");
-        // Dirección que no responde: si alguien acaba ahí, falla en el acto.
-        std::env::set_var("OPENTODO_BASE_URL", "http://127.0.0.1:1");
+    async fn tasks_sin_open_todo_devuelve_error_de_configuracion(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // `setup()` deja el entorno sin `OPENTODO_TOKEN`/`OPENTODO_BASE_URL` y el
+        // pool sin token utilizable en `settings`, que es justo el estado «sin
+        // configurar».
+        let (_pool, tool) = setup().await?;
 
-        let (pool, tool) = setup().await.unwrap();
         let result = tool
-            .execute(json!({
-                "operation": "add_task", "profile_id": "profile-1", "content": "Local"
-            }))
+            .execute(json!({ "operation": "add_task", "title": "Preparar informe" }))
             .await;
 
-        std::env::remove_var("OPENTODO_TOKEN");
-        std::env::remove_var("OPENTODO_BASE_URL");
+        assert!(
+            result.is_err(),
+            "sin OpenTodo la herramienta debe devolver un error de configuración, \
+             pero devolvió un resultado: {:?}",
+            result.as_ref().map(|result| &result.data)
+        );
+        let message = result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
 
-        let result = result.expect("`setup()` aísla el entorno: el camino local debe responder");
-        assert!(result.success);
-        assert_eq!(result.data["status"], json!("inbox"));
+        assert!(
+            message.contains("OpenTodo"),
+            "el mensaje debe mencionar OpenTodo, fue: {message}"
+        );
+        assert!(
+            message.contains("Ajustes") && message.contains("Integraciones"),
+            "el mensaje debe indicar dónde configurar el token \
+             (Ajustes → Integraciones), fue: {message}"
+        );
+        assert!(
+            !message.contains("profile_id"),
+            "el mensaje no debe mencionar `profile_id`, que ya no se exige, fue: {message}"
+        );
 
-        let local = TasksRepo::list(&pool, "profile-1", None, None, None, None)
-            .await
-            .unwrap();
-        assert_eq!(local.len(), 1, "la tarea se crea en la tabla local");
+        Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Auditoría de opentodo-integration — H5, H6, H7, H9 y H10
+    // -----------------------------------------------------------------------
     /// H6 — `start: null` limpia el campo, una cadena no vacía lo fija y
     /// cualquier otro tipo (incluida la cadena vacía) es un argumento inválido.
     #[tokio::test]

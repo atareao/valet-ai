@@ -201,7 +201,6 @@ impl StatsRepo {
             "profiles",
             "reminders",
             "settings",
-            "tasks",
             "timeline_events",
             "tools",
         ];
@@ -1225,6 +1224,31 @@ mod tests {
             .find(|t| t.table == "timeline_events")
             .expect("db_sizes must include the 'timeline_events' table");
         assert_eq!(timeline_size.rows, 2);
+    }
+
+    /// `db_sizes` must not list the dropped `tasks` table, and the remaining
+    /// domain tables must still be counted.
+    ///
+    /// Change `remove-local-tasks`: OpenTodo is the only task store, so the
+    /// local table is gone and cannot appear in the stats.
+    #[tokio::test]
+    async fn test_db_sizes_excludes_tasks_and_keeps_domain_tables() {
+        let pool = setup().await;
+
+        let sizes = StatsRepo::db_sizes(&pool).await.unwrap();
+        let tables: Vec<&str> = sizes.iter().map(|size| size.table.as_str()).collect();
+
+        assert!(
+            !tables.contains(&"tasks"),
+            "`tasks` ya no existe y no debe aparecer en `db_sizes`, apareció: {tables:?}"
+        );
+
+        for expected in ["events", "notes", "reminders"] {
+            assert!(
+                tables.contains(&expected),
+                "`db_sizes` debe seguir contando `{expected}`, apareció: {tables:?}"
+            );
+        }
     }
 
     // ── 7. export_csv ──────────────────────────────────────────────────────

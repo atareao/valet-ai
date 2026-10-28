@@ -28,10 +28,6 @@ vi.mock("./CalendarView", () => ({
   CalendarView: () => <div data-testid="calendar-view">Calendar</div>,
 }));
 
-vi.mock("./TaskView", () => ({
-  TaskView: () => <div data-testid="task-view">Tasks</div>,
-}));
-
 vi.mock("../hooks/useMainChat", () => ({
   useMainChat: () => ({
     messages: [],
@@ -65,32 +61,29 @@ vi.mock("../hooks/useSettings", () => ({
   }),
 }));
 
+const renderLayout = () =>
+  render(
+    <MemoryRouter>
+      <ProfileProvider>
+        <AppLayout />
+      </ProfileProvider>
+    </MemoryRouter>,
+  );
+
 describe("AppLayout — settings dialog", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("settings modal is closed initially", () => {
-    render(
-      <MemoryRouter>
-        <ProfileProvider>
-          <AppLayout />
-        </ProfileProvider>
-      </MemoryRouter>,
-    );
+    renderLayout();
 
     expect(screen.queryByTestId("settings-dialog")).not.toBeInTheDocument();
   });
 
   it("opens settings modal when clicking the gear icon", async () => {
     const user = userEvent.setup();
-    render(
-      <MemoryRouter>
-        <ProfileProvider>
-          <AppLayout />
-        </ProfileProvider>
-      </MemoryRouter>,
-    );
+    renderLayout();
 
     const settingsButton = screen.getByRole("button", { name: /setting/i });
     expect(settingsButton).toBeInTheDocument();
@@ -102,13 +95,7 @@ describe("AppLayout — settings dialog", () => {
   });
 
   it("has only one settings-related button in the header (no profile button)", () => {
-    render(
-      <MemoryRouter>
-        <ProfileProvider>
-          <AppLayout />
-        </ProfileProvider>
-      </MemoryRouter>,
-    );
+    renderLayout();
 
     // There should be a button with SettingOutlined icon
     expect(screen.getByRole("button", { name: /setting/i })).toBeInTheDocument();
@@ -117,26 +104,14 @@ describe("AppLayout — settings dialog", () => {
   });
 
   it("stats modal is closed initially", () => {
-    render(
-      <MemoryRouter>
-        <ProfileProvider>
-          <AppLayout />
-        </ProfileProvider>
-      </MemoryRouter>,
-    );
+    renderLayout();
 
     expect(screen.queryByTestId("stats-dashboard")).not.toBeInTheDocument();
   });
 
   it("opens stats modal when clicking the bar chart icon", async () => {
     const user = userEvent.setup();
-    render(
-      <MemoryRouter>
-        <ProfileProvider>
-          <AppLayout />
-        </ProfileProvider>
-      </MemoryRouter>,
-    );
+    renderLayout();
 
     const statsButton = screen.getByRole("button", { name: /bar-chart/i });
     expect(statsButton).toBeInTheDocument();
@@ -149,13 +124,7 @@ describe("AppLayout — settings dialog", () => {
 
   it("calendar view is not mounted until its modal opens", async () => {
     const user = userEvent.setup();
-    render(
-      <MemoryRouter>
-        <ProfileProvider>
-          <AppLayout />
-        </ProfileProvider>
-      </MemoryRouter>,
-    );
+    renderLayout();
 
     expect(screen.queryByTestId("calendar-view")).not.toBeInTheDocument();
 
@@ -164,22 +133,26 @@ describe("AppLayout — settings dialog", () => {
       expect(screen.getByTestId("calendar-view")).toBeInTheDocument();
     });
   });
+});
 
-  it("task view is not mounted until its modal opens", async () => {
+describe("AppLayout — acceso a OpenTodo", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("el botón de tareas es un enlace a OpenTodo en otra pestaña", async () => {
     const user = userEvent.setup();
-    render(
-      <MemoryRouter>
-        <ProfileProvider>
-          <AppLayout />
-        </ProfileProvider>
-      </MemoryRouter>,
-    );
+    renderLayout();
 
-    expect(screen.queryByTestId("task-view")).not.toBeInTheDocument();
+    const link = screen.getByLabelText("Abrir OpenTodo");
+    expect(link).toBe(screen.getByRole("link", { name: /opentodo/i }));
+    expect(link).toHaveAttribute("href", "https://todo.territoriolinux.es");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+    expect(link.getAttribute("rel")).toContain("noreferrer");
 
-    await user.click(screen.getByRole("button", { name: /check-square/i }));
-    await waitFor(() => {
-      expect(screen.getByTestId("task-view")).toBeInTheDocument();
-    });
+    await user.click(link);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

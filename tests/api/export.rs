@@ -26,11 +26,16 @@ async fn test_export_returns_json() {
     assert!(data.get("profiles").is_some(), "missing profiles");
     assert!(data.get("messages").is_some(), "missing messages");
     assert!(data.get("events").is_some(), "missing events");
-    assert!(data.get("tasks").is_some(), "missing tasks");
     assert!(data.get("notes").is_some(), "missing notes");
     assert!(data.get("reminders").is_some(), "missing reminders");
     assert!(data.get("memory").is_some(), "missing memory");
     assert!(data.get("tools").is_some(), "missing tools");
+    // The local TODO no longer exists: its table is dropped by the
+    // `remove-local-tasks` migration and must not be exported.
+    assert!(
+        data.get("tasks").is_none(),
+        "tasks should no longer be exported"
+    );
 }
 
 #[tokio::test]

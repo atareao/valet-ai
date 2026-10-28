@@ -200,19 +200,6 @@ export interface ChatInitResponse {
   settings: Record<string, string>;
 }
 
-export interface Task {
-  id: string;
-  profile_id: string;
-  content: string;
-  status: "inbox" | "todo" | "doing" | "waiting" | "someday" | "done";
-  priority: "low" | "medium" | "high";
-  project?: string;
-  due_date?: string;
-  scope: "shared" | "personal";
-  created_at: string;
-  updated_at: string;
-}
-
 export interface StatsSummary {
   total_calls: number;
   total_prompt_tokens: number;

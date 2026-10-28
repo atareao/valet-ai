@@ -10,6 +10,5 @@ pub mod search;
 pub mod skills;
 pub mod stats;
 pub mod strava;
-pub mod tasks;
 pub mod tools;
 pub mod zennotes;

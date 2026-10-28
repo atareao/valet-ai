@@ -211,6 +211,75 @@ async fn test_idempotent_does_not_recreate_removed_tables() {
     }
 }
 
+// ── Local tasks removal (20261028000001_remove_local_tasks.sql) ───────────
+
+/// Asserts that `run_migrations` drops the local `tasks` table and its
+/// external-content FTS index, leaving the other tables and indexes untouched.
+#[tokio::test]
+async fn test_migrations_drop_local_tasks_tables() {
+    let pool = setup().await;
+
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+    for removed in &["tasks", "tasks_fts"] {
+        assert!(
+            !tables.contains(&removed.to_string()),
+            "Expected '{removed}' table to be dropped by migration"
+        );
+    }
+
+    for kept in &[
+        "events",
+        "notes",
+        "messages",
+        "reminders",
+        "events_fts",
+        "notes_fts",
+        "messages_fts",
+    ] {
+        assert!(
+            tables.contains(&kept.to_string()),
+            "Expected '{kept}' table to survive the migration"
+        );
+    }
+}
+
+/// Asserts that running the migrations twice does not fail and does not
+/// recreate the `tasks` tables (both `DROP`s carry `IF EXISTS`).
+#[tokio::test]
+async fn test_remove_local_tasks_migration_is_idempotent() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(":memory:")
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+
+    // Call twice
+    valet::db::schema::run_migrations(&pool).await.unwrap();
+    valet::db::schema::run_migrations(&pool).await.unwrap();
+
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+
+    for removed in &["tasks", "tasks_fts"] {
+        assert!(
+            !tables.contains(&removed.to_string()),
+            "Removed '{removed}' table must not be recreated by idempotent migration"
+        );
+    }
+}
+
 // ── Prompts migration (20260929000001_prompts.sql) ─────────────────────────
 
 /// Reads the prompts migration SQL from disk.

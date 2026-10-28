@@ -9,15 +9,14 @@ import {
 import { App as AntdApp } from "antd";
 import type { ReactElement, ReactNode } from "react";
 import { useEvents } from "../hooks/useEvents";
-import { useTasks } from "../hooks/useTasks";
 import { StatsDashboard } from "../pages/StatsDashboard";
-import type { CalendarEvent, Task } from "../types";
+import type { CalendarEvent } from "../types";
 import { api } from "../api/client";
 
 /**
  * Regresión del change frontend-lint-zero: al mover la marca de "petición en
  * curso" fuera del efecto, `loading` dejaba de volver a `true` cuando el
- * efecto cambiaba de dependencias (rango de fechas / filtros). Estas pruebas
+ * efecto cambiaba de dependencias (rango de fechas). Estas pruebas
  * fijan ese comportamiento observable.
  */
 
@@ -31,19 +30,6 @@ const mockEvents: CalendarEvent[] = [
     scope: "shared",
     all_day: false,
     profile_id: "p1",
-    created_at: "2026-09-26T00:00:00Z",
-    updated_at: "2026-09-26T00:00:00Z",
-  },
-];
-
-const mockTasks: Task[] = [
-  {
-    id: "1",
-    profile_id: "p1",
-    content: "Test task",
-    status: "todo",
-    priority: "medium",
-    scope: "shared",
     created_at: "2026-09-26T00:00:00Z",
     updated_at: "2026-09-26T00:00:00Z",
   },
@@ -73,7 +59,6 @@ const mockMemory = {
 vi.mock("../api/client", () => ({
   api: {
     listEvents: vi.fn(),
-    listTasks: vi.fn(),
     getStatsSummary: vi.fn(),
     getStatsByModel: vi.fn(),
     getStatsByDay: vi.fn(),
@@ -133,31 +118,6 @@ describe("recarga al cambiar dependencias", () => {
     // El nuevo rango tarda en resolver: el Spin debe volver a aparecer.
     vi.mocked(api.listEvents).mockReturnValue(pending<CalendarEvent[]>());
     rerender({ start: "2026-10-01", end: "2026-10-31" });
-
-    await waitFor(() => {
-      expect(result.current.loading).toBe(true);
-    });
-  });
-
-  it("useTasks vuelve a loading=true al cambiar los filtros", async () => {
-    vi.mocked(api.listTasks).mockResolvedValue(mockTasks);
-
-    const { result, rerender } = renderHook(
-      ({ filters }: { filters?: Record<string, string> }) =>
-        useTasks(filters),
-      {
-        initialProps: {
-          filters: undefined as Record<string, string> | undefined,
-        },
-      },
-    );
-
-    await waitFor(() => {
-      expect(result.current.loading).toBe(false);
-    });
-
-    vi.mocked(api.listTasks).mockReturnValue(pending<Task[]>());
-    rerender({ filters: { status: "todo" } });
 
     await waitFor(() => {
       expect(result.current.loading).toBe(true);

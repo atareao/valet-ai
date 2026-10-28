@@ -21,7 +21,6 @@ import type {
   ToolStats,
   TableSize,
   RetentionConfig,
-  Task,
   UpdateProfile,
   PersistentMemoryState,
   SkillsResponse,
@@ -159,23 +158,6 @@ export const api = {
 
   deleteEvent: (id: string) =>
     request<void>(`/events/${id}`, { method: "DELETE" }),
-
-  listTasks: (params?: Record<string, string>) => {
-    const qs = params ? "?" + new URLSearchParams(params).toString() : "";
-    return request<Task[]>(`/tasks${qs}`);
-  },
-
-  createTask: (data: Partial<Task>) =>
-    request<Task>("/tasks", { method: "POST", body: JSON.stringify(data) }),
-
-  updateTask: (id: string, data: Partial<Task>) =>
-    request<Task>(`/tasks/${id}`, {
-      method: "PUT",
-      body: JSON.stringify(data),
-    }),
-
-  deleteTask: (id: string) =>
-    request<Task>(`/tasks/${id}`, { method: "DELETE" }),
 
   getStatsSummary: () => request<StatsSummary>("/stats/llm/summary"),
   getStatsByModel: (days = 30) =>

@@ -288,10 +288,6 @@ export function useMainChat() {
             if (name === "calendar" && success) {
               window.dispatchEvent(new CustomEvent("events-changed"));
             }
-            // Notify TaskView when LLM completes a tasks operation
-            if (name === "tasks" && success) {
-              window.dispatchEvent(new CustomEvent("tasks-changed"));
-            }
           },
           onWidget: (id: string, name: string, data: unknown) => {
             if (!streamingRef.current) {
