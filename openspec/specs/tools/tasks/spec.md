@@ -1,47 +1,9 @@
 # tools/tasks Specification
 
 ## Purpose
-Gestión de tareas personales: listar, crear, actualizar, completar y borrar tareas mediante la tool `tasks`.
+Gestión de tareas personales sobre **OpenTodo** desde la tool `tasks`: vistas GTD calculadas en Rust, prioridad 1–4, etiquetas de estado y ámbito, y borrado con aprobación explícita.
 
 ## Requirements
-
-### Requirement: `tasks` SHALL operar sobre OpenTodo y conservar el backend local solo como fallback
-
-La herramienta `tasks` SHALL despachar por un parámetro `operation` con el enum
-`["list_tasks","search_tasks","add_task","update_task","complete_task","delete_task","set_label"]` y
-`required: ["operation"]`.
-
-Cuando `opentodo_token` esté configurado, **todas** las operaciones SHALL ejecutarse contra la API de
-OpenTodo a través del servicio `Opentodo`. Cuando no lo esté, la herramienta SHALL conservar el
-comportamiento local vigente sobre la tabla `tasks` (con `profile_id` inyectado por el orquestador),
-de modo que desplegar el change sin configurar el token NO SHALL cambiar el comportamiento.
-
-La herramienta SHALL NOT requerir `profile_id` para operar contra OpenTodo. Un fallo de OpenTodo
-SHALL devolver un `ToolError` con un mensaje legible y NO SHALL propagar un pánico ni un `unwrap`.
-
-#### Scenario: Con token, las operaciones van a OpenTodo
-- **Given** `opentodo_token` configurado
-- **When** se ejecuta `tasks` con `{"operation":"list_tasks"}`
-- **Then** la herramienta consulta la API de OpenTodo
-- **And** no lee la tabla local `tasks`
-
-#### Scenario: Sin token, el comportamiento local se conserva
-- **Given** `opentodo_token` sin configurar
-- **When** se ejecuta `tasks` con `{"operation":"add_task","content":"Preparar informe"}`
-- **Then** la tarea se crea en la tabla local con estado `inbox`, prioridad `medium` y ámbito `shared`
-- **And** se sigue exigiendo `profile_id` como hoy
-
-#### Scenario: Un fallo del servicio externo no rompe el turno
-- **Given** `opentodo_token` configurado y el servidor devolviendo `503`
-- **When** se ejecuta `tasks` con `{"operation":"list_tasks"}`
-- **Then** se devuelve un `ToolError` cuyo mensaje menciona que OpenTodo no responde
-- **And** el mensaje no contiene el token
-
-#### Scenario: La operación documenta los obligatorios
-- **Given** la definición de la herramienta `tasks`
-- **When** se inspecciona la descripción del parámetro `operation`
-- **Then** menciona `title` para `add_task`, `id` para `update_task`, `complete_task`, `delete_task`
-  y `set_label`, y `query` para `search_tasks`
 
 ### Requirement: `tasks` SHALL calcular las vistas en Rust y acotar la salida con un resumen agregado
 
@@ -183,3 +145,37 @@ La herramienta `tasks` SHALL devolver `Permission::NoConfirm` para `list_tasks` 
 - **When** la `operation` es `delete_task`
 - **Then** `permission()` devuelve `ExplicitApproval`
 - **And** también la devuelve cuando `purge` es `true`
+
+### Requirement: `tasks` SHALL operar exclusivamente sobre OpenTodo
+
+La herramienta `tasks` SHALL despachar por un parámetro `operation` con el enum
+`["list_tasks","search_tasks","add_task","update_task","complete_task","delete_task","set_label"]` y
+`required: ["operation"]`.
+
+**Todas** las operaciones SHALL ejecutarse contra la API de OpenTodo a través del servicio
+`Opentodo`. Sin `opentodo_token` configurado, la herramienta SHALL devolver un `ToolError` legible que
+indique que hay que configurarlo en Ajustes → Integraciones → OpenTodo, y NO SHALL leer ni escribir
+ninguna tabla de Valet.
+
+La herramienta SHALL NOT requerir `profile_id` ni depender de la tabla `tasks`. Un fallo de OpenTodo
+SHALL devolver un `ToolError` con un mensaje legible y NO SHALL propagar un pánico ni un `unwrap`.
+
+#### Scenario: Sin token la herramienta lo dice y no toca la base de datos
+
+- **Given** `opentodo_token` sin configurar
+- **When** se ejecuta `tasks` con `{"operation":"add_task","title":"Preparar informe"}`
+- **Then** se devuelve un `ToolError` cuyo mensaje menciona OpenTodo y dónde configurar el token
+- **And** no se escribe ninguna fila en ninguna tabla
+
+#### Scenario: Con token, las operaciones van a OpenTodo
+
+- **Given** `opentodo_token` configurado
+- **When** se ejecuta `tasks` con `{"operation":"list_tasks"}`
+- **Then** la herramienta consulta la API de OpenTodo
+
+#### Scenario: Un fallo del servicio externo no rompe el turno
+
+- **Given** `opentodo_token` configurado y el servidor devolviendo `503`
+- **When** se ejecuta `tasks` con `{"operation":"list_tasks"}`
+- **Then** se devuelve un `ToolError` cuyo mensaje menciona que OpenTodo no responde
+- **And** el mensaje no contiene el token
