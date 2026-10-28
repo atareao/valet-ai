@@ -1,6 +1,6 @@
 [package]
 name = "valet"
-version = "0.23.0"
+version = "0.24.0"
 edition = "2021"
 autobins = false
 
@@ -117,10 +117,6 @@ path = "tests/api/export.rs"
 [[test]]
 name = "events"
 path = "tests/api/events.rs"
-
-[[test]]
-name = "tasks"
-path = "tests/api/tasks.rs"
 
 [[test]]
 name = "stats"

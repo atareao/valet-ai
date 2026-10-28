@@ -60,12 +60,10 @@ impl UnifiedSearchTool {
             Some("messages") => vec![("messages_fts", "message")],
             Some("notes") => vec![("notes_fts", "note")],
             Some("events") => vec![("events_fts", "event")],
-            Some("tasks") => vec![("tasks_fts", "task")],
             _ => vec![
                 ("messages_fts", "message"),
                 ("notes_fts", "note"),
                 ("events_fts", "event"),
-                ("tasks_fts", "task"),
             ],
         };
 
@@ -103,7 +101,7 @@ impl Tool for UnifiedSearchTool {
     }
 
     fn description(&self) -> &'static str {
-        "Buscar en todas las dimensiones (mensajes, notas, eventos y tareas) a partir de una consulta en lenguaje natural o palabras clave"
+        "Buscar en todas las dimensiones (mensajes, notas y eventos) a partir de una consulta en lenguaje natural o palabras clave"
     }
 
     fn parameters(&self) -> Value {
@@ -113,7 +111,7 @@ impl Tool for UnifiedSearchTool {
                 "query": { "type": "string", "description": "Texto a buscar" },
                 "dimensions": {
                     "type": "string",
-                    "enum": ["messages", "notes", "events", "tasks"],
+                    "enum": ["messages", "notes", "events"],
                     "description": "Limitar a una dimensión específica"
                 },
                 "limit": { "type": "integer", "description": "Máximo de resultados (default: 10)" }
@@ -174,13 +172,6 @@ mod tests {
             "INSERT INTO events (id, profile_id, title, description, start_time, end_time) \
              VALUES ('e1', 'p1', 'Evento de prueba', 'descripción del evento', \
              '2025-01-01T10:00:00Z', '2025-01-01T11:00:00Z')",
-        )
-        .execute(&pool)
-        .await?;
-        // Insert a task
-        sqlx::query(
-            "INSERT INTO tasks (id, profile_id, content) \
-             VALUES ('t1', 'p1', 'tarea de prueba para buscar')",
         )
         .execute(&pool)
         .await?;
@@ -292,6 +283,79 @@ mod tests {
             results.is_empty(),
             "Should return empty for non-matching query"
         );
+        Ok(())
+    }
+
+    /// Pool migrado con una única nota indexada que contiene «jirafa».
+    ///
+    /// A diferencia de [`setup`], no siembra mensajes, eventos ni tareas: así el
+    /// único resultado posible para la consulta es la nota y la aserción no
+    /// depende de las otras dimensiones.
+    async fn setup_note_only() -> Result<UnifiedSearchTool, sqlx::Error> {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await?;
+        run_migrations(&pool).await.unwrap();
+        // Sin los triggers, `notes_fts` se queda vacío y no habría nada que buscar.
+        crate::db::fts::create_fts_triggers(&pool).await.unwrap();
+        sqlx::query("INSERT INTO profiles (id, name, preferences) VALUES ('p1', 'Test', '{}')")
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO notes (id, profile_id, content, category) \
+             VALUES ('n-jirafa', 'p1', 'la jirafa del zoo', 'idea')",
+        )
+        .execute(&pool)
+        .await?;
+
+        Ok(UnifiedSearchTool::new(pool))
+    }
+
+    // -----------------------------------------------------------------------
+    // RED — remove-local-tasks: la dimensión `tasks` se retira.
+    // -----------------------------------------------------------------------
+
+    /// Scenario: La dimensión `tasks` ya no existe.
+    ///
+    /// La tabla `tasks` y su índice FTS desaparecen con la migración
+    /// `remove-local-tasks`, así que un valor de `dimensions` que no sea
+    /// `messages`, `notes` o `events` se trata como «sin filtro»: no se consulta
+    /// ninguna tabla eliminada, no hay error de SQL y se devuelve lo que haya en
+    /// las tres dimensiones vivas.
+    #[tokio::test]
+    async fn test_search_with_removed_tasks_dimension_is_unfiltered(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tool = setup_note_only().await?;
+
+        let result = tool
+            .execute(serde_json::json!({
+                "query": "jirafa",
+                "dimensions": "tasks",
+                "limit": 10
+            }))
+            .await
+            .expect("`dimensions: \"tasks\"` no debe producir ningún error de SQL");
+
+        assert!(result.success, "la búsqueda debe tener éxito");
+        let results = result
+            .data
+            .as_array()
+            .expect("`data` debe ser un array de resultados");
+
+        assert_eq!(
+            results.len(),
+            1,
+            "una dimensión retirada se trata como «sin filtro», así que debe \
+             devolver la nota indexada; llegaron {} resultados: {results:?}",
+            results.len()
+        );
+        assert_eq!(
+            results[0]["source"], "note",
+            "el único resultado debe proceder de la nota, fue: {:?}",
+            results[0]["source"]
+        );
+
         Ok(())
     }
 

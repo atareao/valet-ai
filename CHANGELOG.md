@@ -1,4 +1,15 @@
 # Changelog
+## [0.24.0] - 2026-10-28
+
+### Documentation
+
+- *(plans)* Anota el despliegue de la v0.23.0 en co1
+- *(openspec)* Cierra la E2E de OpenTodo verificada en producción
+- *(openspec)* Archiva remove-local-tasks y ajusta los propósitos
+
+### Refactor
+
+- *(tasks)* [**breaking**] Retira el TODO local y deja las tareas en OpenTodo
 ## [0.23.0] - 2026-10-28
 
 ### Documentation

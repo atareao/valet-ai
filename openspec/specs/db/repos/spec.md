@@ -187,7 +187,8 @@ El repositorio SHALL exponer `StatsRepo::db_sizes(pool)` devolviendo el número 
 **Given** una base de datos con tablas pobladas
 **When** se llama a `StatsRepo::db_sizes(pool)`
 **Then** devuelve `Vec<TableSize>` con nombre de tabla y row count para:
-events, llm_requests, memory, message_embeddings, messages, notes, profiles, reminders, settings, tasks, timeline_events, tools
+events, llm_requests, memory, message_embeddings, messages, notes, profiles, reminders, settings,
+timeline_events, tools
 
 #### Scenario: Tablas con datos
 **Given** 10 messages, 2 profiles, 5 memories
@@ -203,6 +204,11 @@ events, llm_requests, memory, message_embeddings, messages, notes, profiles, rem
 **Given** una base de datos recién migrada, con `timeline_events` sin filas
 **When** `StatsRepo::db_sizes(pool)`
 **Then** el resultado incluye `table = "timeline_events"` con `rows = 0`
+
+#### Scenario: `tasks` ya no aparece en el recuento
+**Given** una base de datos con el change aplicado
+**When** `StatsRepo::db_sizes(pool)`
+**Then** ninguna entrada tiene `table = "tasks"`
 
 ### Requirement: StatsRepo SHALL provide CSV export with all OpenRouter fields
 
@@ -506,36 +512,6 @@ actualizar el estado y/o el `datetime`.
 **Given** un recordatorio existente
 **When** se llama a `RemindersRepo::dismiss` o `snooze`
 **Then** DEBE actualizarse su `status` (`dismissed`/`snoozed`) y, en `snooze`, su `datetime`
-
-### Requirement: TasksRepo SHALL provide CRUD for tasks
-
-`TasksRepo` SHALL exponer `create`, `find_by_id`, `list`, `update`, `complete`, `cancel` y `delete`
-sobre la tabla `tasks`. `list` SHALL aceptar filtros opcionales (`status`, `priority`, `project`,
-`scope`) además de `profile_id`.
-
-**Given** un pool SQLite
-**When** se invoca `TasksRepo`
-**Then** DEBE operar sobre la tabla `tasks` y devolver `Task`/`Option<Task>`
-
-#### Scenario: create inserta una tarea
-**Given** un `Task` con los campos requeridos
-**When** se llama a `TasksRepo::create`
-**Then** DEBE insertarse la fila
-
-#### Scenario: complete marca la tarea como done
-**Given** una tarea existente
-**When** se llama a `TasksRepo::complete`
-**Then** DEBE actualizarse su `status` a `done`
-
-#### Scenario: update modifica campos seleccionados
-**Given** una tarea existente
-**When** se llama a `TasksRepo::update` con nuevos valores
-**Then** DEBE persistir los cambios y actualizar `updated_at`
-
-#### Scenario: delete elimina la tarea
-**Given** una tarea existente
-**When** se llama a `TasksRepo::delete`
-**Then** DEBE eliminarse la fila
 
 ### Requirement: NotesRepo SHALL provide CRUD for notes
 

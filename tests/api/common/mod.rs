@@ -1,11 +1,11 @@
 //! Shared helpers for the API integration tests.
 //!
 //! This module is compiled once per integration-test binary (`messages`,
-//! `tools`, `tasks`, `stats`, `memories`, `events`, `chat`, `profile`,
+//! `tools`, `stats`, `memories`, `events`, `chat`, `profile`,
 //! `search`). Each binary exercises only a subset of the helpers below, so the
 //! compiler's dead-code analysis reports helpers that are used by *other*
 //! binaries as unused in the current one. No helper is unused globally (e.g.
-//! `get` is used by all nine, `headers` by `chat`/`stats`, `text` by `stats`),
+//! `get` is used by all eight, `headers` by `chat`/`stats`, `text` by `stats`),
 //! so they cannot be removed without breaking tests; a module-level allow is
 //! the idiomatic fix for this shared-test-module pattern.
 #![allow(dead_code)]

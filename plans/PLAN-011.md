@@ -1,6 +1,6 @@
 # PLAN-011 — Integrar OpenTodo y retirar el TODO local
 
-> Estado: **fase 1 cerrada**. Change `opentodo-integration` aprobado, validado, implementado, auditado y archivado; fusionado en `development` con el PR #265 (`99383c7`). Queda pendiente la verificación E2E real, **aplazada al despliegue**.
+> Estado: **fase 2 implementada y datos migrados**, pendiente de release y despliegue. La fase 1 (`opentodo-integration`) está cerrada y verificada en producción (v0.23.0, PR #265). El change `remove-local-tasks` tiene el código completo en el árbol de trabajo —TODO local retirado y enlace a OpenTodo en el header— y las **8 tareas locales ya creadas en OpenTodo** el 2026-10-28 (§9). Falta fusionar, publicar v0.24.0 y desplegar.
 > Convención de repo: si se aprueba se renombra a `plans/PLAN-011.md`; al completarse, a `plans/PLAN-011-COMPLETED.md`.
 > Origen: petición del 2026-10-27 («quitar el TODO actual e integrar OpenTodo»), con cuatro decisiones tomadas por el usuario y una batería de pruebas contra la instancia real.
 
@@ -161,7 +161,20 @@ Ninguna queda abierta. Las cinco últimas las tomó el usuario el 2026-10-27 al 
 - [x] 4. GREEN — servicio, ajustes sensibles, endpoints de token/estado/sonda, migración, herramienta y fragmento de prompt.
 - [x] 5. GREEN — octava sub-pestaña de Integraciones.
 - [x] 6. REFACTOR — `cargo clippy -- -D warnings`, `cargo fmt --check`, `npx tsc --noEmit`, `npm run lint`. — 1947 tests backend y 644 frontend en verde.
-- [ ] 7. Archivar el change y verificar en producción con turnos reales. — Archivado el 2026-10-27 y fusionado en `development` (PR #265, `99383c7`). La verificación contra la instancia real (tarea 9.3 de `tasks.md` del change archivado) queda **aplazada al despliegue** por decisión del usuario: el token ya está rotado y se pegará en Ajustes → Integraciones → OpenTodo para verificarlo desde la UI.
-- [ ] 8. **Fase 2** — Phase 0: spec de caracterización de `tasks` local.
-- [ ] 9. **Fase 2** — Change `remove-local-tasks`: volcado de datos, retirada de tabla/API/tool/vista y enlace a OpenTodo.
-- [ ] 10. **Fase 2** — Archivar y release.
+- [x] 7. Archivar el change y verificar en producción con turnos reales. — Archivado el 2026-10-27 y fusionado en `development` (PR #265, `99383c7`). **Desplegado en `co1` como v0.23.0 el 2026-10-28** (release PR #267, tag `v0.23.0`, imagen GHCR y stack recreado desde Dockge): `GET /api/health` devuelve `{"status":"ok","db":"connected","version":"0.23.0"}`, la migración `20261027000001_opentodo.sql` aplicó (`opentodo_base_url` sembrada, `opentodo_token` vacío, `SKILL_PENDIENTES_PROMPT` promovido a la versión con OpenTodo) y `/api/opentodo/status` y `/api/opentodo/check` responden `401` sin sesión. Copia de la BD previa al despliegue en `/root/valet-2026-10-28-0654-v0.22.0.db` de `co1`. **E2E real ejecutada por el usuario contra producción el 2026-10-28**: el token de OpenTodo está configurado en Ajustes → Integraciones → OpenTodo (46 caracteres en `settings`, servido solo por `PUT /api/opentodo/token`). Verificado en la BD de producción el mismo día: con token configurado la herramienta va a OpenTodo y la tabla local `tasks` conserva sus 8 filas intactas, que es lo que la fase 2 migrará.
+- [x] 8. **Fase 2** — Phase 0: spec de caracterización de `tasks` local. — `openspec/changes/remove-local-tasks/characterization.md`: inventario de 13 piezas con su spec y sus tests, y cuatro hallazgos (semillas rotas desde el 2026-09-26, `tasks_fts` sin triggers y siempre vacío, `/api/tasks` sin spec publicada, `profile_id` inyectado a todas las herramientas).
+- [x] 9. **Fase 2** — Change `remove-local-tasks`: volcado de datos, retirada de tabla/API/tool/vista y enlace a OpenTodo. — Implementado y auditado (`@rust-reviewer` y `@react-reviewer`, sin bloqueantes tras las correcciones): −2.822 líneas, migración `20261028000001_remove_local_tasks.sql`, `tasks` sin fallback local y enlace externo en el header. 1925 tests backend y 635 frontend en verde.
+- [ ] 10. **Fase 2** — Archivar y release. — Pendiente: `openspec archive`, v0.24.0 y despliegue en `co1`.
+
+## 9. Ejecución de la migración de datos (2026-10-28)
+
+Hecha **antes** del release, en el orden que fija `design.md` §1: migrar → verificar → desplegar.
+
+1. **Snapshot** de la BD de producción en solo lectura (`sqlite3.connect("file:…?mode=ro")` + `backup`), no la copia de ficheros: la BD está en WAL y una copia plana da una foto vieja. 8 filas en `tasks` y `opentodo_token` de 46 caracteres.
+2. **`--dry-run`** contra el snapshot: 8 filas mapeadas, cero escrituras. El script no crea nada en esa ruta y no imprime el token.
+3. **Ejecución real**: 8 creadas, 0 errores, **2 etiquetas** (`shared`, `waiting`) y **1 proyecto** (`Preemer`) creados. `Idempotency-Key` derivada del id local en cada `POST`.
+4. **Verificación en OpenTodo**: pasa de 4 a **12 tareas**. Las 8 llegan con `priority 3`, etiqueta `shared` en todas, `waiting` solo en la de Miguel, `Preemer` como proyecto, y sin `start` ni `completed_at`. Las siete «Continuar con …» quedan en la bandeja de entrada, sin proyecto, por decisión del usuario.
+5. **Idempotencia**: una segunda pasada del `--dry-run` dice `8 ya estaban, 0 pendientes`.
+6. **Limpieza**: script y snapshots (local y en `co1`) borrados. No queda ninguna herramienta de migración en el repositorio; esta sección es la constancia.
+
+Las 8 filas siguen en la BD de producción hasta que se despliegue el release: la migración `20261028000001_remove_local_tasks.sql` las borrará junto con `tasks_fts`. Hasta entonces hay duplicado visible (local y OpenTodo), que es exactamente el estado previsto por el diseño.

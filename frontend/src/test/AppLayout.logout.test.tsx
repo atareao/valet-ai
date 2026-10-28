@@ -50,9 +50,6 @@ vi.mock("../components/SettingsDialog", () => ({
 vi.mock("../components/CalendarView", () => ({
   CalendarView: () => <div data-testid="calendar-view" />,
 }));
-vi.mock("../components/TaskView", () => ({
-  TaskView: () => <div data-testid="task-view" />,
-}));
 vi.mock("../pages/StatsDashboard", () => ({
   StatsDashboard: () => <div data-testid="stats-dashboard" />,
 }));

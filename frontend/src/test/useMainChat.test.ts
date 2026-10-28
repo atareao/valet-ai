@@ -381,6 +381,49 @@ describe("useMainChat", () => {
   });
 
   // -----------------------------------------------------------------------
+  // remove-local-tasks — un turno del agente ya no refresca una vista
+  // inexistente: el resultado de una operación `tasks` no dispara ningún
+  // evento `tasks-changed`. El contraste lo da el test de `calendar` de más
+  // arriba, que sí sigue despachando `events-changed`.
+  // -----------------------------------------------------------------------
+  it("does NOT dispatch tasks-changed on a successful tasks tool result", async () => {
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    const tasksChangedListener = vi.fn();
+    window.addEventListener("tasks-changed", tasksChangedListener);
+
+    const { result } = renderHook(() => useMainChat());
+
+    await vi.waitFor(
+      () => {
+        expect(result.current.loading).toBe(false);
+      },
+      { timeout: 3000 },
+    );
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    // El agente completa una operación `tasks` con éxito.
+    await act(async () => {
+      const toolResultFn = sseCallbacks.onToolResult as (
+        name: string,
+        success: boolean,
+      ) => void;
+      if (toolResultFn) toolResultFn("tasks", true);
+    });
+
+    const tasksChangedCalls = dispatchSpy.mock.calls.filter(
+      (args) => (args[0] as CustomEvent).type === "tasks-changed",
+    );
+    expect(tasksChangedCalls).toHaveLength(0);
+    expect(tasksChangedListener).not.toHaveBeenCalled();
+
+    window.removeEventListener("tasks-changed", tasksChangedListener);
+    dispatchSpy.mockRestore();
+  });
+
+  // -----------------------------------------------------------------------
   // approval_required sets pendingApproval
   // -----------------------------------------------------------------------
   it("sets pendingApproval when approval_required arrives", async () => {

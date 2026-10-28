@@ -9,7 +9,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     seed_profiles(&pool).await?;
     seed_events(&pool).await?;
-    seed_tasks(&pool).await?;
     seed_notes(&pool).await?;
 
     println!("✅ Seed data created in {}", db_path);
@@ -77,39 +76,6 @@ async fn seed_events(db: &SqlitePool) -> Result<(), sqlx::Error> {
     .await?;
 
     println!("  📅 Eventos: Cena con amigos, Revisión semanal");
-    Ok(())
-}
-
-async fn seed_tasks(db: &SqlitePool) -> Result<(), sqlx::Error> {
-    for (content, priority, project, scope) in &[
-        ("Comprar leche", "high", "Casa", "shared"),
-        ("Llamar al seguro", "medium", "Administración", "personal"),
-        ("Preparar presentación", "high", "Trabajo", "personal"),
-        ("Leer artículo sobre IA", "low", "Formación", "shared"),
-    ] {
-        sqlx::query(
-            "INSERT OR IGNORE INTO tasks (id, profile_id, content, status, priority, project, scope)
-             VALUES (?1, 'profile-ana', ?2, 'pending', ?3, ?4, ?5)",
-        )
-        .bind(Uuid::new_v4().to_string())
-        .bind(content)
-        .bind(priority)
-        .bind(project)
-        .bind(scope)
-        .execute(db)
-        .await?;
-    }
-
-    // A completed task
-    sqlx::query(
-        "INSERT OR IGNORE INTO tasks (id, profile_id, content, status, priority, project, scope)
-         VALUES (?1, 'profile-ana', 'Comprar pan', 'completed', 'low', 'Casa', 'shared')",
-    )
-    .bind(Uuid::new_v4().to_string())
-    .execute(db)
-    .await?;
-
-    println!("  ✅ Tareas: 4 pendientes, 1 completada");
     Ok(())
 }
 

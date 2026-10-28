@@ -76,12 +76,12 @@ identidad no cambie en cada render. NO SHALL usarse `eslint-disable` para silenc
 
 ### Requirement: Los módulos de componente exportan solo componentes
 
-`CalendarView.tsx` y `TaskView.tsx` SHALL exportar únicamente componentes, de modo que el fast
-refresh funcione. Las constantes compartidas SHALL residir en módulos propios.
+`CalendarView.tsx` SHALL exportar únicamente componentes, de modo que el fast refresh funcione. Las
+constantes compartidas SHALL residir en módulos propios.
 
-#### Scenario: Fast refresh en `CalendarView` y `TaskView`
+#### Scenario: Fast refresh en `CalendarView`
 
-**Given** los módulos `CalendarView.tsx` y `TaskView.tsx`
+**Given** el módulo `CalendarView.tsx`
 **When** se ejecuta `npx eslint .`
 **Then** NO SHALL emitirse `react-refresh/only-export-components`
 **And** las constantes SHALL importarse desde un módulo distinto
