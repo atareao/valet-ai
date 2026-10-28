@@ -21,9 +21,6 @@ import { AuthContext } from "../contexts/AuthContext";
 const CalendarView = lazy(() =>
   import("./CalendarView").then((m) => ({ default: m.CalendarView })),
 );
-const TaskView = lazy(() =>
-  import("./TaskView").then((m) => ({ default: m.TaskView })),
-);
 const StatsDashboard = lazy(() =>
   import("../pages/StatsDashboard").then((m) => ({
     default: m.StatsDashboard,
@@ -57,6 +54,10 @@ const lazyViewFallback = (
 const { Header, Content } = Layout;
 const { Text } = Typography;
 
+// OpenTodo es el backend de tareas (change `remove-local-tasks`). El botón del
+// header es un enlace directo: una constante evita una petición por render.
+const OPENTODO_URL = "https://todo.territoriolinux.es";
+
 interface AppLayoutProps {
   children?: React.ReactNode;
 }
@@ -88,7 +89,6 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   // conserva la animación de cierre del modal).
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [calendarVisible, setCalendarVisible] = useState(false);
-  const [tasksVisible, setTasksVisible] = useState(false);
   const [statsVisible, setStatsVisible] = useState(false);
   const [statsOpenKey, setStatsOpenKey] = useState(0);
   const [notificationsVisible, setNotificationsVisible] = useState(false);
@@ -113,8 +113,12 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
         <Space>
           <Button
             type="text"
+            href={OPENTODO_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="Abrir OpenTodo"
+            title="Abrir OpenTodo"
             icon={<CheckSquareOutlined />}
-            onClick={() => setTasksVisible(true)}
             style={{ color: "rgba(255,255,255,0.65)" }}
           />
           <Button
@@ -214,17 +218,6 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
       >
         <Suspense fallback={lazyViewFallback}>
           <CalendarView />
-        </Suspense>
-      </Modal>
-      <Modal
-        title="✅ Tasks"
-        open={tasksVisible}
-        onCancel={() => setTasksVisible(false)}
-        footer={null}
-        width={1000}
-      >
-        <Suspense fallback={lazyViewFallback}>
-          <TaskView onClose={() => setTasksVisible(false)} />
         </Suspense>
       </Modal>
       <Modal

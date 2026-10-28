@@ -11,7 +11,7 @@ Auto-hospedado y local-first: tus datos viven en SQLite en tu propia máquina, y
 ## 🗂️ Características
 
 - **🫖 Chat con IA**: Orquestador con ciclo ReAct y memoria por capas (sesión, episódica, perfil)
-- **🕰️ Agenda y Tareas**: Gestión de eventos, tareas y recordatorios con scope `shared`/`personal`
+- **🕰️ Agenda y Tareas**: Eventos y recordatorios en Valet (con scope `shared`/`personal`); las tareas se gestionan en OpenTodo, integrado con la herramienta `tasks`
 - **🗺️ Clima y Geo**: Clima por coordenadas, geocoding (Nominatim), búsqueda de lugares (Overpass OSM)
 - **🧐 Búsqueda Unificada**: FTS5 en todas las dimensiones
 - **🗝️ Privado**: Datos locales en SQLite, auto-hospedado, con auth PocketID opcional
@@ -219,7 +219,7 @@ Workers en segundo plano en `src/workers/`: `briefing`, `collapse`, `conflict_de
 | PUT | `/api/tools/{id}/toggle` | Activar / desactivar una herramienta |
 | GET | `/api/search` | Búsqueda unificada |
 | GET | `/api/export` | Exportar datos |
-| — | `/api/events/*`, `/api/tasks/*` | CRUD de eventos y tareas |
+| — | `/api/events/*` | CRUD de eventos |
 | GET | `/api/stats/memory` | Estadísticas de memoria episódica |
 | GET | `/api/stats/llm/summary` | Resumen de uso del LLM |
 | GET | `/api/stats/llm/by-model`, `/api/stats/llm/by-day` | Desglose de uso del LLM |

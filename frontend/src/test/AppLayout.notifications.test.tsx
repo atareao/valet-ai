@@ -24,10 +24,6 @@ vi.mock("../components/CalendarView", () => ({
   CalendarView: () => <div data-testid="calendar-view">Calendar</div>,
 }));
 
-vi.mock("../components/TaskView", () => ({
-  TaskView: () => <div data-testid="task-view">Tasks</div>,
-}));
-
 vi.mock("../components/NotificationsView", () => ({
   NotificationsView: () => (
     <div data-testid="notifications-view">Notifications</div>

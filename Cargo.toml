@@ -119,10 +119,6 @@ name = "events"
 path = "tests/api/events.rs"
 
 [[test]]
-name = "tasks"
-path = "tests/api/tasks.rs"
-
-[[test]]
 name = "stats"
 path = "tests/api/stats.rs"
 
