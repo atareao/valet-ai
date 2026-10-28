@@ -475,6 +475,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       width={1000}
     >
       <Tabs
+        tabPosition="left"
         items={[
           {
             key: "profile",
@@ -583,6 +584,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 onFinish={handleSettingsSubmit}
               >
                 <Tabs
+                  tabPosition="left"
                   items={[
                     {
                       key: "system",
@@ -697,6 +699,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             ) : (
               <section aria-label="Tipo de memoria">
                 <Tabs
+                  tabPosition="left"
                   items={[
                     {
                       key: "episodic",
@@ -765,6 +768,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 onFinish={handleSettingsSubmit}
               >
                 <Tabs
+                  tabPosition="left"
                   aria-label="Rol de generación"
                   items={GENERATION_BLOCKS.map((block) => ({
                     key: block.key,
