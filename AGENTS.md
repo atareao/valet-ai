@@ -213,7 +213,15 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 - **Toda escritura lleva `Idempotency-Key`** con un UUID nuevo por petición; un `409` significa «ya aplicado», no se reintenta y la herramienta lo dice en el mensaje.
 - **Las vistas se recalculan en Rust** (`inbox`, `today`, `upcoming`, `anytime`, `someday`, `doing`, `waiting`, `all`) porque el servidor no filtra. `Next` queda fuera del alcance.
 
-La **E2E contra la instancia real está verificada**: desplegada la v0.23.0 en `co1` el 2026-10-28, el usuario configuró el token en Ajustes → Integraciones → OpenTodo y probó la herramienta de punta a punta contra producción. La **fase 2** (`remove-local-tasks`) sigue sin empezar: retirará la tabla/FTS/API/tool/vista locales y migrará las tareas guardadas (8 filas en la BD de producción a fecha del 2026-10-28), con acceso directo a `https://todo.territoriolinux.es` en su lugar.
+La **E2E contra la instancia real está verificada**: desplegada la v0.23.0 en `co1` el 2026-10-28, el usuario configuró el token en Ajustes → Integraciones → OpenTodo y probó la herramienta de punta a punta contra producción. La **fase 2** (`remove-local-tasks`) cerró el ciclo ese mismo día: ver el estado 16.
+
+**16. El TODO local ya no existe: las tareas viven solo en OpenTodo.** Decidido y ejecutado el 2026-10-28 con el change `remove-local-tasks` (archivado; PR #271 para el código y #272 para el archive; release v0.24.0 desplegada en `co1`). La fase 1 había dejado el fallback local como red de seguridad; con el token configurado y la E2E verificada, el fallback se retiró entero: `DROP TABLE tasks_fts` y `DROP TABLE tasks` (migración `20261028000001_remove_local_tasks.sql`), `TasksRepo`, `src/handlers/tasks.rs`, `src/routes/tasks.rs`, el backend local de la herramienta, la clave `tasks` del export, la entrada de `db_sizes`, `seed_tasks` y la dimensión `tasks` de `unified_search`. Sin `opentodo_token`, la herramienta `tasks` devuelve «OpenTodo no está configurado: pega el token en Ajustes → Integraciones → OpenTodo» y **no** toca la base de datos. En el frontend desaparecen `TaskView`, `TaskModal`, `useTasks`, el tipo `Task`, los métodos `listTasks`/`createTask`/`updateTask`/`deleteTask`, el `lazy()`, el modal y el evento `tasks-changed`; en su plaza del header queda un enlace externo a `https://todo.territoriolinux.es` con `target="_blank"` y `rel="noopener noreferrer"`.
+
+Lo que no se reabre sin orden explícita:
+
+- **Las 8 tareas se migraron antes del release**, no después: `DROP TABLE` es irreversible y el script de una sola ejecución se borró al terminar. La constancia (fecha, recuento, mapeo y resultados) está en `plans/PLAN-011-COMPLETED.md` §9. La migración creó el proyecto `Preemer` y las etiquetas `shared` y `waiting`; las siete «Continuar con …» quedaron como tareas sueltas sin proyecto, por decisión del usuario.
+- **El enlace del header es una constante del frontend**, no se deriva de `opentodo_base_url`: si algún día se cambia el ajuste, el enlace no lo sigue. Se prefirió eso a un `GET /api/opentodo/status` en cada arranque solo para pintar un botón.
+- **Sin token, la herramienta falla** en vez de caer a un almacén local. Ya no hay segunda fuente de verdad, y `seed_tasks` (que además estaba roto desde el 2026-09-26: insertaba `status='pending'`, que el CHECK GTD rechaza) desapareció con el resto.
 
 ---
 
@@ -251,7 +259,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-008-COMPLETED.md` | Sincronización del chat entre dispositivos (change `chat-cross-device-sync`) | ✅ Completado |
 | `plans/PLAN-009-COMPLETED.md` | Integración de ZenNotes: el agente lee y escribe notas del vault vía API (change `zennotes-notes`) | ✅ Completado |
 | `plans/PLAN-010-PENDING.md` | Diagnóstico del TTL de sesión (8 h fijo) y opciones A–D | ⏸️ Pending |
-| `plans/PLAN-011.md` | Integrar OpenTodo y retirar el TODO local (change `opentodo-integration`, PR #265). Fase 1 ✅ archivada; fase 2 pendiente | 🔄 En curso |
+| `plans/PLAN-011-COMPLETED.md` | Integrar OpenTodo y retirar el TODO local: fase 1 (`opentodo-integration`, PR #265) y fase 2 (`remove-local-tasks`, PR #271/#272), desplegadas como v0.23.0 y v0.24.0 | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
