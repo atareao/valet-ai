@@ -213,7 +213,7 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 - **Toda escritura lleva `Idempotency-Key`** con un UUID nuevo por petición; un `409` significa «ya aplicado», no se reintenta y la herramienta lo dice en el mensaje.
 - **Las vistas se recalculan en Rust** (`inbox`, `today`, `upcoming`, `anytime`, `someday`, `doing`, `waiting`, `all`) porque el servidor no filtra. `Next` queda fuera del alcance.
 
-Queda **pendiente** la verificación E2E contra la instancia real (tarea 9.3 de `tasks.md`), aplazada al despliegue por decisión del usuario (el token ya está rotado y se pegará en Ajustes → Integraciones → OpenTodo para verificarlo desde la UI). La **fase 2** (`remove-local-tasks`) retirará la tabla/FTS/API/tool/vista locales y migrará las 3 tareas, con acceso directo a `https://todo.territoriolinux.es` en su lugar.
+La **E2E contra la instancia real está verificada**: desplegada la v0.23.0 en `co1` el 2026-10-28, el usuario configuró el token en Ajustes → Integraciones → OpenTodo y probó la herramienta de punta a punta contra producción. La **fase 2** (`remove-local-tasks`) sigue sin empezar: retirará la tabla/FTS/API/tool/vista locales y migrará las tareas guardadas (8 filas en la BD de producción a fecha del 2026-10-28), con acceso directo a `https://todo.territoriolinux.es` en su lugar.
 
 ---
 

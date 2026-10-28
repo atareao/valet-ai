@@ -78,4 +78,4 @@
 
 - [x] 9.1 `@qa-plan-verifier` contra `PLAN.md`.
 - [x] 9.2 `openspec archive opentodo-integration`.
-- [ ] 9.3 E2E con el servidor real: guardar el token, crear/editar/completar/borrar una tarea por la herramienta, y dejar la cuenta como estaba (borrar + purgar + etiquetas).
+- [x] 9.3 E2E con el servidor real: guardar el token, crear/editar/completar/borrar una tarea por la herramienta, y dejar la cuenta como estaba (borrar + purgar + etiquetas). — Ejecutada por el usuario contra producción el 2026-10-28, con el token configurado en la UI de Ajustes → Integraciones → OpenTodo sobre la v0.23.0 desplegada en `co1`.
