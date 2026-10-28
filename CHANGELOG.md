@@ -1,4 +1,16 @@
 # Changelog
+## [0.23.0] - 2026-10-28
+
+### Documentation
+
+- *(openspec)* Archiva opentodo-integration
+- *(plans)* Añade PLAN-011 (OpenTodo) y PLAN-010 (TTL de sesión)
+- *(agents)* Documenta las decisiones de la integración con OpenTodo
+
+### Features
+
+- *(tasks)* Integrar OpenTodo como backend de la herramienta tasks
+- *(settings)* Sub-pestaña OpenTodo en Integraciones
 ## [0.22.0] - 2026-10-27
 
 ### Documentation

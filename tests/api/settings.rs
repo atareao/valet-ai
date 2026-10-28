@@ -158,3 +158,68 @@ async fn put_settings_ignores_zennotes_token() {
         "el token de ZenNotes no debe poder escribirse desde los ajustes"
     );
 }
+
+/// Scenario: el token no aparece en la lectura de ajustes. `GET /api/settings`
+/// NO debe incluir `opentodo_token` (se gestiona por `PUT /api/opentodo/token`),
+/// pero sí `opentodo_base_url`, que es un ajuste normal y editable.
+#[tokio::test]
+async fn get_settings_hides_opentodo_token_but_keeps_base_url() {
+    let app = TestApp::new_empty().await;
+    seed(&app, "opentodo_token", "SECRET_OPENTODO").await;
+
+    let resp = app.get("/api/settings").await;
+    assert_eq!(resp.status(), 200);
+    let text = resp.text().await;
+
+    assert!(
+        !text.contains("SECRET_OPENTODO"),
+        "el token de OpenTodo no debe viajar en los ajustes: {text}"
+    );
+
+    let body = serde_json::from_str::<serde_json::Value>(&text).expect("los ajustes son JSON");
+    assert!(
+        body.get("opentodo_token").is_none(),
+        "el token de OpenTodo no debe viajar en los ajustes: {body}"
+    );
+    assert!(
+        body.get("opentodo_base_url").is_some(),
+        "la URL base de OpenTodo es un ajuste no sensible: {body}"
+    );
+}
+
+/// Scenario: el token no se puede escribir por la API de ajustes.
+/// `PUT /api/settings` con `opentodo_token` en el cuerpo NO lo modifica, pero
+/// `opentodo_base_url` sí se puede editar por esa vía.
+#[tokio::test]
+async fn put_settings_ignores_opentodo_token() {
+    let app = TestApp::new_empty().await;
+    seed(&app, "opentodo_token", "ORIGINAL_OPENTODO").await;
+
+    let resp = app
+        .put("/api/settings")
+        .json(&json!({
+            "opentodo_token": "INJECTED_OPENTODO",
+            "opentodo_base_url": "https://todo.midominio.es",
+        }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), 200, "el PUT de ajustes debe responder 200");
+    let body = resp.json::<serde_json::Value>().await;
+    assert!(
+        body.get("opentodo_token").is_none(),
+        "la respuesta del PUT tampoco debe exponer el token: {body}"
+    );
+
+    assert_eq!(
+        SettingsRepo::get(&app.db, "opentodo_token").await.unwrap(),
+        Some("ORIGINAL_OPENTODO".to_string()),
+        "el token de OpenTodo no debe poder escribirse desde los ajustes"
+    );
+    assert_eq!(
+        SettingsRepo::get(&app.db, "opentodo_base_url")
+            .await
+            .unwrap(),
+        Some("https://todo.midominio.es".to_string()),
+        "la URL base de OpenTodo sí se edita desde los ajustes"
+    );
+}

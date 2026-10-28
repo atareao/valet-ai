@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App as AntdApp } from "antd";
 import { useState } from "react";
 import type { ReactElement, ReactNode } from "react";
-import type { SkillsResponse } from "../types";
+import type { OpentodoCheckResult, SkillsResponse } from "../types";
 
 // ---------------------------------------------------------------------------
 // Ant Design matchMedia mock
@@ -46,6 +46,16 @@ const mockSetZennotesToken = vi.fn();
 // `StravaIntegration`), así que se enruta al spy para que el indicador de la
 // sub-pestaña «Strava» sea determinista y ningún test abra una petición real.
 const mockGetStravaStatus = vi.fn();
+// Spies sobre los endpoints dedicados de OpenTodo: misma pauta que ZenNotes
+// (change `opentodo-integration`). `useOpentodo` es real, así que se enruta al
+// spy para que el indicador de la octava sub-pestaña sea determinista y ningún
+// test abra una petición real.
+const mockGetOpentodoStatus = vi.fn();
+const mockSetOpentodoToken = vi.fn();
+// Spy sobre el sondeo activo de OpenTodo (`GET /api/opentodo/check`): el botón
+// «Probar conexión» debe usarlo —no una relectura del estado— y mostrar su
+// `detail` en la línea de estado.
+const mockCheckOpentodo = vi.fn();
 
 // Fixture de settings devuelta por el hook mockeado (equivale a lo que
 // responde `GET /settings`). Es mutable para que cada test pueda simular
@@ -68,6 +78,7 @@ const defaultSettings: Record<string, string> = {
   apimail_api_key: "",
   miniflux_base_url: "",
   miniflux_api_key: "",
+  opentodo_base_url: "",
   MEMORY_HALF_LIFE_DAYS: "30",
   SIMILARITY_THRESHOLD: "0.4",
   RAG_BUDGET_TOKENS: "400",
@@ -195,6 +206,13 @@ vi.mock("../hooks/useProfile", () => ({
   })),
 }));
 
+// `saving` del hook `useSettings`, mutable para que un test pueda simular el
+// `PUT /api/settings` en vuelo: es lo que declara ocupados (`loading` +
+// `aria-busy`) a los botones «Guardar» que dependen de él, incluido el del
+// panel de OpenTodo, que lo recibe por el camino
+// `SettingsDialog` → `IntegrationsTab` → `OpentodoSection`.
+let mockSaving = false;
+
 // El hook se mockea con estado real de React: `settings` vive en un
 // `useState` (como en el hook verdadero), de modo que un guardado refresca el
 // valor y repinta a los consumidores —por ejemplo el indicador de configuración
@@ -220,7 +238,7 @@ vi.mock("../hooks/useSettings", async () => {
     return {
       settings,
       loading: false,
-      saving: false,
+      saving: mockSaving,
       error: null,
       updateSettings,
       resetToDefaults: mockResetToDefaults,
@@ -283,6 +301,11 @@ vi.mock("../api/client", async () => {
       getZennotesStatus: (...args: unknown[]) =>
         mockGetZennotesStatus(...args),
       setZennotesToken: (...args: unknown[]) => mockSetZennotesToken(...args),
+      // Endpoints dedicados de OpenTodo: mismo diferido que `getSkills` (el
+      // factory se hoisted); solo se toca el spy cuando el hook los invoca.
+      getOpentodoStatus: (...args: unknown[]) => mockGetOpentodoStatus(...args),
+      setOpentodoToken: (...args: unknown[]) => mockSetOpentodoToken(...args),
+      checkOpentodo: (...args: unknown[]) => mockCheckOpentodo(...args),
       // Estado de Strava: mismo diferido. Lo consume `useStrava` al montar
       // `StravaIntegration` dentro de «Integraciones».
       getStravaStatus: (...args: unknown[]) => mockGetStravaStatus(...args),
@@ -335,6 +358,7 @@ describe("SettingsDialog", () => {
     // implementación de `mockUpdateSettings` para que un `mockRejectedValue`
     // de un test no se filtre al siguiente.
     mockUpdateSettings.mockReset();
+    mockSaving = false;
     mockSettings = { ...defaultSettings };
     mockGetSkills.mockResolvedValue(skillsFixture);
     mockGetSettings.mockImplementation(() => Promise.resolve(mockSettings));
@@ -346,6 +370,19 @@ describe("SettingsDialog", () => {
       folder: "Valet",
     });
     mockSetZennotesToken.mockResolvedValue(undefined);
+    // Por defecto OpenTodo no está configurado; los tests que lo necesiten
+    // fijan `configured: true` con `mockResolvedValueOnce`/`mockResolvedValue`.
+    mockGetOpentodoStatus.mockResolvedValue({
+      configured: false,
+      base_url: "https://todo.territoriolinux.es",
+    });
+    mockSetOpentodoToken.mockResolvedValue(undefined);
+    // Sondeo activo por defecto: «conexión correcta». Los tests de fallo lo
+    // sobrescriben con `mockResolvedValue`/`mockRejectedValue`.
+    mockCheckOpentodo.mockResolvedValue({
+      ok: true,
+      detail: "conexión correcta",
+    });
     // Por defecto Strava no está conectada; los tests que lo necesiten fijan el
     // estado conectado con `mockResolvedValue`.
     mockGetStravaStatus.mockResolvedValue({
@@ -2618,7 +2655,8 @@ describe("SettingsDialog", () => {
   // Escenarios: openspec/changes/settings-integrations-tabs/specs/frontend/spec.md
   // ════════════════════════════════════════════════════════════════
 
-  // Orden cerrado de las sub-pestañas de «Integraciones» (spec aprobada).
+  // Orden cerrado de las sub-pestañas de «Integraciones» (spec aprobada). La
+  // octava, «OpenTodo», la añade el change `opentodo-integration`.
   const INTEGRATION_SUBTABS = [
     "Strava",
     "OpenWeatherMap",
@@ -2627,6 +2665,7 @@ describe("SettingsDialog", () => {
     "apimail",
     "Miniflux",
     "ZenNotes",
+    "OpenTodo",
   ] as const;
 
   // Etiquetas de los campos de credencial que, tras el change, viven SOLO en
@@ -2653,11 +2692,15 @@ describe("SettingsDialog", () => {
     return tab;
   };
 
-  it("organiza «Integraciones» en siete sub-pestañas horizontales en el orden acordado", async () => {
+  it("organiza «Integraciones» en ocho sub-pestañas horizontales en el orden acordado", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    // Ocho sub-pestañas, con «OpenTodo» como octava al final del orden cerrado.
+    expect(INTEGRATION_SUBTABS).toHaveLength(8);
+    expect(INTEGRATION_SUBTABS[7]).toBe("OpenTodo");
 
     const subTabs = INTEGRATION_SUBTABS.map((name) =>
       screen.getByRole("tab", {
@@ -2665,7 +2708,7 @@ describe("SettingsDialog", () => {
       }),
     );
 
-    // Las siete cuelgan del mismo `tablist` anidado, distinto del de nivel
+    // Las ocho cuelgan del mismo `tablist` anidado, distinto del de nivel
     // superior (que ya aloja Perfil, Interfaz, …).
     const nested = subTabs[0].closest('[role="tablist"]') as HTMLElement | null;
     if (!nested) throw new Error("Las sub-pestañas no cuelgan de un tablist");
@@ -2948,11 +2991,17 @@ describe("SettingsDialog", () => {
         name: /^ZenNotes(?![a-zA-Z])[\s\S]*Configurado/,
       }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("tab", {
+        name: /^OpenTodo(?![a-zA-Z])[\s\S]*Sin configurar/,
+      }),
+    ).toBeInTheDocument();
 
     // Invariante de no duplicación: un solo `GET` de cada estado remoto por
     // apertura del panel, aunque el indicador y el panel compartan la lectura.
     expect(mockGetStravaStatus).toHaveBeenCalledTimes(1);
     expect(mockGetZennotesStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetOpentodoStatus).toHaveBeenCalledTimes(1);
   });
 
   // El nombre accesible del `Tabs` anidado evita que un lector de pantalla
@@ -3007,6 +3056,7 @@ describe("SettingsDialog", () => {
       expect(mockGetStravaStatus).toHaveBeenCalledTimes(1);
     });
     expect(mockGetZennotesStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetOpentodoStatus).toHaveBeenCalledTimes(1);
 
     // Y entrar en «Enrutador de skills» monta su control, que relee
     // `GET /api/settings` por su cuenta: la cuenta de lecturas al terminar la
@@ -3032,6 +3082,7 @@ describe("SettingsDialog", () => {
     ).not.toBeInTheDocument();
     expect(mockGetStravaStatus).toHaveBeenCalledTimes(1);
     expect(mockGetZennotesStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetOpentodoStatus).toHaveBeenCalledTimes(1);
 
     // Reabrir remonta el panel y añade exactamente una lectura más de cada
     // endpoint: una por apertura, ni acumulada por sesión ni duplicada.
@@ -3041,6 +3092,7 @@ describe("SettingsDialog", () => {
       expect(mockGetStravaStatus).toHaveBeenCalledTimes(2);
     });
     expect(mockGetZennotesStatus).toHaveBeenCalledTimes(2);
+    expect(mockGetOpentodoStatus).toHaveBeenCalledTimes(2);
 
     // La pestaña del enrutador también se remonta de cero y su control relee
     // lo persistido en esta apertura: la cuenta de `GET /api/settings` supera
@@ -3159,6 +3211,10 @@ describe("SettingsDialog", () => {
       base_url: "https://zennotes.territoriolinux.es",
       folder: "Valet",
     });
+    mockGetOpentodoStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://todo.territoriolinux.es",
+    });
     mockSettings = {
       ...mockSettings,
       openweather_api_key: "clave-openweather",
@@ -3183,6 +3239,7 @@ describe("SettingsDialog", () => {
       ["apimail", /Configurada/],
       ["Miniflux", /Configurada/],
       ["ZenNotes", /Configurado/],
+      ["OpenTodo", /Configurado/],
     ];
     for (const [name, state] of expected) {
       const tab = await screen.findByRole("tab", {
@@ -3222,5 +3279,358 @@ describe("SettingsDialog", () => {
     expect(
       screen.queryByLabelText("ZenNotes · token de API"),
     ).not.toBeInTheDocument();
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // RED — change `opentodo-integration`
+  // Octava sub-pestaña «OpenTodo» de «Integraciones»: URL base por el
+  // formulario compartido, token por su endpoint dedicado e indicador desde
+  // `GET /api/opentodo/status`.
+  // Escenarios: openspec/changes/opentodo-integration/specs/frontend/spec.md
+  // ════════════════════════════════════════════════════════════════
+
+  it("el panel de OpenTodo tiene URL base, token enmascarado, estado y «Probar conexión»", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenTodo");
+
+    const region = await screen.findByRole("region", { name: "OpenTodo" });
+
+    // Campo de URL base con su placeholder por defecto.
+    const baseUrl = within(region).getByLabelText("OpenTodo · URL base");
+    expect(baseUrl).toHaveAttribute("type", "text");
+    expect(baseUrl).toHaveAttribute(
+      "placeholder",
+      "https://todo.territoriolinux.es",
+    );
+
+    // Campo de token enmascarado.
+    expect(within(region).getByLabelText("OpenTodo · token de API")).toHaveAttribute(
+      "type",
+      "password",
+    );
+
+    // Línea de estado y botón «Probar conexión».
+    expect(within(region).getByText("Estado")).toBeInTheDocument();
+    expect(
+      within(region).getByRole("button", { name: "Probar conexión" }),
+    ).toBeInTheDocument();
+    // Y su propio botón «Guardar» (submit del formulario de ajustes).
+    expect(
+      within(region).getByRole("button", { name: "Guardar" }),
+    ).toBeInTheDocument();
+  });
+
+  it("el campo del token de OpenTodo arranca vacío aunque haya token guardado", async () => {
+    const user = userEvent.setup();
+    // El estado sale de `GET /api/opentodo/status` (sin el token): configurado.
+    mockGetOpentodoStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://todo.territoriolinux.es",
+    });
+    // Aunque el token estuviera en settings, el campo NO debe leerlo de ahí.
+    mockSettings = { ...mockSettings, opentodo_token: "SECRETO-no-mostrar" };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenTodo");
+
+    const field = await screen.findByLabelText("OpenTodo · token de API");
+    expect(field).toHaveValue("");
+
+    // El estado «Configurado» se muestra en la línea de estado, no en el campo.
+    const region = screen.getByRole("region", { name: "OpenTodo" });
+    expect(await within(region).findByText("Configurado")).toBeInTheDocument();
+    expect(mockGetOpentodoStatus).toHaveBeenCalled();
+  });
+
+  it("guarda el token de OpenTodo por su endpoint dedicado y no por PUT /api/settings", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenTodo");
+
+    const field = await screen.findByLabelText("OpenTodo · token de API");
+    await user.type(field, "nuevo-token-opentodo");
+
+    await user.click(screen.getByRole("button", { name: /guardar token/i }));
+
+    // Se llama al endpoint dedicado con el token tecleado…
+    await waitFor(() => {
+      expect(mockSetOpentodoToken).toHaveBeenCalledWith("nuevo-token-opentodo");
+    });
+    // …y NUNCA a `PUT /api/settings`.
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
+
+    // Tras guardar, el campo se limpia (no relee el valor guardado).
+    await waitFor(() => {
+      expect(screen.getByLabelText("OpenTodo · token de API")).toHaveValue("");
+    });
+  });
+
+  it("guarda la URL base de OpenTodo con el formulario de ajustes", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    mockSettings = {
+      ...mockSettings,
+      opentodo_base_url: "https://todo.test.local",
+    };
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenTodo");
+
+    // El campo de URL base muestra el valor vigente.
+    const baseUrl = await screen.findByLabelText("OpenTodo · URL base");
+    expect(baseUrl).toHaveValue("https://todo.test.local");
+
+    await user.clear(baseUrl);
+    await user.type(baseUrl, "https://todo.nuevo.local");
+
+    // El «Guardar» de la sub-pestaña es el submit del formulario compartido.
+    const region = screen.getByRole("region", { name: "OpenTodo" });
+    await user.click(within(region).getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ opentodo_base_url: "https://todo.nuevo.local" }),
+      );
+    });
+    // El token nunca viaja por `PUT /api/settings`.
+    const payload = mockUpdateSettings.mock.calls[0][0] as Record<string, string>;
+    expect(payload).not.toHaveProperty("opentodo_token");
+  });
+
+  it("el indicador de OpenTodo sale de su endpoint y es visible sin abrir la sub-pestaña", async () => {
+    const user = userEvent.setup();
+    mockGetOpentodoStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://todo.territoriolinux.es",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // Sin abrir la sub-pestaña «OpenTodo»: el indicador ya es correcto.
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    expect(
+      await screen.findByRole("tab", {
+        name: /^OpenTodo(?![a-zA-Z])[\s\S]*Configurado/,
+      }),
+    ).toBeInTheDocument();
+    expect(mockGetOpentodoStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("tras guardar el token, el indicador de OpenTodo pasa a «Configurado» sin recargar", async () => {
+    const user = userEvent.setup();
+    // Primera lectura (montaje): sin configurar. Segunda (tras guardar el
+    // token): configurado. Refleja el ciclo real del endpoint.
+    mockGetOpentodoStatus
+      .mockResolvedValueOnce({
+        configured: false,
+        base_url: "https://todo.territoriolinux.es",
+      })
+      .mockResolvedValueOnce({
+        configured: true,
+        base_url: "https://todo.territoriolinux.es",
+      });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    expect(
+      await screen.findByRole("tab", {
+        name: /^OpenTodo(?![a-zA-Z])[\s\S]*Sin configurar/,
+      }),
+    ).toBeInTheDocument();
+
+    await openIntegrationSubTab(user, "OpenTodo");
+    const field = await screen.findByLabelText("OpenTodo · token de API");
+    await user.type(field, "token-nuevo");
+    await user.click(screen.getByRole("button", { name: /guardar token/i }));
+
+    await waitFor(() => {
+      expect(mockSetOpentodoToken).toHaveBeenCalledWith("token-nuevo");
+    });
+    // Sin recargar la página, el indicador de la etiqueta refleja el guardado.
+    expect(
+      await screen.findByRole("tab", {
+        name: /^OpenTodo(?![a-zA-Z])[\s\S]*Configurado/,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  // Un fallo de lectura no puede dejar el panel diciendo «Sin configurar»
+  // mientras la etiqueta dice «Sin datos»: ambos deben usar la misma etiqueta
+  // compartida de `integrationStatus.ts`.
+  it("usa «Sin datos» en la etiqueta y en el panel de OpenTodo cuando falla la lectura", async () => {
+    const user = userEvent.setup();
+    mockGetOpentodoStatus.mockRejectedValue(new Error("OpenTodo caído"));
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    expect(
+      await screen.findByRole("tab", {
+        name: /^OpenTodo(?![a-zA-Z])[\s\S]*Sin datos/,
+      }),
+    ).toBeInTheDocument();
+
+    await openIntegrationSubTab(user, "OpenTodo");
+    const region = await screen.findByRole("region", { name: "OpenTodo" });
+    // El panel no puede contradecir a la etiqueta: dice «Sin datos», no
+    // «Sin configurar».
+    expect(await within(region).findByText("Sin datos")).toBeInTheDocument();
+    expect(within(region).queryByText("Sin configurar")).not.toBeInTheDocument();
+  });
+
+  it("«Probar conexión» muestra el detalle del sondeo fallido en la línea de estado", async () => {
+    const user = userEvent.setup();
+    mockCheckOpentodo.mockResolvedValue({
+      ok: false,
+      detail: "el token no es válido o ha caducado",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenTodo");
+
+    const region = await screen.findByRole("region", { name: "OpenTodo" });
+    await user.click(within(region).getByRole("button", { name: "Probar conexión" }));
+
+    // El resultado de la acción vive en la línea de estado (`aria-live`), no
+    // solo en el toast.
+    expect(
+      await within(region).findByText("el token no es válido o ha caducado"),
+    ).toBeInTheDocument();
+  });
+
+  it("«Probar conexión» muestra el texto de éxito en la línea de estado", async () => {
+    const user = userEvent.setup();
+    mockCheckOpentodo.mockResolvedValue({
+      ok: true,
+      detail: "conexión correcta",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenTodo");
+
+    const region = await screen.findByRole("region", { name: "OpenTodo" });
+    await user.click(within(region).getByRole("button", { name: "Probar conexión" }));
+
+    expect(
+      await within(region).findByText("conexión correcta"),
+    ).toBeInTheDocument();
+  });
+
+  it("«Probar conexión» usa GET /api/opentodo/check y no relee el estado", async () => {
+    const user = userEvent.setup();
+    mockCheckOpentodo.mockResolvedValue({
+      ok: true,
+      detail: "conexión correcta",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenTodo");
+
+    const region = await screen.findByRole("region", { name: "OpenTodo" });
+    await waitFor(() => expect(mockGetOpentodoStatus).toHaveBeenCalledTimes(1));
+    const statusReadsBeforeCheck = mockGetOpentodoStatus.mock.calls.length;
+
+    await user.click(within(region).getByRole("button", { name: "Probar conexión" }));
+
+    await waitFor(() => expect(mockCheckOpentodo).toHaveBeenCalledTimes(1));
+    // El sondeo no toca `GET /api/opentodo/status`.
+    expect(mockGetOpentodoStatus.mock.calls.length).toBe(statusReadsBeforeCheck);
+  });
+
+  // El botón refleja el sondeo **en curso**, no solo su resultado: con la
+  // promesa de `GET /api/opentodo/check` pendiente se declara ocupado
+  // (`aria-busy="true"`) y en estado de carga (`ant-btn-loading`), y vuelve a
+  // `false` en cuanto la respuesta llega con su `detail` a la línea de estado.
+  // Cubre la ventana que un usuario real ve mientras la instancia remota tarda
+  // en contestar.
+  it("«Probar conexión» marca el botón como ocupado mientras el sondeo está pendiente", async () => {
+    const user = userEvent.setup();
+    let resolveCheck!: (result: OpentodoCheckResult) => void;
+    // El sondeo queda a la espera: la promesa no se resuelve hasta que el test
+    // la libere.
+    mockCheckOpentodo.mockReturnValue(
+      new Promise<OpentodoCheckResult>((resolve) => {
+        resolveCheck = resolve;
+      }),
+    );
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenTodo");
+
+    const region = await screen.findByRole("region", { name: "OpenTodo" });
+    const button = within(region).getByRole("button", {
+      name: "Probar conexión",
+    });
+
+    // Punto de partida: sin sondeo en vuelo, el botón no está ocupado.
+    expect(button).toHaveAttribute("aria-busy", "false");
+    expect(button).not.toHaveClass("ant-btn-loading");
+
+    await user.click(button);
+
+    // Promesa pendiente ⇒ ocupado y con el indicador de carga de antd.
+    await waitFor(() => {
+      expect(button).toHaveAttribute("aria-busy", "true");
+    });
+    expect(button).toHaveClass("ant-btn-loading");
+
+    // Se resuelve el sondeo dentro de `act`: el `setState` con el resultado
+    // forma parte del ciclo de React, no de un microtask suelto.
+    await act(async () => {
+      resolveCheck({ ok: true, detail: "conexión correcta" });
+    });
+
+    // El `detail` aterriza en la línea de estado y el botón se libera.
+    expect(
+      await within(region).findByText("conexión correcta"),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(button).toHaveAttribute("aria-busy", "false");
+    });
+    expect(button).not.toHaveClass("ant-btn-loading");
+  });
+
+  // El «Guardar» del panel es el submit del formulario compartido
+  // (`PUT /api/settings`), así que su estado ocupado lo dicta `saving`, que
+  // viaja `SettingsDialog` → `IntegrationsTab` → `OpentodoSection`: si ese
+  // camino se rompiera, el botón invitaría a un doble guardado.
+  it("el «Guardar» de OpenTodo se declara ocupado mientras `saving` está activo", async () => {
+    const user = userEvent.setup();
+    mockSaving = true;
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OpenTodo");
+
+    const region = await screen.findByRole("region", { name: "OpenTodo" });
+    // Con `loading` activo, antd antepone al nombre accesible el del icono de
+    // carga (`loading`), así que el botón se anuncia como «loadingGuardar».
+    // El patrón acota al submit «Guardar» sin casar con «Guardar token», que
+    // sigue libre (no lo gobierna `saving`).
+    const saveButton = within(region).getByRole("button", {
+      name: /Guardar$/,
+    });
+
+    expect(saveButton).toHaveAttribute("aria-busy", "true");
+    await waitFor(() => {
+      expect(saveButton).toHaveClass("ant-btn-loading");
+    });
+
+    // El «Guardar token» de su endpoint dedicado es independiente: no lo
+    // gobierna `saving`, sino el guardado del propio token.
+    expect(
+      within(region).getByRole("button", { name: /guardar token/i }),
+    ).toHaveAttribute("aria-busy", "false");
   });
 });

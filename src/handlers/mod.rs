@@ -4,6 +4,7 @@ pub mod journal;
 pub mod memories;
 pub mod messages;
 pub mod notes;
+pub mod opentodo;
 pub mod profile;
 pub mod search;
 pub mod skills;

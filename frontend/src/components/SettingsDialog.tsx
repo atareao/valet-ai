@@ -108,6 +108,7 @@ export interface SettingsFormValues {
   apimail_api_key: string;
   miniflux_base_url: string;
   miniflux_api_key: string;
+  opentodo_base_url: string;
   MEMORY_HALF_LIFE_DAYS: number;
   SIMILARITY_THRESHOLD: number;
   RAG_BUDGET_TOKENS: number;
@@ -188,6 +189,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         apimail_api_key: settings.apimail_api_key || "",
         miniflux_base_url: settings.miniflux_base_url || "",
         miniflux_api_key: settings.miniflux_api_key || "",
+        opentodo_base_url: settings.opentodo_base_url || "",
         MEMORY_HALF_LIFE_DAYS: parseFloat(
           settings.MEMORY_HALF_LIFE_DAYS || "90",
         ),
@@ -313,6 +315,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           values.miniflux_base_url ?? settings?.miniflux_base_url ?? "",
         miniflux_api_key:
           values.miniflux_api_key ?? settings?.miniflux_api_key ?? "",
+        opentodo_base_url:
+          values.opentodo_base_url ?? settings?.opentodo_base_url ?? "",
         MEMORY_HALF_LIFE_DAYS: (
           values.MEMORY_HALF_LIFE_DAYS ??
           parseFloat(settings?.MEMORY_HALF_LIFE_DAYS || "90")
@@ -429,6 +433,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         apimail_api_key: "",
         miniflux_base_url: "",
         miniflux_api_key: "",
+        opentodo_base_url: "",
       });
       messageApi.success("Valores por defecto restaurados");
     } catch {

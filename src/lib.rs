@@ -592,6 +592,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::strava::routes())
         // ZenNotes integration (config status + token endpoint)
         .merge(routes::zennotes::routes())
+        // OpenTodo integration (config status, connection check + token endpoint)
+        .merge(routes::opentodo::routes())
         // WebPush (VAPID public key, subscribe, unsubscribe)
         .merge(routes::push::routes())
         // Notifications inbox: ingest (ingest-token authenticated) + session reads

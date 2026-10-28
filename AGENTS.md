@@ -202,6 +202,19 @@ Se mantiene tal cual (backend + frontend nginx independiente + PocketID). El des
 
 **14. `zennotes_token` es un ajuste sensible.** Decidido el 2026-10-26 al cerrar el change `zennotes-notes`. `zennotes_token` figura en `SENSITIVE_KEYS`, así que `GET /api/settings` lo **omite** y `PUT /api/settings` lo **ignora**: la única puerta para guardarlo es el endpoint dedicado `PUT /api/zennotes/token` (`400` si va vacío, `204` si se guarda) y el estado se consulta con `GET /api/zennotes/status` (`{configured, base_url, folder}`, **nunca** el token). El campo del token en el frontend (`ZennotesSection.tsx`) arranca **siempre vacío** y no relee el valor guardado. `zennotes_base_url` (def `https://zennotes.territoriolinux.es`) y `zennotes_folder` (def `Valet`) no son sensibles.
 
+**15. OpenTodo es el backend de tareas del agente, con doble backend y fallback.** Decidido el 2026-10-27 al cerrar el change `opentodo-integration` (fase 1, archivada; PR #265). Con `opentodo_token` configurado, la herramienta `tasks` va **entera** a OpenTodo (`https://todo.territoriolinux.es`); sin token conserva exactamente el comportamiento local sobre la tabla `tasks`, de modo que desplegar no cambia nada hasta que se pega el token. Las decisiones que no se reabren sin orden explícita:
+
+- **Estados y ámbitos son etiquetas sin `@`**: `doing`/`waiting` (grupo `state`) y `shared`/`personal` (grupo `scope`). El modelo nunca maneja ids de etiqueta: `set_label` recibe `group` + `value` y el servicio compone el array completo, porque `PATCH labels` **reemplaza** el array entero.
+- **Prioridad 1:1 y siempre explícita**: `critical→1`, `high→2`, `medium→3`, `low→4`. Sin prioridad se envía `4`, que es el valor por defecto del servidor: **no existe «sin prioridad»**.
+- **Solo el espacio de trabajo por defecto**: no hay ajuste `opentodo_workspace` ni parámetro `workspace`, y **no se filtra al leer** (el servidor ignora `?workspace_id=`). Una tarea creada a mano en otro espacio sigue apareciendo en los listados.
+- **No se crean vistas guardadas**: las etiquetas ya aparecen solas en el lateral de OpenTodo.
+- **`opentodo_token` es sensible** (mismo molde que el 14): `GET /api/settings` lo omite y `PUT /api/settings` lo ignora; la única puerta es `PUT /api/opentodo/token`. `opentodo_base_url` **no** es sensible y viaja en `PUT /api/settings`.
+- **`GET /api/opentodo/check` es la sonda real** (consulta `GET /api/v1/me` y devuelve siempre `200` con `{ok, detail}`, nunca el token); `GET /api/opentodo/status` solo lee ajustes y daba falsos positivos. Por eso «Probar conexión» usa `/check`, no `/status`.
+- **Toda escritura lleva `Idempotency-Key`** con un UUID nuevo por petición; un `409` significa «ya aplicado», no se reintenta y la herramienta lo dice en el mensaje.
+- **Las vistas se recalculan en Rust** (`inbox`, `today`, `upcoming`, `anytime`, `someday`, `doing`, `waiting`, `all`) porque el servidor no filtra. `Next` queda fuera del alcance.
+
+Queda **pendiente** la verificación E2E contra la instancia real (tarea 9.3 de `tasks.md`), aplazada al despliegue por decisión del usuario (el token ya está rotado y se pegará en Ajustes → Integraciones → OpenTodo para verificarlo desde la UI). La **fase 2** (`remove-local-tasks`) retirará la tabla/FTS/API/tool/vista locales y migrará las 3 tareas, con acceso directo a `https://todo.territoriolinux.es` en su lugar.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
@@ -237,6 +250,8 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-007-COMPLETED.md` | Bitácora autónoma: la app escribe el diario por su cuenta (PRs #215 y #218) | ✅ Completado |
 | `plans/PLAN-008-COMPLETED.md` | Sincronización del chat entre dispositivos (change `chat-cross-device-sync`) | ✅ Completado |
 | `plans/PLAN-009-COMPLETED.md` | Integración de ZenNotes: el agente lee y escribe notas del vault vía API (change `zennotes-notes`) | ✅ Completado |
+| `plans/PLAN-010-PENDING.md` | Diagnóstico del TTL de sesión (8 h fijo) y opciones A–D | ⏸️ Pending |
+| `plans/PLAN-011.md` | Integrar OpenTodo y retirar el TODO local (change `opentodo-integration`, PR #265). Fase 1 ✅ archivada; fase 2 pendiente | 🔄 En curso |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
