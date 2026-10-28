@@ -1022,31 +1022,6 @@ su sub-pestaña no esté activa, de modo que el guardado siga enviando las quinc
 **When** guarda sin haber abierto todas las sub-pestañas  
 **Then** `updateSettings` recibe las claves `GENERATION_*` sin cambios en las no editadas
 
-### Requirement: SettingsDialog SHALL fit all its top-level tabs without overflow
-
-El `Modal` de SettingsDialog SHALL declarar un ancho de al menos **960 px** (se fija en 1000) para que sus siete pestañas superiores —Perfil, Interfaz, Prompts, API Keys, Memoria, Generación y Herramientas— quepan en una sola fila, sin que ninguna se oculte en el desplegable de desbordamiento de antd.
-
-**Given** el SettingsDialog abierto  
-**When** se renderiza  
-**Then** el ancho del diálogo es de al menos 960 px  
-**And** sus siete pestañas superiores son alcanzables
-
-#### Scenario: El diálogo es más ancho que el mínimo
-**Given** el SettingsDialog abierto  
-**When** se renderiza  
-**Then** el ancho declarado del `Modal` es mayor o igual a 960 px
-
-#### Scenario: La pestaña Memoria persistente es alcanzable
-**Given** el SettingsDialog abierto  
-**When** el usuario abre la pestaña "Memoria" y selecciona la sub-pestaña "Persistente"  
-**Then** se muestra el panel de memoria persistente
-
-#### Scenario: Existen exactamente seis pestañas superiores
-**Given** el SettingsDialog abierto  
-**When** el usuario busca las pestañas superiores  
-**Then** existen exactamente siete: Perfil, Interfaz, Prompts, API Keys, Memoria, Generación y Herramientas  
-**And** NO existe una pestaña superior "Memoria persistente"
-
 ### Requirement: SettingsDialog SHALL organize the memory panels in sub-tabs
 
 Dentro de la pestaña «Memoria», SettingsDialog SHALL mostrar un `Tabs` anidado con dos sub-pestañas —«Episódica» y «Persistente»— siguiendo el patrón de las pestañas «Prompts» y «Generación». El `Tabs` anidado SHALL ir envuelto en una región etiquetada (`<section aria-label="Tipo de memoria">`), de modo que las tecnologías de asistencia la anuncien; antd no propaga `aria-label` al `role="tablist"`, así que un `aria-label` sobre el propio `Tabs` sería cosmético. Ninguna de las dos sub-pestañas SHALL usar `forceRender`: antd monta cada panel de forma perezosa, de modo que la sub-pestaña «Persistente» —y con ella el `GET` del estado persistente— solo se monta cuando se selecciona.
@@ -1873,8 +1848,8 @@ ingieran eventos por la API, a diferencia de las credenciales de integraciones, 
 
 ### Requirement: SettingsDialog SHALL organize the Integraciones tab in sub-tabs
 
-La pestaña «Integraciones» del SettingsDialog SHALL organizarse en **sub-pestañas horizontales**
-(antd `Tabs` anidado, sin `tabPosition`), en este orden exacto:
+La pestaña «Integraciones» del SettingsDialog SHALL organizarse en **sub-pestañas verticales**
+(antd `Tabs` anidado con `tabPosition="left"`), en este orden exacto:
 
 1. **Strava**
 2. **OpenWeatherMap**
@@ -1923,7 +1898,7 @@ clave SHALL conservar el placeholder «Dejar vacío para usar variable de entorn
 
 - **Given** el SettingsDialog está abierto
 - **When** el usuario hace clic en la tab «Integraciones»
-- **Then** se muestran ocho sub-pestañas en horizontal
+- **Then** se muestran ocho sub-pestañas en vertical, con `aria-orientation="vertical"` en su `tablist`
 - **And** su orden es Strava, OpenWeatherMap, Google Places, Brave Search, apimail, Miniflux,
   ZenNotes y OpenTodo
 - **And** la sub-pestaña activa por defecto es la primera (Strava)
@@ -2122,3 +2097,68 @@ Los tests de `frontend/src/test/SettingsDialog.test.tsx` SHALL alinearse con la 
   «apimail · URL base», «apimail · API Key», «Miniflux · URL base», «Miniflux · API Key» ni el token
   de ZenNotes
 - **And** sí encuentra la gestión de claves de ingesta
+
+### Requirement: El diálogo de ajustes SHALL mostrar todas sus pestañas en vertical
+
+Todos los `Tabs` del diálogo de ajustes SHALL renderizarse con `tabPosition="left"`, de modo que la
+lista de pestañas quede como un índice lateral a la izquierda del panel. El alcance SHALL cubrir la
+pestaña superior y **cada uno** de los grupos anidados:
+
+- **nivel superior**: Perfil, Interfaz, Prompts, Claves, Memoria, Generación, Skills, Enrutador de
+  skills, Integraciones y Notificaciones;
+- **«Prompts»**: System, Archivist, Collapse, Consolidator, Timeline y Journal;
+- **«Memoria»**: Episódica y Persistente;
+- **«Generación»**: Chat, Colapso, Fichas, Consolidación y Línea temporal;
+- **«Skills»**: una sub-pestaña por skill del catálogo;
+- **«Integraciones»**: Strava, OpenWeatherMap, Google Places, Brave Search, apimail, Miniflux,
+  ZenNotes y OpenTodo.
+
+El cambio SHALL ser **solo de orientación**: NO SHALL alterar las etiquetas, el orden de las
+pestañas, los `forceRender`, los `aria-label` de contenedor, el cableado de los formularios
+(`settingsForm`, `profileForm` y los formularios propios de `SkillsTab` e `IntegrationsTab`) ni los
+endpoints que invoca cada sub-pestaña. Cada `Tabs` conserva su propio estado de pestaña activa y
+antd sigue montando solo el panel de la pestaña seleccionada, salvo donde ya se exige `forceRender`.
+
+El `Modal` SHALL conservar un ancho declarado de 1000 px: con la lista lateral, el ancho útil del
+panel es el del diálogo menos el de la lista.
+
+**Given** el SettingsDialog abierto  
+**When** se renderiza  
+**Then** el `tablist` superior tiene `aria-orientation="vertical"`  
+**And** las diez pestañas superiores siguen presentes y en el mismo orden
+
+#### Scenario: Las pestañas superiores se anuncian como verticales
+
+**Given** el SettingsDialog abierto  
+**When** se renderiza  
+**Then** el elemento `role="tablist"` que contiene «Perfil», «Interfaz», «Prompts», «Claves»,
+«Memoria», «Generación», «Skills», «Enrutador de skills», «Integraciones» y «Notificaciones» tiene
+`aria-orientation="vertical"`  
+**And** contiene las diez pestañas, sin desplegable de desbordamiento
+
+#### Scenario: Las sub-pestañas de «Prompts», «Memoria» y «Generación» son verticales
+
+**Given** el SettingsDialog abierto  
+**When** el usuario abre «Prompts»  
+**Then** el `tablist` anidado de System, Archivist, Collapse, Consolidator, Timeline y Journal tiene
+`aria-orientation="vertical"`  
+**And** al abrir «Memoria» el `tablist` de Episódica y Persistente es también vertical  
+**And** al abrir «Generación» el `tablist` de Chat, Colapso, Fichas, Consolidación y Línea temporal
+es también vertical
+
+#### Scenario: Las sub-pestañas de «Skills» y «Integraciones» son verticales
+
+**Given** el SettingsDialog abierto  
+**When** el usuario abre «Skills»  
+**Then** el `tablist` con una pestaña por skill tiene `aria-orientation="vertical"`  
+**And** al abrir «Integraciones» el `tablist` de las ocho integraciones tiene
+`aria-orientation="vertical"`  
+**And** el orden de las ocho se mantiene y la sub-pestaña activa por defecto sigue siendo «Strava»
+
+#### Scenario: La orientación no altera el comportamiento de los formularios
+
+**Given** el SettingsDialog abierto en «Integraciones» → «OpenWeatherMap»  
+**When** el usuario escribe una clave y pulsa el «Guardar» de esa sub-pestaña  
+**Then** `updateSettings` recibe `openweather_api_key` con el valor escrito  
+**And** el panel activo sigue sin mostrar los campos de las otras integraciones  
+**And** guardar desde «Interfaz» sigue enviando el formulario completo de ajustes
