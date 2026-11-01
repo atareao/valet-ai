@@ -989,8 +989,8 @@ fn skill_router_tuning_migration_sql() -> String {
         .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
 }
 
-/// After migrating, the measured history window and the widget's own threshold
-/// hold their new defaults.
+/// After migrating, the measured history window holds its new default and the
+/// widget's own threshold has been retired by the always-on migration.
 #[tokio::test]
 async fn test_skill_router_tuning_seeds_defaults() {
     let pool = setup().await;
@@ -1001,13 +1001,16 @@ async fn test_skill_router_tuning_seeds_defaults() {
         "the measured history window must be 6"
     );
     assert_eq!(
-        setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
-        "0.20",
-        "the widget override must be 0.20"
+        setting_value_opt(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+        None,
+        "the seeded widget override is retired by 20261101000001"
     );
 }
 
 /// A user value is never overwritten: the bump only touches our own default.
+/// The widget override is gone after the full migration set —`20261101000001`
+/// retires it— so the test has to write it; that write is exactly what a user
+/// tuning the threshold from settings does.
 #[tokio::test]
 async fn test_skill_router_tuning_respects_user_values() {
     let pool = setup().await;
@@ -1016,12 +1019,17 @@ async fn test_skill_router_tuning_respects_user_values() {
         ("ROUTER_HISTORY_TURNS", "9"),
         ("ROUTER_THRESHOLD_WIDGETS", "0.77"),
     ] {
-        sqlx::query("UPDATE settings SET value = ?1 WHERE key = ?2")
-            .bind(value)
-            .bind(key)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) \
+             VALUES (?1, ?2, datetime('now')) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, \
+             updated_at = datetime('now')",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&pool)
+        .await
+        .unwrap();
     }
 
     let sql = skill_router_tuning_migration_sql();
@@ -1110,10 +1118,20 @@ async fn test_skill_router_tuning_seeds_new_fragments() {
     }
 }
 
-/// Applying the migration twice leaves the same state.
+/// Re-applying the tuning migration leaves the same state. The always-on
+/// migration has already retired the seeded widget threshold, so the first
+/// application re-seeds it; the second must be a no-op on top of that.
 #[tokio::test]
 async fn test_skill_router_tuning_is_idempotent() {
     let pool = setup().await;
+
+    let sql = skill_router_tuning_migration_sql();
+
+    // First application over the always-on state.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let snapshot = |pool: SqlitePool| async move {
         (
@@ -1123,16 +1141,13 @@ async fn test_skill_router_tuning_is_idempotent() {
             setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
         )
     };
-
     let before = snapshot(pool.clone()).await;
 
-    let sql = skill_router_tuning_migration_sql();
-    for _ in 0..2 {
-        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
-            .execute(&pool)
-            .await
-            .unwrap();
-    }
+    // Second application.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
 
     let after = snapshot(pool.clone()).await;
     assert_eq!(
@@ -1162,9 +1177,13 @@ async fn setting_value_opt(pool: &SqlitePool, key: &str) -> Option<String> {
 }
 
 /// Rebuilds the pre-migration state that the forward DDL needs: the retired
-/// `tools.enabled` column and a global `ROUTER_THRESHOLD`. Re-running the new
-/// migration requires this because `ALTER TABLE ... DROP COLUMN` is a one-shot
-/// DDL (a second run would otherwise fail with "no such column").
+/// `tools.enabled` column, a global `ROUTER_THRESHOLD` and the widget override.
+/// Re-running the new migration requires this because `ALTER TABLE ... DROP
+/// COLUMN` is a one-shot DDL (a second run would otherwise fail with "no such
+/// column"). The widget override is part of that historical state —it was
+/// seeded by `20261008000001`— and `20261101000001` retires it, so the full
+/// migration set no longer leaves it behind and the reconstruction must restore
+/// it.
 async fn reconstruct_pre_skill_selection(pool: &SqlitePool, global_threshold: &str) {
     sqlx::query("ALTER TABLE tools ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
         .execute(pool)
@@ -1175,6 +1194,15 @@ async fn reconstruct_pre_skill_selection(pool: &SqlitePool, global_threshold: &s
          VALUES ('ROUTER_THRESHOLD', ?1, datetime('now'))",
     )
     .bind(global_threshold)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) \
+         VALUES ('ROUTER_THRESHOLD_WIDGETS', '0.20', datetime('now')) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, \
+         updated_at = datetime('now')",
+    )
     .execute(pool)
     .await
     .unwrap();
@@ -1203,7 +1231,7 @@ async fn test_skill_selection_seeds_skill_enabled_flags() {
     }
 }
 
-/// The retired global threshold is gone; `widgets` keeps its own override.
+/// The retired global threshold is gone, as is the seeded widget override.
 #[tokio::test]
 async fn test_skill_selection_removes_the_global_threshold() {
     let pool = setup().await;
@@ -1214,9 +1242,9 @@ async fn test_skill_selection_removes_the_global_threshold() {
         "ROUTER_THRESHOLD must be retired"
     );
     assert_eq!(
-        setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
-        "0.20",
-        "the widget override is untouched"
+        setting_value_opt(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+        None,
+        "the seeded widget override is retired by 20261101000001"
     );
     // With the default global there is nothing to materialise: the compiled
     // fallback already yields 0.10 for the five domains.
@@ -1401,5 +1429,324 @@ async fn test_skill_selection_is_idempotent() {
     assert_eq!(
         before, after,
         "re-applying the migration must leave the same state"
+    );
+}
+
+// ── Widgets always on (20261101000001_widgets_always_on.sql) ────────────────
+
+/// Reads the widgets-always-on migration SQL from disk.
+fn widgets_always_on_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261101000001_widgets_always_on.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// The widget guide exactly as `20261008000001` seeded it, extracted from that
+/// migration so the test never hard-codes the old text.
+fn seeded_widgets_guide() -> String {
+    let sql = skill_router_tuning_migration_sql();
+    let marker = "VALUES ('SKILL_WIDGETS_PROMPT', '";
+    let start = sql
+        .find(marker)
+        .expect("the tuning migration must seed SKILL_WIDGETS_PROMPT")
+        + marker.len();
+    let end = sql[start..]
+        .find("', datetime('now'))")
+        .expect("the seeded guide must be a single-quoted literal")
+        + start;
+    sql[start..end].to_string()
+}
+
+/// The seeded `ROUTER_THRESHOLD_WIDGETS` is deleted, in either spelling of the
+/// default, so the widget stops being conditioned by the classifier.
+#[tokio::test]
+async fn test_widgets_always_on_retires_the_seeded_widget_threshold() {
+    let pool = setup().await;
+
+    let sql = widgets_always_on_migration_sql();
+    for spelling in ["0.20", "0.2"] {
+        sqlx::query(
+            "INSERT INTO settings (key, value, updated_at) \
+             VALUES ('ROUTER_THRESHOLD_WIDGETS', ?1, datetime('now')) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, \
+             updated_at = datetime('now')",
+        )
+        .bind(spelling)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            setting_value_opt(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+            None,
+            "the seeded widget threshold ({spelling}) must be retired"
+        );
+    }
+}
+
+/// A user-raised threshold re-conditions the skill and is never deleted.
+#[tokio::test]
+async fn test_widgets_always_on_respects_a_user_threshold() {
+    let pool = setup().await;
+
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) \
+         VALUES ('ROUTER_THRESHOLD_WIDGETS', '0.77', datetime('now'))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let sql = widgets_always_on_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+        "0.77",
+        "a user-raised threshold must survive the retirement"
+    );
+}
+
+/// The pristine seeded guide is replaced by the new one.
+#[tokio::test]
+async fn test_widgets_always_on_replaces_the_pristine_guide() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(seeded_widgets_guide())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widgets_always_on_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+    assert!(
+        value.contains("## Regla de oro"),
+        "the new guide must have replaced the seeded one"
+    );
+    assert!(
+        value.contains("dos o más opciones etiquetadas"),
+        "the new guide's option rule must be present"
+    );
+    assert!(
+        !value.contains("Reglas de Invocación"),
+        "the old guide's section must be gone"
+    );
+}
+
+/// An edited guide is user content and is never overwritten.
+#[tokio::test]
+async fn test_widgets_always_on_keeps_an_edited_guide() {
+    let pool = setup().await;
+
+    let edited = "Mi guía de widgets personalizada";
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(edited)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widgets_always_on_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
+        edited,
+        "an edited guide must not be overwritten"
+    );
+}
+
+/// When the fragment is absent it is seeded with the new guide.
+#[tokio::test]
+async fn test_widgets_always_on_seeds_a_missing_guide() {
+    let pool = setup().await;
+
+    sqlx::query("DELETE FROM settings WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widgets_always_on_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let value = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+    assert!(
+        value.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "the missing guide must be seeded with the new header"
+    );
+    assert!(
+        value.contains("## Regla de oro"),
+        "the missing guide must be seeded with the new body"
+    );
+}
+
+/// A present-but-blank fragment is user content: it is neither overwritten nor
+/// re-seeded, because the seeded-key guard only fires for an absent key.
+#[tokio::test]
+async fn test_widgets_always_on_leaves_a_blank_guide_alone() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = '   ' WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widgets_always_on_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
+        "   ",
+        "a blank fragment must be left alone"
+    );
+}
+
+/// Re-applying the migration over the pre-migration state leaves it unchanged.
+#[tokio::test]
+async fn test_widgets_always_on_is_idempotent() {
+    let pool = setup().await;
+
+    // Reinstate the state the migration is meant to transform.
+    sqlx::query(
+        "INSERT INTO settings (key, value, updated_at) \
+         VALUES ('ROUTER_THRESHOLD_WIDGETS', '0.20', datetime('now'))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(seeded_widgets_guide())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widgets_always_on_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let snapshot = |pool: SqlitePool| async move {
+        (
+            setting_value_opt(&pool, "ROUTER_THRESHOLD_WIDGETS").await,
+            setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
+        )
+    };
+    let before = snapshot(pool.clone()).await;
+
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let after = snapshot(pool.clone()).await;
+    assert_eq!(
+        before, after,
+        "re-applying the migration must leave the same state"
+    );
+}
+
+/// The default guide is prescriptive: it names the three widgets, points at
+/// `render_widget`, states the option rule, makes that rule trump the no-widget
+/// cases and scopes those cases tightly.
+#[tokio::test]
+async fn test_default_widget_guide_is_prescriptive() {
+    let pool = setup().await;
+    let guide = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+
+    for widget in ["QuickForm", "Checklist", "LocationWidget"] {
+        assert!(
+            guide.contains(widget),
+            "the guide must name the {widget} widget"
+        );
+    }
+    assert!(
+        guide.contains("render_widget"),
+        "the guide must point at the render_widget tool"
+    );
+    assert!(
+        guide.contains("dos o más opciones etiquetadas"),
+        "the guide must state the option rule"
+    );
+    assert!(
+        guide.contains("La regla de las opciones tiene prioridad sobre todo lo demás"),
+        "the option rule must be declared to trump the no-widget cases"
+    );
+    assert!(
+        guide.contains(
+            "Es una explicación conceptual que no pide elegir nada ni lleva lista que marcar"
+        ),
+        "the first no-widget case must exclude options and lists"
+    );
+    assert!(
+        guide.contains("Es un dato único y directo: una fecha, un número, un nombre"),
+        "the second no-widget case must be a single direct datum"
+    );
+
+    // Point 1 — a widget only appears if `render_widget` runs in that same turn,
+    // and claiming otherwise is forbidden. Anchored on the exact literals of the
+    // new guide (`design.md` → «La guía nueva (texto exacto)»).
+    assert!(
+        guide.contains("## Regla de oro"),
+        "point 1: the guide must carry the «Regla de oro» section"
+    );
+    assert!(
+        guide.contains(
+            "Un widget **solo** aparece si ejecutas `render_widget` en esa misma respuesta"
+        ),
+        "point 1: the guide must state a widget only appears when the tool runs"
+    );
+    assert!(
+        guide
+            .contains("NUNCA digas que has mostrado un widget, un formulario, una lista o un mapa"),
+        "point 1: the guide must forbid claiming a widget was shown without running the tool"
+    );
+
+    // Point 6 — the widget-response processing rule is preserved. Exact literals
+    // from the «Después de un widget» section.
+    assert!(
+        guide.contains("[widget:Checklist#w3] submit"),
+        "point 6: the guide must show the widget submission message shape"
+    );
+    assert!(
+        guide.contains("Procesa esa respuesta de inmediato y confirma el resultado en texto"),
+        "point 6: the guide must keep processing the widget response immediately"
+    );
+
+    // Negative of point 4 — the guide must NOT reintroduce the generic prose
+    // authorization the retired guide carried (`Responde únicamente con texto
+    // plano`, under `## Reglas de Invocación`). Reintroducing it is precisely the
+    // regression point 4 forbids: it could amparar a list of options in prose.
+    assert!(
+        !guide.contains("Responde únicamente con texto plano"),
+        "point 4: the guide must NOT authorize answering in plain prose \
+         (old-guide regression)"
+    );
+    assert!(
+        !guide.contains("## Reglas de Invocación"),
+        "point 4: the retired «Reglas de Invocación» heading must not come back"
     );
 }
