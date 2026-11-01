@@ -19,8 +19,8 @@ use crate::orchestrator::context_builder::ContextBuilder;
 use crate::orchestrator::context_classifier::ContextClassifier;
 use crate::orchestrator::guardrails::{ApprovalOutcome, GuardrailResult, Guardrails};
 use crate::orchestrator::skill_router::{
-    compose_skill_fragments, exposed_tools, read_router_config, read_skill_fragments, RouterUsage,
-    SkillRouter,
+    active_skills, compose_skill_fragments, exposed_tools, read_router_config,
+    read_skill_fragments, RouterUsage, SkillRouter,
 };
 use crate::orchestrator::tool_limits::{read_tool_limits, ToolLimits};
 use crate::tools::geo_utils::reverse_geocode;
@@ -1077,8 +1077,11 @@ impl Orchestrator {
 
         // Prompt fragments of the active skills (R6/D8), inserted after the base
         // prompt and before the code-composed sections. The base prompt is never
-        // modified: the duplicate check uses the original.
-        let fragments = read_skill_fragments(&self.db, &selection.skills).await;
+        // modified: the duplicate check uses the original. The active set —not
+        // the raw selection— is read, so an unconditioned skill still gets its
+        // fragment on the fail-open paths, where the selection is empty.
+        let fragments =
+            read_skill_fragments(&self.db, &active_skills(&selection, &router_config)).await;
         let skill_sections =
             compose_skill_fragments(&selection, &system_prompt, &fragments, &router_config);
         let prompt_with_skills = if skill_sections.is_empty() {
@@ -3000,10 +3003,21 @@ mod tests {
             messages.iter().filter(|m| m.role == "system").collect();
         assert_eq!(system_messages.len(), 1);
         let content = &system_messages[0].content;
+        // The prompt leads; any intervening sections are legitimate skill
+        // sections (the widget guide travels on this fail-open turn), so the
+        // invariant is that no *persistent-memory* section sits in between.
         assert!(
-            content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
-            "no persistent-memory text may sit between the prompt and the episodic \
+            content.starts_with(prompt),
+            "the prompt must lead the system message, got: {content:?}"
+        );
+        assert!(
+            !content.contains(PERSISTENT_MEMORY_SECTION_TITLE),
+            "no persistent-memory section may sit between the prompt and the episodic \
              section, got: {content:?}"
+        );
+        assert!(
+            content.find(prompt).unwrap() < content.find(EPISODIC_MEMORY_SECTION_TITLE).unwrap(),
+            "the prompt must precede the episodic section, got: {content:?}"
         );
 
         Ok(())
@@ -3061,9 +3075,12 @@ mod tests {
         assert!(episodic_pos < location_pos, "episodic before location");
         assert!(location_pos < temporal_pos, "location before temporal");
         assert!(content.ends_with(TEMPORAL_SECTION_MARKER_INSTRUCTION));
+        // Skill sections (e.g. the widget guide on this fail-open turn) may sit
+        // between the prompt and the episodic section; what must not appear is a
+        // persistent-memory section.
         assert!(
-            content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
-            "the absent persistent section leaves no text between prompt and episodic"
+            !content.contains(PERSISTENT_MEMORY_SECTION_TITLE),
+            "the absent persistent section leaves no persistent-memory text, got: {content:?}"
         );
 
         Ok(())
@@ -3198,9 +3215,14 @@ mod tests {
             !content.contains(PERSISTENT_MEMORY_SECTION_TITLE),
             "an empty state must not inject the persistent header"
         );
+        // Skill sections may intervene; the meaningful invariant is that the
+        // prompt still precedes the episodic section with no persistent-memory
+        // text in between.
         assert!(
-            content.starts_with(&format!("{prompt}\n\n{EPISODIC_MEMORY_SECTION_TITLE}")),
-            "an empty state leaves no trace between prompt and episodic, got {content:?}"
+            content.find(prompt).unwrap() < content.find(EPISODIC_MEMORY_SECTION_TITLE).unwrap()
+                && !content.contains(PERSISTENT_MEMORY_SECTION_TITLE),
+            "an empty state leaves no persistent-memory trace between prompt and episodic, \
+             got {content:?}"
         );
 
         Ok(())
@@ -6172,8 +6194,9 @@ mod tests {
             .expect("a system message must be present")
     }
 
-    /// R5: with the router on and `agenda` selected, the request advertises
-    /// exactly the core plus `calendar`.
+    /// R5: with the router on and `agenda` selected, the request advertises the
+    /// core, the tool of the classifier-selected skill and the tools of the
+    /// unconditioned skill `widgets` (compiled threshold zero).
     #[tokio::test]
     async fn routed_turn_exposes_only_core_and_selected_skills() {
         let pool = setup_test_db().await;
@@ -6190,18 +6213,99 @@ mod tests {
             "calendar".to_string(),
             "get_current_time".to_string(),
             "get_current_location".to_string(),
+            "render_widget".to_string(),
         ];
         expected.sort_unstable();
 
         assert_eq!(
             tool_names(&request),
             expected,
-            "an agenda turn must advertise exactly the core plus calendar"
+            "an agenda turn must advertise the core, the selected skill and the \
+             unconditioned widgets skill"
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
             "the classifier must run exactly once per turn"
+        );
+    }
+
+    /// Encabezado de la guía de widgets: es el `prompt_heading` del catálogo.
+    const WIDGET_GUIDE_HEADING: &str = "# Instrucciones de Interfaz y Widgets Interactivos";
+    /// Frase que **solo** existe en la guía nueva (no en la vieja).
+    const WIDGET_GUIDE_SENTENCE: &str = "NUNCA digas que has mostrado un widget";
+
+    /// La guía de widgets viaja en un turno con el enrutador **apagado**: la
+    /// skill es incondicionada (umbral cero), de modo que su fragmento debe
+    /// inyectarse aunque la selección vaya vacía.
+    #[tokio::test]
+    async fn the_widget_guide_travels_on_a_disabled_router_turn() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "false")
+            .await
+            .unwrap();
+
+        let request = run_routed_turn(pool, None).await;
+        let system = system_message(&request);
+
+        assert!(
+            system.contains(WIDGET_GUIDE_HEADING),
+            "el mensaje de sistema debe llevar el encabezado de la guía de widgets: {system:?}"
+        );
+        assert!(
+            system.contains(WIDGET_GUIDE_SENTENCE),
+            "el mensaje de sistema debe llevar la frase de la guía nueva: {system:?}"
+        );
+    }
+
+    /// La guía de widgets viaja cuando el clasificador **falla** (fallo
+    /// abierto): la selección va vacía pero la skill incondicionada sigue
+    /// activa.
+    #[tokio::test]
+    async fn the_widget_guide_travels_when_the_classifier_fails() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[], true);
+
+        let request = run_routed_turn(pool, Some(decisions)).await;
+        let system = system_message(&request);
+
+        assert!(
+            system.contains(WIDGET_GUIDE_HEADING),
+            "el mensaje de sistema debe llevar el encabezado de la guía de widgets: {system:?}"
+        );
+        assert!(
+            system.contains(WIDGET_GUIDE_SENTENCE),
+            "el mensaje de sistema debe llevar la frase de la guía nueva: {system:?}"
+        );
+    }
+
+    /// La guía de widgets viaja en un turno **enrutado**: `widgets` es
+    /// incondicionada y su fragmento acompaña a la selección del clasificador.
+    #[tokio::test]
+    async fn the_widget_guide_travels_on_a_routed_turn() {
+        let pool = setup_test_db().await;
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decisions = counting_decisions(calls.clone(), &[("agenda", 0.9)], false);
+
+        let request = run_routed_turn(pool, Some(decisions)).await;
+        let system = system_message(&request);
+
+        assert!(
+            system.contains(WIDGET_GUIDE_HEADING),
+            "el mensaje de sistema debe llevar el encabezado de la guía de widgets: {system:?}"
+        );
+        assert!(
+            system.contains(WIDGET_GUIDE_SENTENCE),
+            "el mensaje de sistema debe llevar la frase de la guía nueva: {system:?}"
         );
     }
 
@@ -6356,11 +6460,18 @@ mod tests {
         );
     }
 
-    /// R4/D6(b): with every probability below the threshold only the core shows.
+    /// R4/D6(b): with every probability below the threshold, and no enabled
+    /// skill at threshold zero, only the core shows.
     #[tokio::test]
     async fn all_below_threshold_exposes_core_only() {
         let pool = setup_test_db().await;
         crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_ENABLED", "true")
+            .await
+            .unwrap();
+        // The scenario's precondition is "no enabled skill at threshold zero".
+        // `widgets` is the zero-threshold skill, and raising its override is the
+        // documented lever to condition it by the classifier again.
+        crate::db::repos::settings::SettingsRepo::set(&pool, "ROUTER_THRESHOLD_WIDGETS", "0.20")
             .await
             .unwrap();
 
