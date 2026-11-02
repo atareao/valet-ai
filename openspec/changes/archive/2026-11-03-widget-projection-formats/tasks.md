@@ -35,5 +35,5 @@
 
 ## 5. Cierre
 
-- [ ] 5.1 Repetir la verificación desplegada 10.4/10.5 (trasladada del change `widget-projection`) sobre un release nuevo.
-- [ ] 5.2 Archivar el change (`openspec archive widget-projection-formats`).
+- [x] 5.1 Verificación desplegada 10.4/10.5 **ejecutada el 2026-11-03** sobre el release **v0.27.0** (contenedor aislado con copia consistente de la BD de producción): un turno real cuya respuesta presenta una lista de opciones acabó con 1 widget **proyectado** (`QuickForm`) con `span:[941,1105]`, el contenido persistido **íntegro** y las opciones **sin** los marcadores de énfasis. La colocación en la UI queda cubierta por los tests deterministas del compositor por tramos + la presencia del `span`.
+- [x] 5.2 Archivar el change (`openspec archive widget-projection-formats`).
