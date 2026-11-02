@@ -414,8 +414,9 @@ SHALL retirarla del prompt base **solo si se encuentra verbatim** —dos saltos 
 incluidos— y SHALL depositar su contenido en `settings.SKILL_WIDGETS_PROMPT`. Por tanto, el estado
 final de una base de datos recién migrada SHALL ser: la sección **no** está en
 `settings.system_prompt` y la guía **sí** está en `settings.SKILL_WIDGETS_PROMPT`. El contenido de la
-guía y sus reglas vigentes SHALL ser los fijados por «La guía de widgets SHALL residir en el fragmento
-de su skill» (`orchestrator/skill-router`), que es el requisito que gobierna su redacción.
+guía y sus reglas vigentes SHALL ser los fijados por «El fragmento de la skill widgets SHALL ser un
+recordatorio breve que remita a render_widget» (`orchestrator/skill-router`), que es el requisito que
+gobierna su redacción.
 
 #### Scenario: Instalación nueva recibe la sección de widgets
 
@@ -444,8 +445,8 @@ de su skill» (`orchestrator/skill-router`), que es el requisito que gobierna su
 **Given** una base de datos recién migrada
 **When** se leen `settings.system_prompt` y `settings.SKILL_WIDGETS_PROMPT`
 **Then** el prompt base no contiene la cabecera `# Instrucciones de Interfaz y Widgets Interactivos`
-**And** `settings.SKILL_WIDGETS_PROMPT` sí la contiene
-**And** la guía es la fijada por «La guía de widgets SHALL residir en el fragmento de su skill»
+**And** `settings.SKILL_WIDGETS_PROMPT` contiene el recordatorio breve (no la guía extensa) y por tanto ya no lleva esa cabecera
+**And** el recordatorio es el fijado por «El fragmento de la skill widgets SHALL ser un recordatorio breve que remita a render_widget»
 
 ### Requirement: Migration SHALL add a kind column to llm_requests
 

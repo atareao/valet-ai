@@ -399,88 +399,6 @@ Las instrucciones y las `criteria` con las que se pregunta al clasificador SHALL
 - **Then** la pregunta devuelta es la sobrescrita y figura marcada como sobrescrita
 - **And** los criterios devueltos son los del catálogo, sin la marca
 
-### Requirement: La guía de widgets SHALL residir en el fragmento de su skill
-
-La guía de uso de `render_widget` SHALL residir en `settings.SKILL_WIDGETS_PROMPT` y SHALL NOT
-residir de forma permanente en `settings.system_prompt`. La migración `20261008000001` SHALL retirar
-ese bloque del prompt base **solo si se encuentra verbatim** (identificado por su encabezado) y SHALL
-depositarlo como contenido de `SKILL_WIDGETS_PROMPT`; si el bloque no se encuentra verbatim, SHALL NOT
-retirar nada y el fragmento SHALL sembrarse igualmente. La regla anti-duplicado del ensamblador de
-fragmentos SHALL seguir vigente como red de seguridad para un prompt base que ya contuviera la guía.
-Como la skill `widgets` tiene umbral cero (ver «La selección SHALL gobernar también el turno sin
-herramientas»), la guía SHALL viajar en el mensaje de sistema de **todos** los turnos, también con el
-enrutador caído o apagado. Con la skill `widgets` **deshabilitada** SHALL NOT enviarse ni el esquema de
-la herramienta ni la guía.
-
-La guía SHALL ser **prescriptiva y autosuficiente**, porque es la única instrucción que el modelo
-recibe sobre la herramienta. SHALL cumplir, como mínimo:
-
-1. Declarar que un widget **solo** aparece si se ejecuta `render_widget` en ese mismo turno, y
-   prohibir afirmar lo contrario.
-2. Enunciar la **regla de las opciones**: si el modelo va a escribir dos o más opciones etiquetadas
-   (A/B/C, 1/2/3) o una lista de alternativas para que el usuario elija, NO SHALL escribirlas en
-   prosa y SHALL renderizar un widget con ellas.
-3. Nombrar los **tres** nombres admitidos de `widget_name` —`QuickForm`, `Checklist` y
-   `LocationWidget`— con un ejemplo mínimo de `data` para cada uno, incluidas las claves que cada
-   widget lee.
-4. Retirar toda autorización genérica de responder en prosa que pueda amparar una lista de opciones.
-5. Acotar los casos **sin** widget a dos: una explicación conceptual sin opciones ni listas que
-   marcar, y un dato único directo.
-6. Conservar la regla de procesamiento de la respuesta del widget: al recibir los datos elegidos, se
-   procesan de inmediato y se confirma el resultado sin volver a renderizar, salvo petición explícita
-   de modificación.
-
-La migración `20261101000001` SHALL sustituir el fragmento sembrado por la guía nueva **solo si su
-valor sigue siendo byte a byte el texto sembrado**; si el usuario lo ha editado, SHALL NOT pisarlo.
-
-#### Scenario: El bloque verbatim se muda al fragmento
-- **Given** un prompt base que contiene el bloque de widgets tal y como lo añadió la migración original
-- **When** se aplica la migración
-- **Then** el bloque deja de estar en el prompt base
-- **And** su contenido queda en `SKILL_WIDGETS_PROMPT`
-
-#### Scenario: Un bloque editado no se retira
-- **Given** un prompt base en el que el usuario ha modificado el bloque de widgets
-- **When** se aplica la migración
-- **Then** el prompt base conserva el texto del usuario
-- **And** el fragmento se siembra igualmente
-- **And** la regla anti-duplicado impide que la guía viaje dos veces
-
-#### Scenario: La guía viaja en todos los turnos
-- **Given** la skill `widgets` habilitada con umbral `0` y un turno cualquiera
-- **When** se compone el mensaje de sistema
-- **Then** contiene la guía de widgets
-- **And** la petición ofrece `render_widget`
-
-#### Scenario: La guía nombra los tres widgets y la regla de las opciones
-- **Given** el fragmento `SKILL_WIDGETS_PROMPT` por defecto
-- **When** se inspecciona su contenido
-- **Then** menciona `QuickForm`, `Checklist` y `LocationWidget`
-- **And** menciona `render_widget`
-- **And** enuncia la regla de no escribir en prosa dos o más opciones etiquetadas
-
-#### Scenario: La guía no ampara la prosa con opciones
-- **Given** el fragmento `SKILL_WIDGETS_PROMPT` por defecto
-- **When** se inspecciona su contenido
-- **Then** no autoriza responder en prosa sin condicionar esa autorización a que no haya opciones ni listas que marcar
-- **And** declara la regla de las opciones prioritaria sobre los casos sin widget
-
-#### Scenario: Con la skill inactiva no viaja la guía
-- **Given** un turno en el que la skill `widgets` está deshabilitada (`ROUTER_SKILL_WIDGETS_ENABLED` a `false`)
-- **When** se compone el mensaje de sistema
-- **Then** no contiene la guía de widgets
-- **And** la herramienta `render_widget` no figura entre las ofrecidas
-
-#### Scenario: Un fragmento editado por el usuario no se pisa
-- **Given** un `SKILL_WIDGETS_PROMPT` con texto del usuario
-- **When** se aplica la migración
-- **Then** el valor del usuario se conserva
-
-#### Scenario: La migración es idempotente
-- **Given** una base de datos ya migrada
-- **When** se vuelve a aplicar la migración
-- **Then** el umbral y el fragmento quedan igual
-
 ### Requirement: Las criteria por defecto del briefing SHALL reconocer el saludo de apertura del día
 
 Las `criteria_true` por defecto de las skills `agenda`, `pendientes`, `entorno` y `widgets` SHALL declarar el **saludo de apertura del día** («buenos días», «¿qué tal?») como caso afirmativo, porque en este asistente un saludo abre el **briefing matutino**: la agenda del día, lo pendiente, la previsión y un panel con los datos. Las skills `recuerdos` y `web` SHALL NOT declararlo. El resto de cada criterio SHALL seguir describiendo su dominio.
@@ -582,3 +500,76 @@ El endpoint y la credencial SHALL proceder del entorno.
 - **Given** el enrutado apagado
 - **When** se pone `ROUTER_ENABLED` a `true` desde los ajustes
 - **Then** el turno siguiente ya enruta
+
+### Requirement: El fragmento de la skill widgets SHALL ser un recordatorio breve que remita a render_widget
+
+El fragmento `settings.SKILL_WIDGETS_PROMPT` SHALL NOT residir de forma permanente en
+`settings.system_prompt`. La migración `20261008000001` SHALL retirar ese bloque del prompt base
+**solo si se encuentra verbatim** (identificado por su encabezado) y SHALL depositarlo como contenido de
+`SKILL_WIDGETS_PROMPT`; si el bloque no se encuentra verbatim, SHALL NOT retirar nada y el fragmento
+SHALL sembrarse igualmente. La regla anti-duplicado del ensamblador de fragmentos SHALL seguir vigente
+como red de seguridad. Como la skill `widgets` tiene umbral cero, la guía SHALL viajar en el mensaje de
+sistema de **todos** los turnos, también con el enrutador caído o apagado. Con la skill `widgets`
+**deshabilitada** SHALL NOT enviarse ni el esquema de la herramienta ni la guía.
+
+El fragmento SHALL ser un **recordatorio breve**, NO el mecanismo que decide la presentación. El
+servidor proyecta los widgets de forma determinista al cerrar el turno (ver `orchestrator/agent`), así
+que la guía ya no carga el peso de convencer al modelo: SHALL limitarse a recordar que `render_widget`
+sigue disponible como **vía explícita de override** y que el servidor puede haber proyectado ya un
+widget. La guía SHALL NOT enumerar los tres nombres de `widget_name` con ejemplos de `data`, ni
+enunciar la regla de las opciones como una instrucción que el modelo deba aplicar: esa decisión ya no
+es suya.
+
+La migración `20261102000001_widget_projection.sql` SHALL sustituir la guía extensa sembrada por
+`20261101000001_widgets_always_on.sql` por ese recordatorio **solo si su valor sigue siendo byte a
+byte** el texto sembrado; si el usuario lo ha editado, SHALL NOT pisarlo.
+
+El texto exacto del recordatorio SHALL ser:
+
+> Los widgets los proyecta el servidor a partir de tu respuesta: si presentas una lista de opciones,
+> una lista de tareas o un lugar, aparecerá un widget. No lo anuncies ni repitas la lista en prosa;
+> escribe solo la prosa que lo acompaña. Usa `render_widget` únicamente si necesitas un widget con
+> datos más ricos de los que el servidor puede inferir.
+
+#### Scenario: El bloque verbatim se muda al fragmento
+- **Given** un prompt base que contiene el bloque de widgets tal y como lo añadió la migración original
+- **When** se aplica la migración
+- **Then** el bloque deja de estar en el prompt base
+- **And** su contenido queda en `SKILL_WIDGETS_PROMPT`
+
+#### Scenario: Un bloque editado no se retira
+- **Given** un prompt base en el que el usuario ha modificado el bloque de widgets
+- **When** se aplica la migración
+- **Then** el prompt base conserva el texto del usuario
+- **And** el fragmento se siembra igualmente
+- **And** la regla anti-duplicado impide que la guía viaje dos veces
+
+#### Scenario: La guía viaja en todos los turnos
+- **Given** la skill `widgets` habilitada con umbral `0` y un turno cualquiera
+- **When** se compone el mensaje de sistema
+- **Then** contiene la guía de widgets
+- **And** la petición ofrece `render_widget`
+
+#### Scenario: Con la skill inactiva no viaja la guía
+- **Given** un turno en el que la skill `widgets` está deshabilitada (`ROUTER_SKILL_WIDGETS_ENABLED` a `false`)
+- **When** se compone el mensaje de sistema
+- **Then** no contiene la guía de widgets
+- **And** la herramienta `render_widget` no figura entre las ofrecidas
+
+#### Scenario: Un fragmento editado por el usuario no se pisa
+- **Given** un `SKILL_WIDGETS_PROMPT` con texto del usuario
+- **When** se aplica la migración `20261102000001_widget_projection.sql`
+- **Then** el valor del usuario se conserva
+
+#### Scenario: La migración es idempotente
+- **Given** una base de datos ya migrada
+- **When** se vuelve a aplicar la migración
+- **Then** el prompt base y el fragmento quedan igual
+
+#### Scenario: La guía se recorta al recordatorio y no prescribe la regla de las opciones
+- **Given** el fragmento `SKILL_WIDGETS_PROMPT` con la guía extensa sembrada por `20261101000001`
+- **When** se aplica la migración `20261102000001_widget_projection.sql`
+- **Then** el fragmento pasa a ser un recordatorio breve
+- **And** NO enumera los tres widgets con ejemplos de `data`
+- **And** NO enuncia la regla de las opciones como una instrucción que el modelo deba aplicar
+- **And** remite a que `render_widget` sigue disponible como vía explícita
