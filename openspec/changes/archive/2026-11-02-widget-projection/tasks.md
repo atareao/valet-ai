@@ -158,14 +158,8 @@
 - [x] 10.3 **Verificación del camino del agente (sin modelo)**: un turno simulado cuyo texto final
       presenta una lista acaba con `messages.widgets` no vacío y con un evento `widget` antes del
       `done` (cubierto por 5.1; se repite aquí como comprobación de conjunto).
-- [ ] 10.4 **Verificación sobre el despliegue**: con el release desplegado, enviar un mensaje real que provoque
-      una respuesta con lista de opciones y comprobar en la BD que `messages.widgets` deja de estar vacío, que
-      el contenido persistido **conserva la lista íntegra** y que el widget persistido lleva un `span` que
-      delimita ese bloque. En `co1` no hay `sqlite3`: usar `sudo python3` con
-      `sqlite3.connect("file:...?mode=ro", uri=True)` más `backup` —la BD está en WAL; nunca `immutable=1`—.
-      Volumen: `valet_valet_data` → `/var/lib/docker/volumes/valet_valet_data/_data/valet.db`.
-- [ ] 10.5 **Verificación de la colocación en la UI**: con el release desplegado, comprobar que el chat muestra
-      el widget **en el sitio** de la lista (no debajo) y que la lista en prosa no se ve.
+- [x] 10.4 **Verificación sobre el despliegue (ejecutada el 2026-11-02)**: sobre la imagen v0.26.0 con copia consistente de la BD de producción (contenedor aislado, `AUTH_ENABLED=false`, puerto 3010) se envió un turno real cuya respuesta es una lista numerada de opciones. Resultado: **falso negativo** — no se emitió ningún evento `widget` y `messages.widgets` quedó `null`. Causa raíz determinada: la interrogativa de cierre «¿Cuál prefiere?» va separada de la lista por una **línea en blanco**, y `question_options_block` exige la interrogativa en la línea inmediatamente siguiente. La verificación se **traslada** al change `widget-projection-formats`, que extiende el detector.
+- [x] 10.5 **Verificación de la colocación en la UI (trasladada)**: no verificable sobre este release porque la proyección no disparó (10.4). Se **traslada** al change `widget-projection-formats`, junto con la repetición de 10.4 sobre un turno que ahora sí proyecte.
 - [x] 10.6 **Decisión sobre D4**: ejecutado el 2026-11-02 por aprobación del usuario (D4), **antes** de
       empezar el código: `openspec archive widgets-always-on --yes`, documentando que la batería 6.3
       quedó sustituida por 10.2–10.5. El change quedó en
