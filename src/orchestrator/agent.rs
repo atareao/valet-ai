@@ -4345,6 +4345,7 @@ mod tests {
     const CHECKLIST_TEXT: &str =
         "Estas son las tareas:\n\n| # | Tarea |\n|---|---|\n| 1 | Comprar pan |\n| 2 | Llamar a Ana |\n";
     const SIN_FORMA_TEXT: &str = "La capital de Francia es París.\n";
+    const LOCATION_TEXT: &str = "La oficina está aquí:\n\nlat: 40.4168, lon: -3.7038\n";
 
     /// Chunks a finished response into the same stream shape the other mocks use.
     fn mock_stream(
@@ -4569,6 +4570,50 @@ mod tests {
             widgets[0]["data"]["fields"][0]["options"],
             serde_json::json!(["Rojo", "Azul"])
         );
+
+        let widget_index = events
+            .iter()
+            .position(is_widget_event)
+            .expect("the projected widget must emit a `widget` event");
+        let done_index = events
+            .iter()
+            .position(is_done_event)
+            .expect("the turn must end with a `done` event");
+        assert!(
+            widget_index < done_index,
+            "the `widget` event SHALL precede the `done` event (widget at {widget_index}, done at {done_index})"
+        );
+
+        Ok(())
+    }
+
+    /// 10.3 (companion) — The agent path for `Location`: a turn whose final text
+    /// carries a coordinate pair ends with a `LocationWidget` persisted and a
+    /// `widget` event emitted **before** `done`. Complements 5.1, which covers
+    /// the `Options` path only.
+    #[tokio::test]
+    async fn projection_location_turn_persists_widget_and_emits_widget_before_done(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::db::repos::messages::MessagesRepo;
+
+        let (pool, events) = run_text_turn(LOCATION_TEXT).await?;
+
+        let (messages, _) = MessagesRepo::list_all(&pool, 100, None).await?;
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("the turn must persist an assistant message");
+
+        let widgets = assistant
+            .widgets
+            .as_ref()
+            .expect("the projected widgets must be persisted")
+            .as_array()
+            .expect("the persisted widgets must be a JSON array");
+        assert_eq!(widgets.len(), 1, "exactly one widget must be persisted");
+        assert_eq!(widgets[0]["name"], "LocationWidget");
+        assert_eq!(widgets[0]["data"]["latitude"], 40.4168);
+        assert_eq!(widgets[0]["data"]["longitude"], -3.7038);
 
         let widget_index = events
             .iter()
@@ -6976,10 +7021,11 @@ mod tests {
         );
     }
 
-    /// Encabezado de la guía de widgets: es el `prompt_heading` del catálogo.
-    const WIDGET_GUIDE_HEADING: &str = "# Instrucciones de Interfaz y Widgets Interactivos";
-    /// Frase que **solo** existe en la guía nueva (no en la vieja).
-    const WIDGET_GUIDE_SENTENCE: &str = "NUNCA digas que has mostrado un widget";
+    /// Frase que **solo** existe en el recordatorio de widgets: la guía ya no
+    /// prescribe, porque el servidor proyecta los widgets al cerrar el turno.
+    const WIDGET_REMINDER_SENTENCE: &str = "Los widgets los proyecta el servidor";
+    /// Encabezado de la guía extensa **derogada**: ya no debe viajar.
+    const RETIRED_WIDGET_GUIDE_HEADING: &str = "# Instrucciones de Interfaz y Widgets Interactivos";
 
     /// La guía de widgets viaja en un turno con el enrutador **apagado**: la
     /// skill es incondicionada (umbral cero), de modo que su fragmento debe
@@ -6995,12 +7041,12 @@ mod tests {
         let system = system_message(&request);
 
         assert!(
-            system.contains(WIDGET_GUIDE_HEADING),
-            "el mensaje de sistema debe llevar el encabezado de la guía de widgets: {system:?}"
+            system.contains(WIDGET_REMINDER_SENTENCE),
+            "el mensaje de sistema debe llevar el recordatorio de widgets: {system:?}"
         );
         assert!(
-            system.contains(WIDGET_GUIDE_SENTENCE),
-            "el mensaje de sistema debe llevar la frase de la guía nueva: {system:?}"
+            !system.contains(RETIRED_WIDGET_GUIDE_HEADING),
+            "la guía extensa ya no debe viajar; se recorta al recordatorio: {system:?}"
         );
     }
 
@@ -7021,12 +7067,12 @@ mod tests {
         let system = system_message(&request);
 
         assert!(
-            system.contains(WIDGET_GUIDE_HEADING),
-            "el mensaje de sistema debe llevar el encabezado de la guía de widgets: {system:?}"
+            system.contains(WIDGET_REMINDER_SENTENCE),
+            "el mensaje de sistema debe llevar el recordatorio de widgets: {system:?}"
         );
         assert!(
-            system.contains(WIDGET_GUIDE_SENTENCE),
-            "el mensaje de sistema debe llevar la frase de la guía nueva: {system:?}"
+            !system.contains(RETIRED_WIDGET_GUIDE_HEADING),
+            "la guía extensa ya no debe viajar; se recorta al recordatorio: {system:?}"
         );
     }
 
@@ -7046,12 +7092,12 @@ mod tests {
         let system = system_message(&request);
 
         assert!(
-            system.contains(WIDGET_GUIDE_HEADING),
-            "el mensaje de sistema debe llevar el encabezado de la guía de widgets: {system:?}"
+            system.contains(WIDGET_REMINDER_SENTENCE),
+            "el mensaje de sistema debe llevar el recordatorio de widgets: {system:?}"
         );
         assert!(
-            system.contains(WIDGET_GUIDE_SENTENCE),
-            "el mensaje de sistema debe llevar la frase de la guía nueva: {system:?}"
+            !system.contains(RETIRED_WIDGET_GUIDE_HEADING),
+            "la guía extensa ya no debe viajar; se recorta al recordatorio: {system:?}"
         );
     }
 

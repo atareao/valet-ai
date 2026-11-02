@@ -1317,6 +1317,58 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
+    // 10.2 — deterministic version of the 6.3 battery
+    // ---------------------------------------------------------------------
+
+    /// A realistic answer whose alternatives are a prose heading plus a labelled
+    /// list closed by a «¿cuál…?» question SHALL project a `QuickForm` carrying
+    /// the options extracted from the text and a span delimiting exactly the block.
+    #[test]
+    fn deterministic_options_response_projects_quickform_with_exact_span() {
+        let heading = "Puedes hacer una de estas tres cosas:\n\n";
+        let block = "A) Mantener la versión actual\nB) Actualizar ahora\nC) Actualizar y reiniciar";
+        let closing = "\n\n¿Cuál prefieres?";
+        let text = format!("{heading}{block}{closing}");
+
+        let presentations = detect(&text);
+        assert_eq!(
+            presentations.len(),
+            1,
+            "una única respuesta con opciones SHALL producir un widget"
+        );
+
+        let widgets = synthesize(&presentations, &[]);
+        assert_eq!(widgets.len(), 1);
+        assert_eq!(widgets[0].name, "QuickForm");
+        assert_eq!(
+            widgets[0].data["fields"][0]["options"],
+            json!([
+                "Mantener la versión actual",
+                "Actualizar ahora",
+                "Actualizar y reiniciar",
+            ]),
+            "las opciones del widget SHALL salir del texto"
+        );
+
+        let [start, end] = widgets[0]
+            .span
+            .expect("el widget proyectado SHALL llevar un span");
+        assert_eq!(
+            &text[start..end],
+            block,
+            "el span SHALL delimitar exactamente el bloque"
+        );
+        assert!(
+            !text[..start].contains("A)"),
+            "el encabezado en prosa queda fuera del tramo"
+        );
+        assert!(
+            !text[end..].contains("C)"),
+            "la interrogativa de cierre queda fuera del tramo"
+        );
+    }
+
+    // ---------------------------------------------------------------------
     // synthesize
     // ---------------------------------------------------------------------
 
