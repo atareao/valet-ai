@@ -3,10 +3,15 @@
 ### Requirement: El frontend SHALL componer el mensaje del asistente por tramos y colocar cada widget en su `span`
 
 El frontend SHALL componer el mensaje del asistente como una **secuencia de tramos**: los tramos de texto del
-`content` y, en el sitio del tramo que cada widget declara, el widget. Un widget **sin** `span`, un `span`
-fuera del contenido, un `span` solapado con el de otro widget o un contenido vacío SHALL NOT romper el
-render: en cualquiera de esos casos el frontend SHALL caer al camino de hoy —el texto íntegro y los widgets
-**debajo**—, de modo que la degradación sea siempre de colocación y nunca de contenido.
+`content` y, en el sitio del tramo que cada widget declara, el widget. Un widget **sin** `span` SHALL pintarse
+**debajo** del texto íntegro, como hoy. La degradación de un `span` es **siempre de colocación, nunca de
+contenido**: el contenido del mensaje SHALL conservarse íntegro —sin pérdida ni duplicación— y SHALL NOT
+producirse ningún error de render.
+
+La degradación es **por widget**: un widget cuyo `span` sea inválido —fuera del contenido, invertido, no entero
+o que parta un carácter multibyte— o **solapado** con el de otro widget SHALL degradarse **él solo** (su
+colocación cae al final, debajo del texto) sin afectar a los widgets válidos, que SHALL conservar cada uno su
+tramo. Un contenido vacío SHALL NOT romper el render: no hay tramos de texto y los widgets se pintan debajo.
 
 La composición SHALL residir en una **función pura** (`composeMessage(content, widgets)`) que devuelva los
 tramos ordenados, con tests unitarios de los casos límite, de modo que la aritmética de tramos se verifique
@@ -38,9 +43,11 @@ el contenido del mensaje en curso a ese valor autoritativo —el texto íntegro 
 
 #### Scenario: Un tramo inválido no rompe el render
 
-**Given** un mensaje cuyo widget declara un `span` fuera del contenido, o solapado con el de otro widget
+**Given** un mensaje con varios widgets, uno de ellos con un `span` inválido (fuera del contenido, invertido, no entero, partiendo un carácter multibyte) o solapado con el de otro widget
 **When** se renderiza el mensaje
-**Then** el mensaje SHALL renderizarse con el texto íntegro y los widgets debajo
+**Then** el widget del `span` inválido o solapado SHALL degradarse al final, debajo del texto
+**And** los widgets con `span` válido SHALL conservar cada uno su tramo
+**And** el contenido SHALL pintarse íntegro, sin pérdida ni duplicación
 **And** SHALL NOT producirse ningún error de render
 
 #### Scenario: Un `done` con contenido fija el texto autoritativo

@@ -51,7 +51,7 @@
       una lista numerada que es un **procedimiento** y no opciones («1. Abre el fichero; 2. Edita…»).
 - [x] 3.2 Test de que un texto vacío o solo espacios no detecta ningún bloque (`Vec` vacío).
 - [x] 3.3 Ejecutar `cargo test widget_projection` y confirmar el rojo de los casos nuevos.
-- [ ] 3.4 **Criterio de aceptación del RED**: cada NO detección es un test que falla por la
+- [x] 3.4 **Criterio de aceptación del RED**: cada NO detección es un test que falla por la
       implementación ausente, no por un test mal escrito. Revisar que ninguno pase por accidente.
 
 ## 4. GREEN — el proyector puro
@@ -101,61 +101,61 @@
 
 ## 7. La migración y el recordatorio
 
-- [ ] 7.1 Escribir `migrations/20261102000001_widget_projection.sql`: sustituir
+- [x] 7.1 Escribir `migrations/20261102000001_widget_projection.sql`: sustituir
       `SKILL_WIDGETS_PROMPT` por el recordatorio breve **solo si** su valor es byte a byte el sembrado
       por `20261101000001_widgets_always_on.sql`.
-- [ ] 7.2 Transcribir a la migración, **carácter a carácter**, el texto exacto del recordatorio aprobado
+- [x] 7.2 Transcribir a la migración, **carácter a carácter**, el texto exacto del recordatorio aprobado
       por el usuario el 2026-11-02 (el literal del requisito de `orchestrator/skill-router`):
 
       > Los widgets los proyecta el servidor a partir de tu respuesta: si presentas una lista de
       > opciones, una lista de tareas o un lugar, aparecerá un widget. No lo anuncies ni repitas la
       > lista en prosa; escribe solo la prosa que lo acompaña. Usa `render_widget` únicamente si
       > necesitas un widget con datos más ricos de los que el servidor puede inferir.
-- [ ] 7.3 Test de la migración: el fragmento prístino se sustituye; el editado se respeta; la
+- [x] 7.3 Test de la migración: el fragmento prístino se sustituye; el editado se respeta; la
       migración es idempotente.
-- [ ] 7.4 Test del catálogo: el recordatorio **no** enumera los tres widgets con ejemplos de `data` ni
+- [x] 7.4 Test del catálogo: el recordatorio **no** enumera los tres widgets con ejemplos de `data` ni
       enuncia la regla de las opciones como instrucción del modelo, y remite a `render_widget` como vía
       explícita.
-- [ ] 7.5 `cargo test migrations` y `cargo test skills` en verde.
+- [x] 7.5 `cargo test migrations` y `cargo test skills` en verde.
 
 ## 8. Frontend — la composición por tramos
 
-- [ ] 8.1 `frontend/src/components/widgets/types.ts`: añadir `span?: [number, number]` a `WidgetInstance`.
-- [ ] 8.2 `frontend/src/hooks/useSSE.ts`: pasar el campo `content` del evento `done` al callback y el campo
+- [x] 8.1 `frontend/src/components/widgets/types.ts`: añadir `span?: [number, number]` a `WidgetInstance`.
+- [x] 8.2 `frontend/src/hooks/useSSE.ts`: pasar el campo `content` del evento `done` al callback y el campo
       `span` del evento `widget` a `onWidget`.
-- [ ] 8.3 `frontend/src/hooks/useMainChat.ts`: conservar el `span` en el widget asociado al mensaje en curso
+- [x] 8.3 `frontend/src/hooks/useMainChat.ts`: conservar el `span` en el widget asociado al mensaje en curso
       (también al reconstruir el historial desde `messages.widgets`) y, al recibir un `done` con `content`
       presente, fijar el contenido del mensaje en curso a ese valor autoritativo, sin perder los widgets ni su
       identidad.
-- [ ] 8.4 `frontend/src/components/widgets/compose.ts`: **módulo puro** `composeMessage(content, widgets)` que
+- [x] 8.4 `frontend/src/components/widgets/compose.ts`: **módulo puro** `composeMessage(content, widgets)` que
       devuelve los tramos ordenados (texto / widget). Con tests unitarios de los casos límite: tramo válido,
       widget sin `span`, `span` fuera de rango, `span` solapado con otro, contenido vacío y `span` que cae en
       medio de un carácter multibyte.
-- [ ] 8.5 `frontend/src/components/MessageBubble.tsx`: pintar los tramos en orden en lugar del texto seguido de
+- [x] 8.5 `frontend/src/components/MessageBubble.tsx`: pintar los tramos en orden en lugar del texto seguido de
       los widgets.
-- [ ] 8.6 Test de componente: el widget se pinta en el sitio del tramo, la lista en prosa no se pinta, y un
+- [x] 8.6 Test de componente: el widget se pinta en el sitio del tramo, la lista en prosa no se pinta, y un
       `span` inválido cae al render de hoy (texto íntegro + widgets debajo) sin error.
-- [ ] 8.7 `npx vitest run` en verde y `npx tsc --noEmit` sin errores.
+- [x] 8.7 `npx vitest run` en verde y `npx tsc --noEmit` sin errores.
 
 ## 9. REFACTOR y suite completa
 
-- [ ] 9.1 `cargo clippy --all-targets -- -D warnings` sin avisos.
-- [ ] 9.2 `cargo fmt --check`.
-- [ ] 9.3 Revisar que no queda código muerto: `detect`/`synthesize` se usan en el cierre del turno,
+- [x] 9.1 `cargo clippy --all-targets -- -D warnings` sin avisos.
+- [x] 9.2 `cargo fmt --check`.
+- [x] 9.3 Revisar que no queda código muerto: `detect`/`synthesize` se usan en el cierre del turno,
       `composeMessage` se usa en `MessageBubble`, y los tipos `Presentation`/`Widget` no tienen variantes ni
       campos sin uso.
-- [ ] 9.4 `just check-all` verde.
+- [x] 9.4 `just check-all` verde.
 
 ## 10. Verificación end-to-end (sustituye a la batería 6.3 de `widgets-always-on`)
 
 > La batería 6.3 medía la guía contra el modelo y falló. Esta sección la sustituye por verificaciones
 > **deterministas**, que no dependen del modelo.
 
-- [ ] 10.1 `openspec validate --all --strict` sin errores.
-- [ ] 10.2 **Verificación del proyector (sin modelo)**: un test que, dado un texto de respuesta real con
+- [x] 10.1 `openspec validate --all --strict` sin errores.
+- [x] 10.2 **Verificación del proyector (sin modelo)**: un test que, dado un texto de respuesta real con
       una lista de opciones (uno de los tres prompts que fallaron el 1-nov), el proyector produce el
       widget esperado con las opciones del texto. Es la versión determinista de la batería.
-- [ ] 10.3 **Verificación del camino del agente (sin modelo)**: un turno simulado cuyo texto final
+- [x] 10.3 **Verificación del camino del agente (sin modelo)**: un turno simulado cuyo texto final
       presenta una lista acaba con `messages.widgets` no vacío y con un evento `widget` antes del
       `done` (cubierto por 5.1; se repite aquí como comprobación de conjunto).
 - [ ] 10.4 **Verificación sobre el despliegue**: con el release desplegado, enviar un mensaje real que provoque

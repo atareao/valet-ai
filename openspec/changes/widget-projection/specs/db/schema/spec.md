@@ -48,5 +48,5 @@ gobierna su redacción.
 **Given** una base de datos recién migrada
 **When** se leen `settings.system_prompt` y `settings.SKILL_WIDGETS_PROMPT`
 **Then** el prompt base no contiene la cabecera `# Instrucciones de Interfaz y Widgets Interactivos`
-**And** `settings.SKILL_WIDGETS_PROMPT` sí la contiene
-**And** la guía es la fijada por «El fragmento de la skill widgets SHALL ser un recordatorio breve que remita a render_widget»
+**And** `settings.SKILL_WIDGETS_PROMPT` contiene el recordatorio breve (no la guía extensa) y por tanto ya no lleva esa cabecera
+**And** el recordatorio es el fijado por «El fragmento de la skill widgets SHALL ser un recordatorio breve que remita a render_widget»
