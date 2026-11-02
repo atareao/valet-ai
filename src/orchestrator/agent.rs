@@ -23,6 +23,7 @@ use crate::orchestrator::skill_router::{
     read_skill_fragments, RouterUsage, SkillRouter,
 };
 use crate::orchestrator::tool_limits::{read_tool_limits, ToolLimits};
+use crate::orchestrator::widget_projection::{self, Span, Widget};
 use crate::tools::geo_utils::reverse_geocode;
 use crate::tools::r#trait::ToolResult;
 use crate::tools::registry::ToolRegistry;
@@ -188,6 +189,10 @@ pub enum SSEEvent {
     ToolResult { name: String, success: bool },
 
     /// Streaming is complete; the assistant message has been persisted.
+    ///
+    /// `content` carries the assistant's persisted text in full, so the client can
+    /// reconcile the streamed chunks with the authoritative stored message. It
+    /// defaults to an empty string when absent (older clients / persisted events).
     #[serde(rename = "done")]
     Done {
         message_id: String,
@@ -196,6 +201,8 @@ pub enum SSEEvent {
         tools_used: Option<String>,
         user_location: Option<String>,
         user_created_at: String,
+        #[serde(default)]
+        content: String,
     },
 
     /// An error occurred during processing.
@@ -223,11 +230,16 @@ pub enum SSEEvent {
     ApprovalResult { request_id: String, approved: bool },
 
     /// The orchestrator asks the client to render an interactive widget.
+    ///
+    /// `span` is present only for widgets projected from the text: it delimits the
+    /// byte range of the block they replace. Widgets rendered by the model omit it.
     #[serde(rename = "widget")]
     Widget {
         id: String,
         name: String,
         data: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        span: Option<Span>,
     },
 }
 
@@ -407,6 +419,58 @@ fn canonical_json(value: &Value) -> String {
         }
         other => serde_json::to_string(other).unwrap_or_default(),
     }
+}
+
+/// Merge the model's widgets with the ones projected from the assistant's text.
+///
+/// The model wins for its type: a projected widget whose `name` matches any
+/// widget the model already rendered is dropped, even if their `data` differ.
+/// Among projected widgets, those sharing both `name` and `data` collapse into
+/// the first one accepted.
+///
+/// Returns `(merged, serialised)`: `merged` holds the model's widgets (in their
+/// original order) followed by the serialised accepted projections, ready to be
+/// persisted; `serialised` holds exactly the accepted projections that made it
+/// into `merged`, so their events can be emitted. The two lists can differ only
+/// when `to_value` fails, in which case that projection is skipped from both
+/// (never a `panic`, never a `null`).
+fn merge_projected_widgets(model: &[Value], projected: Vec<Widget>) -> (Vec<Value>, Vec<Widget>) {
+    let mut kept: Vec<Widget> = Vec::new();
+    for widget in projected {
+        let clashes_with_model = model
+            .iter()
+            .any(|m| m.get("name").and_then(|v| v.as_str()) == Some(widget.name.as_str()));
+        if clashes_with_model {
+            continue;
+        }
+        let already_kept = kept
+            .iter()
+            .any(|k| k.name == widget.name && k.data == widget.data);
+        if already_kept {
+            continue;
+        }
+        kept.push(widget);
+    }
+
+    let mut merged: Vec<Value> = model.to_vec();
+    let mut serialised: Vec<Widget> = Vec::new();
+    for widget in kept {
+        match serde_json::to_value(&widget) {
+            Ok(value) => {
+                merged.push(value);
+                serialised.push(widget);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    widget = %widget.name,
+                    error = %error,
+                    "dropping a projected widget that failed to serialise"
+                );
+            }
+        }
+    }
+
+    (merged, serialised)
 }
 
 /// Maximum time a turn waits for a human approval decision before treating it
@@ -990,6 +1054,9 @@ impl Orchestrator {
         let mut messages: Vec<ChatMessage> = Vec::new();
         let mut used_tools: Vec<String> = Vec::new();
         let mut rendered_widgets: Vec<Value> = Vec::new();
+        // Successful tool results of this turn, kept so the deterministic
+        // projection can prefer the tool's `data` over the model's prose (D3).
+        let mut turn_tool_results: Vec<(String, Value)> = Vec::new();
         // Per-turn guard state (reset every turn) and the thresholds backing it,
         // read from `settings` on every turn so editing them takes effect
         // without a restart.
@@ -1620,6 +1687,15 @@ impl Orchestrator {
                                             // Track the tool name for the footer
                                             used_tools.push(op_key.clone());
 
+                                            // Keep the successful result for the
+                                            // deterministic projection. Uses the
+                                            // real registry name (`tc.name`), not
+                                            // `op_key`. Must run before the
+                                            // `messages.push` below, which moves
+                                            // `tool_result.data`.
+                                            turn_tool_results
+                                                .push((tc.name.clone(), tool_result.data.clone()));
+
                                             // Emit success event
                                             let _ = tx
                                                 .send(SSEEvent::ToolResult {
@@ -1657,6 +1733,7 @@ impl Orchestrator {
                                                             id: widget_id.clone(),
                                                             name: widget_name.to_string(),
                                                             data: widget_data.clone(),
+                                                            span: None,
                                                         })
                                                         .await
                                                         .ok();
@@ -1753,6 +1830,17 @@ impl Orchestrator {
                                 None
                             };
 
+                            // Project widgets deterministically from the final text
+                            // (D1/D3) and merge them with the model's own widgets.
+                            // The text is persisted whole; the projection only adds
+                            // widgets and records the block each one spans.
+                            let projected = widget_projection::synthesize(
+                                &widget_projection::detect(&content_buffer),
+                                &turn_tool_results,
+                            );
+                            let (widgets_to_persist, projected_to_emit) =
+                                merge_projected_widgets(&rendered_widgets, projected);
+
                             // Persist assistant message to DB (capture the real UUID)
                             let location = self.resolve_location().await;
                             let mut assistant_message = {
@@ -1774,10 +1862,11 @@ impl Orchestrator {
                                 .await?
                             };
 
-                            // Persist the widgets emitted during this turn, if any,
-                            // so the frontend can rebuild them on reload.
-                            if !rendered_widgets.is_empty() {
-                                let widgets = serde_json::json!(rendered_widgets.clone());
+                            // Persist the widgets of this turn (the model's plus the
+                            // projected ones), if any, so the frontend can rebuild
+                            // them on reload.
+                            if !widgets_to_persist.is_empty() {
+                                let widgets = serde_json::json!(widgets_to_persist.clone());
                                 crate::db::repos::messages::MessagesRepo::set_widgets(
                                     &self.db,
                                     &assistant_message.id,
@@ -1788,6 +1877,21 @@ impl Orchestrator {
                                 // published row is indistinguishable from a
                                 // re-read of the database (D2).
                                 assistant_message.widgets = Some(widgets);
+                            }
+
+                            // Emit the projected widgets once their `id` has been
+                            // persisted, so the live event and the reloaded row
+                            // share the same identity. They precede `done`.
+                            for widget in &projected_to_emit {
+                                let _ = tx
+                                    .send(SSEEvent::Widget {
+                                        id: widget.id.clone(),
+                                        name: widget.name.clone(),
+                                        data: widget.data.clone(),
+                                        span: widget.span,
+                                    })
+                                    .await
+                                    .ok();
                             }
 
                             let assistant_message_id = assistant_message.id.clone();
@@ -1823,6 +1927,7 @@ impl Orchestrator {
                                     tools_used: tools_used.clone(),
                                     user_location,
                                     user_created_at,
+                                    content: content_buffer.clone(),
                                 })
                                 .await
                                 .ok();
@@ -2142,6 +2247,7 @@ mod tests {
             tools_used: None,
             user_location: None,
             user_created_at: String::new(),
+            content: String::new(),
         };
         let json = event.to_json_string();
         assert!(json.contains(r#""type":"done""#));
@@ -2158,6 +2264,7 @@ mod tests {
             tools_used: None,
             user_location: None,
             user_created_at: String::new(),
+            content: String::new(),
         };
         let json = event.to_json_string();
         assert!(json.contains(r#""type":"done""#));
@@ -4075,6 +4182,7 @@ mod tests {
                 id,
                 name,
                 data: emitted,
+                ..
             } => {
                 assert!(!id.is_empty(), "the widget id must not be empty");
                 assert_eq!(name, "QuickForm");
@@ -4165,7 +4273,7 @@ mod tests {
         let (event_id, event_name, event_data) = events
             .iter()
             .find_map(|e| match e {
-                SSEEvent::Widget { id, name, data } => {
+                SSEEvent::Widget { id, name, data, .. } => {
                     Some((id.clone(), name.clone(), data.clone()))
                 }
                 _ => None,
@@ -4189,6 +4297,10 @@ mod tests {
         assert_eq!(widgets[0]["id"], event_id, "the widget id must be reused");
         assert_eq!(widgets[0]["name"], event_name);
         assert_eq!(widgets[0]["data"], event_data);
+        assert!(
+            widgets[0].get("span").is_none(),
+            "the model widget must not declare a span"
+        );
 
         Ok(())
     }
@@ -4216,6 +4328,685 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // widget-projection: integration into the turn (RED)
+    //
+    // These tests only observe the *serialised* events (`to_json_string`) and
+    // the persisted row, never the enum's fields, so they compile before and
+    // after the GREEN adds `content` to `Done` and `span` to `Widget`.
+    // -----------------------------------------------------------------------
+
+    /// Deterministic fixtures: a recognised options block, a recognised
+    /// checklist block and a text with no recognisable shape.
+    const OPCIONES_TEXT: &str =
+        "Te propongo estas alternativas:\n\nA) Rojo\nB) Azul\n\n¿Cuál eliges?\n";
+    const CHECKLIST_TEXT: &str =
+        "Estas son las tareas:\n\n| # | Tarea |\n|---|---|\n| 1 | Comprar pan |\n| 2 | Llamar a Ana |\n";
+    const SIN_FORMA_TEXT: &str = "La capital de Francia es París.\n";
+    const LOCATION_TEXT: &str = "La oficina está aquí:\n\nlat: 40.4168, lon: -3.7038\n";
+
+    /// Chunks a finished response into the same stream shape the other mocks use.
+    fn mock_stream(
+        result: ChatResponse,
+    ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>> {
+        let content = result.message.content.clone();
+        let tool_calls = result.message.tool_calls.clone();
+
+        let mut events: Vec<Result<StreamEvent, LLMError>> = Vec::new();
+        if let Some(tcs) = tool_calls {
+            for tc in tcs {
+                events.push(Ok(StreamEvent::ToolCall(tc)));
+            }
+        } else {
+            for chunk in content
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(10)
+                .map(|c| c.iter().collect::<String>())
+            {
+                events.push(Ok(StreamEvent::Chunk(chunk)));
+            }
+        }
+        events.push(Ok(StreamEvent::Done(result)));
+        Box::pin(futures::stream::iter(events))
+    }
+
+    /// Mock LLM that answers with a fixed text and calls no tool.
+    struct MockTextLLM {
+        text: String,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for MockTextLLM {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            Ok(ChatResponse {
+                message: ChatMessage {
+                    role: "assistant".into(),
+                    content: self.text.clone(),
+                    tool_calls: None,
+                    tool_result: None,
+                    tool_call_id: None,
+                },
+                usage: None,
+                finish_reason: None,
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let result = self.chat(request).await?;
+            Ok(mock_stream(result))
+        }
+    }
+
+    /// Mock LLM that asks to render a widget on its first call, then answers
+    /// with a caller-supplied text (unlike `MockLLMWithWidgetThenAnswer`).
+    struct MockWidgetThenText {
+        call_count: Arc<Mutex<usize>>,
+        widget_name: String,
+        widget_data: Value,
+        final_text: String,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for MockWidgetThenText {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            if *count == 1 {
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "Voy a pedir un widget.".into(),
+                        tool_calls: Some(vec![ToolCall {
+                            id: "call-widget-1".into(),
+                            name: "render_widget".into(),
+                            arguments: serde_json::json!({
+                                "widget_name": self.widget_name.clone(),
+                                "data": self.widget_data.clone(),
+                            }),
+                        }]),
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                    finish_reason: None,
+                })
+            } else {
+                Ok(ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: self.final_text.clone(),
+                        tool_calls: None,
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: None,
+                    finish_reason: None,
+                })
+            }
+        }
+
+        async fn chat_stream(
+            &self,
+            request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let result = self.chat(request).await?;
+            Ok(mock_stream(result))
+        }
+    }
+
+    /// Run one streaming turn with a plain-text answer and no tool at all.
+    async fn run_text_turn(
+        text: &str,
+    ) -> Result<(SqlitePool, Vec<SSEEvent>), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+
+        let registry = Arc::new(ToolRegistry::new());
+        let llm = Arc::new(MockTextLLM {
+            text: text.to_string(),
+        });
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            OrchestratorConfig::default(),
+            pool.clone(),
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        );
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Dime algo", None, None, tx)
+            .await?;
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        Ok((pool, events))
+    }
+
+    /// Like `run_widget_turn`, but the model's final answer is `final_text`.
+    async fn run_widget_then_text_turn(
+        widget_name: &str,
+        widget_data: Value,
+        final_text: &str,
+    ) -> Result<(SqlitePool, Vec<SSEEvent>), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(MockRenderWidgetTool { allow: true }));
+        let registry = Arc::new(registry);
+
+        let llm = Arc::new(MockWidgetThenText {
+            call_count: Arc::new(Mutex::new(0)),
+            widget_name: widget_name.to_string(),
+            widget_data,
+            final_text: final_text.to_string(),
+        });
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        let orchestrator = Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            OrchestratorConfig::default(),
+            pool.clone(),
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        );
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "Quiero un widget", None, None, tx)
+            .await?;
+
+        let mut events = Vec::new();
+        while let Some(event) = rx.recv().await {
+            events.push(event);
+        }
+        Ok((pool, events))
+    }
+
+    /// 5.1 — A turn whose final text presents options ends with `widgets`
+    /// persisted and a `widget` event **before** the `done` event.
+    #[tokio::test]
+    async fn projection_options_turn_persists_widget_and_emits_widget_before_done(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::db::repos::messages::MessagesRepo;
+
+        let (pool, events) = run_text_turn(OPCIONES_TEXT).await?;
+
+        let (messages, _) = MessagesRepo::list_all(&pool, 100, None).await?;
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("the turn must persist an assistant message");
+
+        let widgets = assistant
+            .widgets
+            .as_ref()
+            .expect("the projected widgets must be persisted")
+            .as_array()
+            .expect("the persisted widgets must be a JSON array");
+        assert!(!widgets.is_empty(), "at least one widget must be persisted");
+        assert_eq!(widgets[0]["name"], "QuickForm");
+        assert_eq!(widgets[0]["data"]["fields"][0]["type"], "select");
+        assert_eq!(
+            widgets[0]["data"]["fields"][0]["options"],
+            serde_json::json!(["Rojo", "Azul"])
+        );
+
+        let widget_index = events
+            .iter()
+            .position(is_widget_event)
+            .expect("the projected widget must emit a `widget` event");
+        let done_index = events
+            .iter()
+            .position(is_done_event)
+            .expect("the turn must end with a `done` event");
+        assert!(
+            widget_index < done_index,
+            "the `widget` event SHALL precede the `done` event (widget at {widget_index}, done at {done_index})"
+        );
+
+        Ok(())
+    }
+
+    /// 10.3 (companion) — The agent path for `Location`: a turn whose final text
+    /// carries a coordinate pair ends with a `LocationWidget` persisted and a
+    /// `widget` event emitted **before** `done`. Complements 5.1, which covers
+    /// the `Options` path only.
+    #[tokio::test]
+    async fn projection_location_turn_persists_widget_and_emits_widget_before_done(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::db::repos::messages::MessagesRepo;
+
+        let (pool, events) = run_text_turn(LOCATION_TEXT).await?;
+
+        let (messages, _) = MessagesRepo::list_all(&pool, 100, None).await?;
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("the turn must persist an assistant message");
+
+        let widgets = assistant
+            .widgets
+            .as_ref()
+            .expect("the projected widgets must be persisted")
+            .as_array()
+            .expect("the persisted widgets must be a JSON array");
+        assert_eq!(widgets.len(), 1, "exactly one widget must be persisted");
+        assert_eq!(widgets[0]["name"], "LocationWidget");
+        assert_eq!(widgets[0]["data"]["latitude"], 40.4168);
+        assert_eq!(widgets[0]["data"]["longitude"], -3.7038);
+
+        let widget_index = events
+            .iter()
+            .position(is_widget_event)
+            .expect("the projected widget must emit a `widget` event");
+        let done_index = events
+            .iter()
+            .position(is_done_event)
+            .expect("the turn must end with a `done` event");
+        assert!(
+            widget_index < done_index,
+            "the `widget` event SHALL precede the `done` event (widget at {widget_index}, done at {done_index})"
+        );
+
+        Ok(())
+    }
+
+    /// 5.2 — The model's widget wins: the projection for that type is omitted,
+    /// so exactly one widget (the model's) is persisted and emitted.
+    #[tokio::test]
+    async fn projection_is_omitted_for_a_type_the_model_already_rendered(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::db::repos::messages::MessagesRepo;
+
+        let model_data = serde_json::json!({
+            "title": "Tareas",
+            "items": [{"id": "item-1", "label": "Comprar pan"}],
+        });
+        let (pool, events) =
+            run_widget_then_text_turn("Checklist", model_data.clone(), CHECKLIST_TEXT).await?;
+
+        let widget_events: Vec<&SSEEvent> = events.iter().filter(|e| is_widget_event(e)).collect();
+        assert_eq!(
+            widget_events.len(),
+            1,
+            "the projection SHALL be omitted for the type the model already rendered"
+        );
+
+        let (event_id, event_name, event_data) = match widget_events[0] {
+            SSEEvent::Widget { id, name, data, .. } => (id.clone(), name.clone(), data.clone()),
+            other => panic!("expected a widget event, got {other:?}"),
+        };
+
+        let (messages, _) = MessagesRepo::list_all(&pool, 100, None).await?;
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("the turn must persist an assistant message");
+        let widgets = assistant
+            .widgets
+            .as_ref()
+            .expect("the model's widget must be persisted")
+            .as_array()
+            .expect("the persisted widgets must be a JSON array");
+        assert_eq!(widgets.len(), 1, "exactly one widget must be persisted");
+        assert_eq!(widgets[0]["name"], "Checklist");
+        assert_eq!(
+            widgets[0]["id"], event_id,
+            "the model's widget id must be reused"
+        );
+        assert_eq!(widgets[0]["name"], event_name);
+        assert_eq!(
+            widgets[0]["data"], event_data,
+            "the model's payload must win"
+        );
+
+        Ok(())
+    }
+
+    /// Control for 5.2 — the checklist text on its own (no `render_widget`)
+    /// *does* fire the projection, so "exactly one widget" in 5.2 is not
+    /// vacuous: it proves the model's widget is the one that wins, not that
+    /// detection is silently broken.
+    #[tokio::test]
+    async fn projection_fires_for_the_checklist_text_without_the_model_widget(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::db::repos::messages::MessagesRepo;
+
+        let (pool, _events) = run_text_turn(CHECKLIST_TEXT).await?;
+
+        let (messages, _) = MessagesRepo::list_all(&pool, 100, None).await?;
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("the turn must persist an assistant message");
+        let widgets = assistant
+            .widgets
+            .as_ref()
+            .expect("the checklist text must project a widget")
+            .as_array()
+            .expect("the persisted widgets must be a JSON array");
+        assert_eq!(widgets.len(), 1, "exactly one widget must be persisted");
+        assert_eq!(widgets[0]["name"], "Checklist");
+
+        let items = widgets[0]["data"]["items"]
+            .as_array()
+            .expect("the checklist widget must carry an `items` array");
+        let labels: Vec<&str> = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["Comprar pan", "Llamar a Ana"],
+            "the checklist items must come from the text"
+        );
+
+        Ok(())
+    }
+
+    /// 5.3 (control) — A turn with no recognisable shape leaves `widgets` null
+    /// and emits no `widget` event.
+    #[tokio::test]
+    async fn projection_absent_turn_leaves_widgets_null_and_emits_no_widget(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::db::repos::messages::MessagesRepo;
+
+        let (pool, events) = run_text_turn(SIN_FORMA_TEXT).await?;
+
+        assert!(
+            !events.iter().any(is_widget_event),
+            "a turn without a recognised shape must not emit a `widget` event"
+        );
+
+        let (messages, _) = MessagesRepo::list_all(&pool, 100, None).await?;
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("the turn must persist an assistant message");
+        assert!(
+            assistant.widgets.is_none(),
+            "`widgets` SHALL be null when nothing is projected"
+        );
+
+        Ok(())
+    }
+
+    /// 5.4 — The content is persisted whole; the widget's `span` delimits
+    /// exactly the recognised block; and `done.content` equals the persisted
+    /// content.
+    #[tokio::test]
+    async fn projection_keeps_full_content_and_span_delimits_the_block(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::db::repos::messages::MessagesRepo;
+
+        let (pool, events) = run_text_turn(OPCIONES_TEXT).await?;
+
+        let (messages, _) = MessagesRepo::list_all(&pool, 100, None).await?;
+        let assistant = messages
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("the turn must persist an assistant message");
+
+        let content = &assistant.content;
+        assert!(
+            content.contains("A) Rojo\nB) Azul"),
+            "the projected block must survive intact, got: {content:?}"
+        );
+        assert!(
+            content.contains("Te propongo estas alternativas:"),
+            "the heading must survive intact"
+        );
+        assert!(
+            content.contains("¿Cuál eliges?"),
+            "the closing question must survive intact"
+        );
+
+        let widgets = assistant
+            .widgets
+            .as_ref()
+            .expect("the projected widget must be persisted")
+            .as_array()
+            .expect("the persisted widgets must be a JSON array");
+        let span = widgets[0]["span"]
+            .as_array()
+            .expect("the projected widget SHALL carry a `span` array");
+        assert_eq!(span.len(), 2, "`span` SHALL be `[start, end]`");
+        let start = span[0].as_u64().expect("the span start must be an integer") as usize;
+        let end = span[1].as_u64().expect("the span end must be an integer") as usize;
+        assert_eq!(
+            start,
+            content.find("A) Rojo").expect("the block start must exist"),
+            "the span SHALL start where the block starts"
+        );
+        assert_eq!(
+            &content[start..end],
+            "A) Rojo\nB) Azul",
+            "the span SHALL delimit exactly the recognised block"
+        );
+
+        let done = events
+            .iter()
+            .find(|e| is_done_event(e))
+            .expect("the turn must end with a `done` event");
+        let done_value: Value = serde_json::from_str(&done.to_json_string())?;
+        assert_eq!(
+            done_value["content"].as_str(),
+            Some(content.as_str()),
+            "`done.content` SHALL equal the persisted content"
+        );
+
+        let widget = events
+            .iter()
+            .find(|e| is_widget_event(e))
+            .expect("the projected widget must emit a `widget` event");
+        let widget_value: Value = serde_json::from_str(&widget.to_json_string())?;
+        assert_eq!(
+            widget_value["span"], widgets[0]["span"],
+            "the emitted span SHALL equal the persisted one"
+        );
+
+        Ok(())
+    }
+
+    /// 5.5 — Serialisation contract of the new fields: `done.content` is
+    /// present; a model widget declares no `span`; a projected widget declares
+    /// `span` as `[start, end]`.
+    #[tokio::test]
+    async fn done_content_and_widget_span_serialization() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // (a) the `done` event's JSON carries the authoritative `content`.
+        let (_pool, events) = run_text_turn(SIN_FORMA_TEXT).await?;
+        let done = events
+            .iter()
+            .find(|e| is_done_event(e))
+            .expect("the turn must end with a `done` event");
+        let done_value: Value = serde_json::from_str(&done.to_json_string())?;
+        assert!(
+            done_value.get("content").is_some(),
+            "the `done` event SHALL carry a `content` field"
+        );
+        assert!(
+            done_value["content"].is_string(),
+            "`content` SHALL be a string"
+        );
+
+        // (b) control: a model-rendered widget declares no span.
+        let model_data = serde_json::json!({
+            "title": "Tareas",
+            "items": [{"id": "item-1", "label": "Comprar pan"}],
+        });
+        let (_pool, events) =
+            run_widget_then_text_turn("Checklist", model_data, CHECKLIST_TEXT).await?;
+        let widget = events
+            .iter()
+            .find(|e| is_widget_event(e))
+            .expect("the model's widget must emit a `widget` event");
+        let widget_value: Value = serde_json::from_str(&widget.to_json_string())?;
+        assert!(
+            widget_value.get("span").is_none(),
+            "a model-rendered widget SHALL NOT declare a `span`"
+        );
+
+        // (c) a projected widget carries `span` as `[start, end]`.
+        let (_pool, events) = run_text_turn(OPCIONES_TEXT).await?;
+        let widget = events
+            .iter()
+            .find(|e| is_widget_event(e))
+            .expect("the projected widget must emit a `widget` event");
+        let widget_value: Value = serde_json::from_str(&widget.to_json_string())?;
+        let span = widget_value
+            .get("span")
+            .expect("a projected widget SHALL declare a `span`")
+            .as_array()
+            .expect("`span` SHALL be an array");
+        assert_eq!(span.len(), 2, "`span` SHALL be `[start, end]`");
+        assert!(
+            span[0].is_u64() && span[1].is_u64(),
+            "both span bounds SHALL be integers"
+        );
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // widget-projection: `merge_projected_widgets` unit tests
+    // -----------------------------------------------------------------------
+
+    /// `merge_projected_widgets` drops a projected widget whose name the model
+    /// already rendered, even when the payloads differ (the model wins by type).
+    #[test]
+    fn merge_drops_projected_widget_when_model_rendered_the_same_name() {
+        let model = vec![serde_json::json!({
+            "id": "m1",
+            "name": "Checklist",
+            "data": {"items": [{"id": "item-1", "label": "del modelo"}]},
+        })];
+        let projected = vec![Widget {
+            id: "p1".to_string(),
+            name: "Checklist".to_string(),
+            data: serde_json::json!({"items": [{"id": "item-1", "label": "proyectado"}]}),
+            span: Some([0, 5]),
+        }];
+
+        let (merged, serialised) = merge_projected_widgets(&model, projected);
+
+        assert_eq!(merged.len(), 1, "only the model's widget must remain");
+        assert_eq!(merged[0]["id"], "m1", "the model's widget must win by type");
+        assert!(
+            serialised.is_empty(),
+            "nothing must be kept for emission when the model already rendered that type"
+        );
+    }
+
+    /// Two projected widgets with the same `name` and `data` collapse into the
+    /// first one accepted, even when their spans differ.
+    #[test]
+    fn merge_collapses_identical_projected_widgets() {
+        let first = Widget {
+            id: "p1".to_string(),
+            name: "Checklist".to_string(),
+            data: serde_json::json!({"items": [{"id": "item-1", "label": "Comprar pan"}]}),
+            span: Some([0, 3]),
+        };
+        let second = Widget {
+            id: "p2".to_string(),
+            name: "Checklist".to_string(),
+            data: serde_json::json!({"items": [{"id": "item-1", "label": "Comprar pan"}]}),
+            span: Some([10, 13]),
+        };
+
+        let (merged, serialised) = merge_projected_widgets(&[], vec![first, second]);
+
+        assert_eq!(
+            merged.len(),
+            1,
+            "identical projections must collapse into one"
+        );
+        assert_eq!(serialised.len(), 1);
+        assert_eq!(
+            serialised[0].span,
+            Some([0, 3]),
+            "the first accepted projection must be the one kept"
+        );
+        assert_eq!(
+            merged[0]["span"],
+            serde_json::json!([0, 3]),
+            "the persisted widget must be the first projection"
+        );
+    }
+
+    /// With no model widget, the projection is persisted and kept for emission,
+    /// `span` included.
+    #[test]
+    fn merge_keeps_projection_when_no_model_widget() {
+        let widget = Widget {
+            id: "p1".to_string(),
+            name: "QuickForm".to_string(),
+            data: serde_json::json!({"fields": []}),
+            span: Some([0, 5]),
+        };
+        let expected = serde_json::to_value(&widget).unwrap();
+
+        let (merged, serialised) = merge_projected_widgets(&[], vec![widget]);
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(serialised.len(), 1);
+        assert_eq!(
+            merged[0], expected,
+            "the serialised widget must carry its span"
+        );
+    }
+
+    /// Empty inputs yield empty outputs.
+    #[test]
+    fn merge_with_empty_inputs_returns_empty() {
+        let (merged, serialised) = merge_projected_widgets(&[], vec![]);
+
+        assert!(merged.is_empty());
+        assert!(serialised.is_empty());
+    }
+
+    /// Dedup is by `name` + `data`: two projections sharing a name but with
+    /// different payloads both survive.
+    #[test]
+    fn merge_keeps_distinct_projected_widgets_of_the_same_name() {
+        let first = Widget {
+            id: "p1".to_string(),
+            name: "Checklist".to_string(),
+            data: serde_json::json!({"items": [{"id": "item-1", "label": "Comprar pan"}]}),
+            span: Some([0, 3]),
+        };
+        let second = Widget {
+            id: "p2".to_string(),
+            name: "Checklist".to_string(),
+            data: serde_json::json!({"items": [{"id": "item-2", "label": "Llamar a Ana"}]}),
+            span: Some([10, 13]),
+        };
+
+        let (merged, serialised) = merge_projected_widgets(&[], vec![first, second]);
+
+        assert_eq!(merged.len(), 2, "distinct payloads must not be collapsed");
+        assert_eq!(serialised.len(), 2);
     }
 
     /// Given an Orchestrator processing a long user message (8000 chars),
@@ -6230,10 +7021,11 @@ mod tests {
         );
     }
 
-    /// Encabezado de la guía de widgets: es el `prompt_heading` del catálogo.
-    const WIDGET_GUIDE_HEADING: &str = "# Instrucciones de Interfaz y Widgets Interactivos";
-    /// Frase que **solo** existe en la guía nueva (no en la vieja).
-    const WIDGET_GUIDE_SENTENCE: &str = "NUNCA digas que has mostrado un widget";
+    /// Frase que **solo** existe en el recordatorio de widgets: la guía ya no
+    /// prescribe, porque el servidor proyecta los widgets al cerrar el turno.
+    const WIDGET_REMINDER_SENTENCE: &str = "Los widgets los proyecta el servidor";
+    /// Encabezado de la guía extensa **derogada**: ya no debe viajar.
+    const RETIRED_WIDGET_GUIDE_HEADING: &str = "# Instrucciones de Interfaz y Widgets Interactivos";
 
     /// La guía de widgets viaja en un turno con el enrutador **apagado**: la
     /// skill es incondicionada (umbral cero), de modo que su fragmento debe
@@ -6249,12 +7041,12 @@ mod tests {
         let system = system_message(&request);
 
         assert!(
-            system.contains(WIDGET_GUIDE_HEADING),
-            "el mensaje de sistema debe llevar el encabezado de la guía de widgets: {system:?}"
+            system.contains(WIDGET_REMINDER_SENTENCE),
+            "el mensaje de sistema debe llevar el recordatorio de widgets: {system:?}"
         );
         assert!(
-            system.contains(WIDGET_GUIDE_SENTENCE),
-            "el mensaje de sistema debe llevar la frase de la guía nueva: {system:?}"
+            !system.contains(RETIRED_WIDGET_GUIDE_HEADING),
+            "la guía extensa ya no debe viajar; se recorta al recordatorio: {system:?}"
         );
     }
 
@@ -6275,12 +7067,12 @@ mod tests {
         let system = system_message(&request);
 
         assert!(
-            system.contains(WIDGET_GUIDE_HEADING),
-            "el mensaje de sistema debe llevar el encabezado de la guía de widgets: {system:?}"
+            system.contains(WIDGET_REMINDER_SENTENCE),
+            "el mensaje de sistema debe llevar el recordatorio de widgets: {system:?}"
         );
         assert!(
-            system.contains(WIDGET_GUIDE_SENTENCE),
-            "el mensaje de sistema debe llevar la frase de la guía nueva: {system:?}"
+            !system.contains(RETIRED_WIDGET_GUIDE_HEADING),
+            "la guía extensa ya no debe viajar; se recorta al recordatorio: {system:?}"
         );
     }
 
@@ -6300,12 +7092,12 @@ mod tests {
         let system = system_message(&request);
 
         assert!(
-            system.contains(WIDGET_GUIDE_HEADING),
-            "el mensaje de sistema debe llevar el encabezado de la guía de widgets: {system:?}"
+            system.contains(WIDGET_REMINDER_SENTENCE),
+            "el mensaje de sistema debe llevar el recordatorio de widgets: {system:?}"
         );
         assert!(
-            system.contains(WIDGET_GUIDE_SENTENCE),
-            "el mensaje de sistema debe llevar la frase de la guía nueva: {system:?}"
+            !system.contains(RETIRED_WIDGET_GUIDE_HEADING),
+            "la guía extensa ya no debe viajar; se recorta al recordatorio: {system:?}"
         );
     }
 

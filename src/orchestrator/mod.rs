@@ -5,3 +5,4 @@ pub mod guardrails;
 pub mod skill_router;
 pub mod skills;
 pub mod tool_limits;
+pub mod widget_projection;
