@@ -83,6 +83,29 @@ describe("useMainChat — widgets persistidos", () => {
     expect(result.current.widgetsByMessage["m2"]).toBeUndefined();
   });
 
+  it("conserva el `span` del widget al reconstruir desde el historial", async () => {
+    const history: Message[] = [
+      {
+        id: "m1",
+        role: "assistant",
+        content: "aquí tienes un sitio",
+        created_at: "2026-01-01T00:00:00Z",
+        widgets: [
+          { id: "w1", name: "LocationWidget", data: {}, span: [6, 13] },
+        ],
+      },
+    ];
+    chatInitMock.mockResolvedValue({ messages: history, settings: {} });
+
+    const result = await mountChat();
+
+    // El `span` (requisito 8.3) sobrevive a la reconstrucción del historial: sin
+    // él, un widget proyectado perdería su tramo al recargar.
+    expect(result.current.widgetsByMessage["m1"]).toEqual([
+      { id: "w1", name: "LocationWidget", data: {}, span: [6, 13] },
+    ]);
+  });
+
   it("no crea entradas para mensajes con widgets vacíos o nulos", async () => {
     const history: Message[] = [
       {

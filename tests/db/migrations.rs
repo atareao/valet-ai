@@ -1067,12 +1067,12 @@ async fn test_skill_router_tuning_moves_widget_guide_out_of_system_prompt() {
         "SKILL_WIDGETS_PROMPT must not be empty"
     );
     assert!(
-        fragment.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
-        "the fragment must carry the relocated guide header"
+        fragment.contains("render_widget"),
+        "the fragment must carry the relocated widget guidance"
     );
     assert!(
-        fragment.contains("render_widget"),
-        "the fragment must carry the relocated guide body"
+        !fragment.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "widget_projection must have retired the long guide header from the fragment"
     );
 }
 
@@ -1669,84 +1669,239 @@ async fn test_widgets_always_on_is_idempotent() {
     );
 }
 
-/// The default guide is prescriptive: it names the three widgets, points at
-/// `render_widget`, states the option rule, makes that rule trump the no-widget
-/// cases and scopes those cases tightly.
+// ── Widget projection (20261102000001_widget_projection.sql) ────────────────
+
+/// Reads the widget-projection migration SQL from disk.
+fn widget_projection_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261102000001_widget_projection.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// The brief reminder the widget fragment must become. This is the literal of
+/// the `orchestrator/skill-router` requirement, transcribed here so the tests
+/// assert on the approved text rather than on a paraphrase.
+const WIDGET_REMINDER: &str = "Los widgets los proyecta el servidor a partir de tu respuesta: \
+si presentas una lista de opciones, una lista de tareas o un lugar, aparecerá un widget. No lo \
+anuncies ni repitas la lista en prosa; escribe solo la prosa que lo acompaña. Usa `render_widget` \
+únicamente si necesitas un widget con datos más ricos de los que el servidor puede inferir.";
+
+/// The long guide exactly as `20261101000001` left it (block 2b seeds it, and
+/// block 2a writes the same bytes), extracted from that migration so the test
+/// never hard-codes the old text.
+fn pristine_extensive_widget_guide() -> String {
+    let sql = widgets_always_on_migration_sql();
+    let marker = "SELECT 'SKILL_WIDGETS_PROMPT', '";
+    let start = sql
+        .find(marker)
+        .expect("the always-on migration must seed SKILL_WIDGETS_PROMPT")
+        + marker.len();
+    let end = sql[start..]
+        .find("', datetime('now')")
+        .expect("the seeded guide must be a single-quoted literal")
+        + start;
+    sql[start..end].to_string()
+}
+
+/// Extracts the literal the migration writes into `SKILL_WIDGETS_PROMPT` from
+/// its `SET value = '...'` clause.
+fn widget_projection_set_literal() -> String {
+    let sql = widget_projection_migration_sql();
+    let marker = "SET value = '";
+    let start = sql
+        .find(marker)
+        .expect("the projection migration must SET SKILL_WIDGETS_PROMPT")
+        + marker.len();
+    let end = sql[start..]
+        .find("',\n    updated_at")
+        .expect("the replacement must be a single-quoted literal")
+        + start;
+    sql[start..end].to_string()
+}
+
+/// Extracts the byte-for-byte guard literal from the migration's
+/// `AND value = '...'` clause.
+fn widget_projection_guard_literal() -> String {
+    let sql = widget_projection_migration_sql();
+    let marker = "AND value = '";
+    let start = sql
+        .find(marker)
+        .expect("the projection migration must guard SKILL_WIDGETS_PROMPT")
+        + marker.len();
+    let end = sql[start..]
+        .find("';\n")
+        .or_else(|| sql[start..].rfind('\''))
+        .expect("the guard must be a single-quoted literal")
+        + start;
+    sql[start..end].to_string()
+}
+
+/// The migration transcribes the approved reminder, and its guard is the seed
+/// of `20261101000001` byte for byte — the two literals must not drift.
+#[test]
+fn test_widget_projection_transcribes_the_reminder_and_guard_exactly() {
+    assert_eq!(
+        widget_projection_set_literal(),
+        WIDGET_REMINDER,
+        "the migration must write the approved reminder verbatim"
+    );
+    assert_eq!(
+        widget_projection_guard_literal(),
+        pristine_extensive_widget_guide(),
+        "the guard must match the always-on seeded guide byte for byte"
+    );
+}
+
+/// The pristine long guide is replaced by the brief reminder.
 #[tokio::test]
-async fn test_default_widget_guide_is_prescriptive() {
+async fn test_widget_projection_replaces_the_pristine_guide_with_the_reminder() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(pristine_extensive_widget_guide())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_projection_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
+        WIDGET_REMINDER,
+        "the pristine guide must be replaced by the reminder"
+    );
+}
+
+/// An edited fragment is user content and is never overwritten.
+#[tokio::test]
+async fn test_widget_projection_keeps_an_edited_guide() {
+    let pool = setup().await;
+
+    let edited = "Mi guía personalizada";
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(edited)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_projection_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
+        edited,
+        "an edited fragment must not be overwritten"
+    );
+}
+
+/// Re-applying the migration leaves the reminder untouched (both over the
+/// pre-migration state and over an already-migrated one).
+#[tokio::test]
+async fn test_widget_projection_is_idempotent() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(pristine_extensive_widget_guide())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_projection_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let before = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+    assert_eq!(before, WIDGET_REMINDER, "first application must change it");
+
+    // A second application over the already-migrated state is a no-op.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
+        before,
+        "re-applying the migration must leave the same state"
+    );
+}
+
+/// A missing key is left absent: `20261101000001` owns the seeding, and this
+/// migration must not resurrect the fragment.
+#[tokio::test]
+async fn test_widget_projection_leaves_a_missing_key_absent() {
+    let pool = setup().await;
+
+    sqlx::query("DELETE FROM settings WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_projection_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value_opt(&pool, "SKILL_WIDGETS_PROMPT").await,
+        None,
+        "an absent fragment must stay absent"
+    );
+}
+
+/// The default fragment is now a brief reminder: it does NOT enumerate the
+/// three widgets with `data` examples, does NOT state the option rule as an
+/// instruction for the model, and it DOES point at `render_widget` as the
+/// explicit override while acknowledging that the server projects widgets.
+#[tokio::test]
+async fn test_default_widget_fragment_is_a_brief_reminder() {
     let pool = setup().await;
     let guide = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
 
+    // It no longer enumerates the three widgets as named `data` shapes.
     for widget in ["QuickForm", "Checklist", "LocationWidget"] {
         assert!(
-            guide.contains(widget),
-            "the guide must name the {widget} widget"
+            !guide.contains(widget),
+            "the reminder must NOT enumerate the {widget} widget"
         );
     }
+
+    // It no longer states the option rule as an instruction for the model.
+    assert!(
+        !guide.contains("dos o más opciones etiquetadas"),
+        "the reminder must NOT state the option rule"
+    );
+    assert!(
+        !guide.contains("La regla de las opciones"),
+        "the reminder must NOT carry the option-rule section"
+    );
+    // Nor the retired prescriptive scaffolding.
+    assert!(
+        !guide.contains("## Regla de oro"),
+        "the reminder must NOT carry the «Regla de oro» section"
+    );
+    assert!(
+        !guide.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
+        "the reminder must NOT carry the long guide's header"
+    );
+
+    // It DOES mention the deterministic projection and the explicit override.
+    assert!(
+        guide.contains("proyecta"),
+        "the reminder must acknowledge the server projects widgets"
+    );
     assert!(
         guide.contains("render_widget"),
-        "the guide must point at the render_widget tool"
-    );
-    assert!(
-        guide.contains("dos o más opciones etiquetadas"),
-        "the guide must state the option rule"
-    );
-    assert!(
-        guide.contains("La regla de las opciones tiene prioridad sobre todo lo demás"),
-        "the option rule must be declared to trump the no-widget cases"
-    );
-    assert!(
-        guide.contains(
-            "Es una explicación conceptual que no pide elegir nada ni lleva lista que marcar"
-        ),
-        "the first no-widget case must exclude options and lists"
-    );
-    assert!(
-        guide.contains("Es un dato único y directo: una fecha, un número, un nombre"),
-        "the second no-widget case must be a single direct datum"
-    );
-
-    // Point 1 — a widget only appears if `render_widget` runs in that same turn,
-    // and claiming otherwise is forbidden. Anchored on the exact literals of the
-    // new guide (`design.md` → «La guía nueva (texto exacto)»).
-    assert!(
-        guide.contains("## Regla de oro"),
-        "point 1: the guide must carry the «Regla de oro» section"
-    );
-    assert!(
-        guide.contains(
-            "Un widget **solo** aparece si ejecutas `render_widget` en esa misma respuesta"
-        ),
-        "point 1: the guide must state a widget only appears when the tool runs"
-    );
-    assert!(
-        guide
-            .contains("NUNCA digas que has mostrado un widget, un formulario, una lista o un mapa"),
-        "point 1: the guide must forbid claiming a widget was shown without running the tool"
-    );
-
-    // Point 6 — the widget-response processing rule is preserved. Exact literals
-    // from the «Después de un widget» section.
-    assert!(
-        guide.contains("[widget:Checklist#w3] submit"),
-        "point 6: the guide must show the widget submission message shape"
-    );
-    assert!(
-        guide.contains("Procesa esa respuesta de inmediato y confirma el resultado en texto"),
-        "point 6: the guide must keep processing the widget response immediately"
-    );
-
-    // Negative of point 4 — the guide must NOT reintroduce the generic prose
-    // authorization the retired guide carried (`Responde únicamente con texto
-    // plano`, under `## Reglas de Invocación`). Reintroducing it is precisely the
-    // regression point 4 forbids: it could amparar a list of options in prose.
-    assert!(
-        !guide.contains("Responde únicamente con texto plano"),
-        "point 4: the guide must NOT authorize answering in plain prose \
-         (old-guide regression)"
-    );
-    assert!(
-        !guide.contains("## Reglas de Invocación"),
-        "point 4: the retired «Reglas de Invocación» heading must not come back"
+        "the reminder must point at render_widget as the explicit override"
     );
 }

@@ -54,9 +54,14 @@ describe("useSSE — evento widget", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(onWidget).toHaveBeenCalledWith("w1", "QuickForm", {
-      ciudad: "Madrid",
-    });
+    expect(onWidget).toHaveBeenCalledWith(
+      "w1",
+      "QuickForm",
+      {
+        ciudad: "Madrid",
+      },
+      undefined,
+    );
   });
 
   it("no interrumpe el stream: sigue invocando onChunk y onDone tras el widget", async () => {
@@ -81,7 +86,7 @@ describe("useSSE — evento widget", () => {
       await result.current.connect("hola", { onWidget, onChunk, onDone });
     });
 
-    expect(onWidget).toHaveBeenCalledWith("w2", "Checklist", {});
+    expect(onWidget).toHaveBeenCalledWith("w2", "Checklist", {}, undefined);
     expect(onChunk).toHaveBeenCalledWith("hola");
     expect(onDone).toHaveBeenCalled();
   });
@@ -172,6 +177,99 @@ describe("useSSE — evento error con texto parcial", () => {
       "Stream read error: boom",
       undefined,
       undefined,
+    );
+  });
+});
+
+describe("useSSE — span del widget y content del done (widget-projection)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("pasa el span opcional del evento widget a onWidget", async () => {
+    const onWidget = vi.fn();
+    const event = {
+      type: "widget",
+      id: "w1",
+      name: "Checklist",
+      data: { items: [] },
+      span: [0, 5],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(streamResponse([`data: ${JSON.stringify(event)}\n`])),
+    );
+
+    const { result } = renderHook(() => useSSE());
+
+    await act(async () => {
+      await result.current.connect("hola", { onWidget });
+    });
+
+    expect(onWidget).toHaveBeenCalledWith("w1", "Checklist", { items: [] }, [
+      0, 5,
+    ]);
+  });
+
+  it("sin span en el evento, el cuarto argumento de onWidget queda indefinido", async () => {
+    const onWidget = vi.fn();
+    const event = {
+      type: "widget",
+      id: "w2",
+      name: "QuickForm",
+      data: {},
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(streamResponse([`data: ${JSON.stringify(event)}\n`])),
+    );
+
+    const { result } = renderHook(() => useSSE());
+
+    await act(async () => {
+      await result.current.connect("hola", { onWidget });
+    });
+
+    expect(onWidget).toHaveBeenCalledWith(
+      "w2",
+      "QuickForm",
+      {},
+      undefined,
+    );
+  });
+
+  it("pasa el content íntegro del evento done a onDone", async () => {
+    const onDone = vi.fn();
+    const event = {
+      type: "done",
+      message_id: "m1",
+      content: "texto íntegro y autoritativo",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(streamResponse([`data: ${JSON.stringify(event)}\n`])),
+    );
+
+    const { result } = renderHook(() => useSSE());
+
+    await act(async () => {
+      await result.current.connect("hola", { onDone });
+    });
+
+    expect(onDone).toHaveBeenCalledWith(
+      "m1",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "texto íntegro y autoritativo",
     );
   });
 });

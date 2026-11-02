@@ -7,7 +7,7 @@ interface SseCallbacks {
   onChunk?: (c: string) => void;
   onDone?: (...args: unknown[]) => void;
   onError?: (m: string) => void;
-  onWidget?: (id: string, name: string, data: unknown) => void;
+  onWidget?: (id: string, name: string, data: unknown, span?: [number, number]) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,5 +178,115 @@ describe("useMainChat — widgets", () => {
     expect(userMessages[0].content).toBe(
       '[widget:QuickForm#abc] submit {"ciudad":"Madrid"}',
     );
+  });
+
+  it("conserva el span del evento widget y lo mueve al messageId en onDone", async () => {
+    const result = await mountChat();
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      sseCallbacks.onWidget?.(
+        "w1",
+        "Checklist",
+        { items: [] },
+        [0, 4],
+      );
+    });
+
+    expect(result.current.widgetsByMessage["streaming"]).toEqual([
+      { id: "w1", name: "Checklist", data: { items: [] }, span: [0, 4] },
+    ]);
+
+    await act(async () => {
+      sseCallbacks.onDone?.("msg-1");
+    });
+
+    // El widget conserva identidad y span al pasar al mensaje final.
+    expect(result.current.widgetsByMessage["msg-1"]).toEqual([
+      { id: "w1", name: "Checklist", data: { items: [] }, span: [0, 4] },
+    ]);
+  });
+
+  it("un widget sin span no añade la propiedad", async () => {
+    const result = await mountChat();
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      sseCallbacks.onWidget?.("w1", "QuickForm", { ciudad: "Madrid" });
+    });
+
+    expect(result.current.widgetsByMessage["streaming"]).toEqual([
+      { id: "w1", name: "QuickForm", data: { ciudad: "Madrid" } },
+    ]);
+  });
+
+  it("un done con content fija el texto autoritativo sin perder el widget", async () => {
+    const result = await mountChat();
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      sseCallbacks.onChunk?.("texto parcial acumulado");
+    });
+
+    await act(async () => {
+      sseCallbacks.onWidget?.(
+        "w1",
+        "Checklist",
+        { items: [] },
+        [0, 4],
+      );
+    });
+
+    await act(async () => {
+      // El evento `done` lleva el contenido íntegro y autoritativo como séptimo
+      // argumento (tras los seis de la firma previa).
+      sseCallbacks.onDone?.(
+        "msg-1",
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "texto íntegro autoritativo",
+      );
+    });
+
+    const assistant = result.current.messages.find(
+      (m) => m.role === "assistant",
+    );
+    expect(assistant?.content).toBe("texto íntegro autoritativo");
+    expect(result.current.widgetsByMessage["msg-1"]).toEqual([
+      { id: "w1", name: "Checklist", data: { items: [] }, span: [0, 4] },
+    ]);
+  });
+
+  it("un done sin content conserva el texto acumulado", async () => {
+    const result = await mountChat();
+
+    await act(async () => {
+      result.current.sendMessage("Hola");
+    });
+
+    await act(async () => {
+      sseCallbacks.onChunk?.("texto acumulado");
+    });
+
+    await act(async () => {
+      sseCallbacks.onDone?.("msg-1");
+    });
+
+    const assistant = result.current.messages.find(
+      (m) => m.role === "assistant",
+    );
+    expect(assistant?.content).toBe("texto acumulado");
   });
 });

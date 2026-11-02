@@ -289,7 +289,12 @@ export function useMainChat() {
               window.dispatchEvent(new CustomEvent("events-changed"));
             }
           },
-          onWidget: (id: string, name: string, data: unknown) => {
+          onWidget: (
+            id: string,
+            name: string,
+            data: unknown,
+            span?: [number, number],
+          ) => {
             if (!streamingRef.current) {
               console.warn(
                 "[useMainChat] Widget ignored (no active stream):",
@@ -299,7 +304,11 @@ export function useMainChat() {
               return;
             }
             console.log("[useMainChat] Widget received:", name, id);
-            const widget: WidgetInstance = { id, name, data };
+            // El `span` viaja solo si el evento lo trae (widgets proyectados por
+            // el servidor). Los del modelo no lo llevan: se pinta debajo.
+            const widget: WidgetInstance = span
+              ? { id, name, data, span }
+              : { id, name, data };
             setWidgetsByMessage((prev) => ({
               ...prev,
               streaming: [...(prev["streaming"] ?? []), widget],
@@ -321,12 +330,18 @@ export function useMainChat() {
             setPendingApproval((cur) =>
               cur && cur.requestId === requestId ? null : cur,
             ),
-          onDone: (messageId: string, userMessageId?: string, location?: string | null, tools_used?: string, user_location?: string, user_created_at?: string) => {
+          onDone: (messageId: string, userMessageId?: string, location?: string | null, tools_used?: string, user_location?: string, user_created_at?: string, doneContent?: string) => {
             console.log(
               "[useMainChat] Stream done. Total content length:",
               assistantContent.length,
             );
             const assistantId = messageId || "msg-" + Date.now();
+            // El evento `done` trae el texto **íntegro y autoritativo** que se
+            // persiste (change `widget-projection`): es la base contra la que
+            // están calculados los `span` de los widgets. Si llega, fija el
+            // contenido a ese valor; si no (server anterior), al acumulado. Los
+            // widgets ya asociados se conservan intactos con su identidad.
+            const finalContent = doneContent ?? assistantContent;
             // Move live widgets from the streaming placeholder to the final message
             setWidgetsByMessage((prev) => {
               const next = { ...prev };
@@ -366,7 +381,7 @@ export function useMainChat() {
               {
                 id: assistantId,
                 role: "assistant",
-                content: assistantContent,
+                content: finalContent,
                 location: location || null,
                 tools_used: tools_used || undefined,
                 created_at: new Date().toISOString(),
