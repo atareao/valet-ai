@@ -1,6 +1,6 @@
 # PLAN-014 — La proyección de widgets reconoce los formatos reales del modelo
 
-- **Estado:** borrador pendiente de aprobación del usuario
+- **Estado:** ✅ completado el 2026-11-03 (release v0.27.0 desplegado y verificado en producción).
 - **Fecha:** 2026-11-02
 - **Origen:** el cierre medido de `PLAN-013` / change `widget-projection`: la verificación desplegada (10.4) midió un falso negativo.
 - **Change de OpenSpec:** `openspec/changes/widget-projection-formats/`
@@ -65,5 +65,12 @@ delimita el bloque y que la UI muestra el widget en el sitio de la lista.
 ## 6. Relevo
 
 El estado del trabajo vive en los artefactos de OpenSpec (`proposal.md`, `design.md`, `tasks.md`, el
-delta de spec) y en el historial de git, no en la conversación. Este plan se cierra y se renombra a
-`plans/PLAN-014-COMPLETED.md` cuando el change se archive.
+delta de spec) y en el historial de git, no en la conversación. El change ya está archivado y este plan
+quedó como `plans/PLAN-014-COMPLETED.md`.
+
+## 7. Resultado
+
+- Change implementado, auditado (`@rust-reviewer`: APTO) y **desplegado como v0.27.0** (`ghcr.io/atareao/valet-ai:latest`, PR #291 a desarrollo y #292 a main).
+- Verificación end-to-end (10.4) el 2026-11-03 sobre la imagen v0.27.0 con copia de la BD de producción: un turno real cuya respuesta presenta una lista de opciones (con **negrita** en cada ítem y cerrada por una interrogativa) acabó con **1 widget proyectado** con `span` que delimita exactamente el bloque de la lista, contenido persistido íntegro y opciones sin los marcadores `**`.
+- Nota de honestidad: el disparo depende de que el modelo *presente* opciones (comportamiento no determinista); con un prompt que forzó una lista, la proyección disparó y persistió correctamente.
+- Se **archiva** el change y se sincroniza `development` con `main`.

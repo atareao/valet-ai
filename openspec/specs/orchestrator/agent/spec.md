@@ -816,14 +816,15 @@ El **disparador SHALL ser el texto**: si el texto final no presenta una forma re
 proyectarse ningún widget y `widgets` SHALL quedar como `null`, sin cambio alguno respecto al
 comportamiento previo. Las formas reconocibles SHALL ser, al menos:
 
-- **opciones**: una lista de opciones etiquetadas (`A)`, `A.`, `A:`, `1)`, `1.`, `Opción A`) o una lista
-  de alternativas en viñetas cerrada por una interrogativa del tipo «¿cuál…?»;
+- **opciones**: una lista de opciones etiquetadas (`A)`, `A.`, `A:`, `1)`, `1.`, `Opción A`); una lista de alternativas (en viñetas o numerada) cerrada por una interrogativa del tipo «¿cuál…?», aunque entre la lista y la interrogativa haya **líneas en blanco**; o una **tabla Markdown de alternativas** (primera columna con etiquetas consecutivas `A`, `B`, `C` / `1`, `2`, `3`, o cabecera que nombre opciones: `Opción`/`Opcion`/`Alternativa`/`Option`);
 - **lista de tareas**: una tabla Markdown cuya primera columna es un índice o una casilla, o una lista
   de viñetas con forma de tarea (cosas que marcar);
 - **lugar**: una latitud y una longitud.
   La forma «dirección» queda **fuera de la v1**: el `LocationWidget` del cliente exige coordenadas
   numéricas y, sin ellas, muestra un aviso en lugar del mapa, de modo que proyectar una dirección suelta
   sería un widget peor que la prosa. Geocodificar no es viable porque la proyección SHALL ser pura.
+
+Los **marcadores de énfasis Markdown** (`**…**`, `__…__`, `*…*`, `_…_`, `` `…` ``) SHALL ignorarse al extraer la etiqueta y el texto de cada opción o ítem, de modo que el widget muestre el texto interior. El `span` SHALL calcularse siempre sobre el texto **original**, sin verse afectado por ese ignorado.
 
 Los **datos** del widget SHALL tomarse del `data` de la herramienta del turno cuando esa herramienta
 haya producido la lista (por ejemplo `tasks::list_tasks`, `tasks::search_tasks`, `email_list_unread`,
@@ -889,6 +890,35 @@ tipo** SHALL omitirse: el widget del modelo gana, porque su payload es más rico
 **Then** el widget proyectado SHALL llevar un `span` con el tramo del texto que ocupa
 **And** el tramo SHALL corresponder exactamente al bloque que el proyector reconoció
 **And** SHALL NOT solaparse con el `span` de otro widget del mismo mensaje
+
+#### Scenario: Una lista de opciones separada de la interrogativa por líneas en blanco acaba en widget
+
+**Given** un turno cuyo texto final presenta una lista numerada o con viñetas de dos o más alternativas, seguida de una o más líneas en blanco y de una interrogativa del tipo «¿cuál…?» (por ejemplo «¿Cuál prefiere?»), y que **no** llamó a `render_widget`
+**When** el turno cierra
+**Then** el mensaje del asistente SHALL persistirse con `widgets` no vacío
+**And** el widget SHALL ser de opciones, con las alternativas del texto
+**And** el `span` SHALL delimitar únicamente el bloque de la lista, dejando fuera las líneas en blanco y la interrogativa
+
+#### Scenario: Los ítems con énfasis Markdown se muestran sin los marcadores
+
+**Given** un turno cuyo texto final presenta alternativas cuyo texto está envuelto en marcadores de énfasis Markdown (`**…**`, `*…*`, `_…_`, `` `…` ``)
+**When** el turno cierra
+**Then** las opciones del widget SHALL llevar el texto interior, sin los marcadores Markdown
+**And** el `span` SHALL seguir correspondiendo al tramo del texto original
+
+#### Scenario: Una tabla de opciones acaba en widget
+
+**Given** un turno cuyo texto final presenta una tabla Markdown cuyas filas son alternativas etiquetadas con etiquetas consecutivas (`A`, `B`, `C` / `1`, `2`, `3`) o cuya cabecera nombra opciones (`Opción`/`Alternativa`)
+**When** el turno cierra
+**Then** `widgets` SHALL contener un widget de opciones con las alternativas de la tabla
+**And** el `span` SHALL delimitar la tabla
+
+#### Scenario: Una tabla de tareas no se degrada a opciones
+
+**Given** un turno cuyo texto final presenta una tabla Markdown cuya primera columna es un índice o una casilla (forma de lista de tareas)
+**When** el turno cierra
+**Then** SHALL proyectarse un widget de lista de tareas
+**And** SHALL NOT proyectarse un widget de opciones para esa tabla
 
 ### Requirement: El contenido del mensaje del asistente SHALL persistirse íntegro y el widget SHALL declarar el tramo que ocupa
 
