@@ -45,12 +45,13 @@ que ya siguen los cuatro ecosistemas de arriba.
 
 1. **Módulo nuevo puro `src/orchestrator/widget_projection.rs`** (sin I/O, sin async), con tres
    funciones puras y testeables:
-   - `detect(text: &str) -> Option<Presentation>` — detección determinista sobre el texto final del
-     asistente. Reconoce `Options` (listas de opciones etiquetadas `A)`/`A.`/`A:`/`1)`/`1.`/`Opción A`,
-     o alternativas en viñetas cerradas por una interrogativa del tipo «¿cuál…?»), `Checklist`
-     (tablas Markdown cuya primera columna es un índice o una casilla, o listas de viñetas con forma
-     de tarea) y `Location` (una latitud/longitud o una dirección). Todo lo demás es `None`.
-   - `synthesize(presentation, tool_results) -> Vec<Widget>` — construye el payload del widget. **Orden
+   - `detect(text: &str) -> Vec<Presentation>` — detección determinista sobre el texto final del
+     asistente; devuelve **todos** los bloques reconocidos, en orden de aparición. Reconoce `Options`
+     (listas de opciones etiquetadas `A)`/`A.`/`A:`/`1)`/`1.`/`Opción A`, o alternativas en viñetas
+     cerradas por una interrogativa del tipo «¿cuál…?»), `Checklist` (tablas Markdown cuya primera
+     columna es un índice o una casilla, o listas de viñetas con forma de tarea) y `Location` (una
+     latitud/longitud). Todo lo demás no se detecta.
+   - `synthesize(presentations, tool_results) -> Vec<Widget>` — construye el payload del widget. **Orden
      de preferencia para los datos:** si el turno llamó a una herramienta que produjo la lista
      (`tasks::list_tasks`, `tasks::search_tasks`, `email_list_unread`, `rss_list_unread`,
      `notifications::list_unread`), los ítems salen del `data` de esa herramienta (precisión, sin

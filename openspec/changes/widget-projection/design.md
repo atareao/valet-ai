@@ -53,11 +53,11 @@ Ver `proposal.md` → *Why* para la motivación y la evidencia. Lo que condicion
 
 ## Decisions
 
-### D1 — Alcance v1: `Options` + `Checklist` (+ `Location` si sale barato)
+### D1 — Alcance v1: `Options` + `Checklist` + `Location` (solo coordenadas)
 
-**Decisión (recomendada)**: la v1 del proyector detecta y proyecta **`Options`** (→ `QuickForm` con un
-campo `select`) y **`Checklist`** (→ `Checklist`). `Location` (→ `LocationWidget`) se incluye **solo si
-el coste de detección es bajo**: una latitud/longitud con formato claro, o una dirección reconocible.
+**Decidida durante el RED (2026-11-02)**. La v1 del proyector detecta y proyecta **`Options`** (→
+`QuickForm` con un campo `select`), **`Checklist`** (→ `Checklist`) y **`Location`** (→ `LocationWidget`)
+**solo con coordenadas**: un par latitud/longitud etiquetado (`lat`/`lon`) o con cuatro o más decimales.
 
 **Por qué**:
 
@@ -65,9 +65,16 @@ el coste de detección es bajo**: una latitud/longitud con formato claro, o una 
   el que hay que cerrar sí o sí.
 - `Checklist` es el caso que **el experimento de aislamiento sí logró** con la guía nueva (el único
   `Checklist` con tareas reales). Es la segunda forma de lista y comparte el parser de viñetas.
-- `Location` es el widget con **más falsos positivos potenciales** (un número con decimales no es una
-  coordenada) y su `data` exige `latitude`/`longitude` reales. Meterlo a la fuerza en la v1
-  comprometería la regla «ante la duda, no proyectar». Si sale barato, entra; si no, se aparca.
+- `Location`, **solo por coordenadas**: el detector de un par lat/long con formato claro es barato y
+  preciso (un decimal suelto no es una coordenada), y el `data` del widget admite `latitude`/`longitude`
+  reales.
+
+**La forma «dirección» queda aplazada** (no entra en la v1). El `LocationWidget` del cliente exige
+`latitude`/`longitude` numéricas y, sin ellas, pinta un aviso («Ubicación sin coordenadas válidas») en
+lugar del mapa: proyectar una dirección suelta sería un widget **peor que la prosa**, justo el falso
+positivo que D3 prohíbe. Geocodificar tampoco es viable —sería I/O, y el proyector SHALL ser puro—. Queda
+como work posterior: o el `LocationWidget` aprende a resolver una dirección sin coordenadas, o la
+proyección se enriquece con las coordenadas que traiga la herramienta del turno.
 
 **Alternativa descartada — solo `Options`**: dejar `Checklist` fuera simplifica la v1, pero deja fuera
 justo el único caso que la guía nueva logró y que el patrón de producción muestra («que más tenemos que
@@ -140,6 +147,24 @@ turno llamó a una herramienta que **produjo esa lista** (`tasks::list_tasks`, `
   dentro de una frase).
 - El falso negativo es benigno: se queda la prosa de siempre. El sistema nunca empeora por no
   proyectar.
+
+**Guardas del detector (RED→REFACTOR, 2026-11-02)**
+
+La auditoría del módulo estrechó el detector con guardas adicionales, todas en la misma dirección (D3:
+el falso positivo es peor que el falso negativo):
+
+- Se **ignoran los bloques de código** (fences ```` ``` ````/`~~~`): una alternativa o una tabla dentro
+  de un ejemplo no es una presentación del asistente.
+- La interrogativa que cierra una lista de alternativas es **solo la familia «¿cuál…?»**; una pregunta
+  de sí/no (`¿Quieres que continúe?`) no convierte un procedimiento en unas opciones.
+- Las **etiquetas de letra deben ser consecutivas** (`A`/`B`/`C`…): eso descarta numerales romanos
+  (`I.`, `V.`) y abreviaturas repetidas (`U.S.`, `U.S.`).
+- Una tabla con **columna índice solo es `Checklist` si su segunda columna se llama de tarea**
+  (`Tarea`, `Acción`, `Task`, `Todo`…, sin distinguir mayúsculas ni tildes); si no, un ranking o un
+  índice de contenidos no se proyectan.
+- Los **datos de herramienta solo alimentan `Checklist`**: una herramienta de tareas no produce la
+  lista de opciones, que sale siempre del texto.
+- El **tramo empieza en el primer byte no blanco** del bloque y no incluye el `\r` de un final CRLF.
 
 ### D4 — Qué hacer con `widgets-always-on` (34/38 tareas, batería 6.3 fallida)
 
@@ -360,7 +385,6 @@ de una lista de bloques y el resto del diseño no se mueve.
 
 ## Open Questions
 
-- **D1 — ¿entra `Location` en la v1?** Se decide durante el RED: si el detector de coordenadas/dirección
-  sale con pocos falsos positivos y un test por variante, entra; si no, se aparca a una v2 sin cambiar
-  el resto del diseño. No cambia los requisitos de `agent` (el delta ya enumera `Location` como forma
-  reconocible), solo cuántas formas cubre la v1.
+- **D1 — cerrada el 2026-11-02, durante el RED** (ver D1): `Location` entra en la v1 **solo con
+  coordenadas** y la forma «dirección» queda aplazada. El delta de `agent` enumera ya solo la
+  latitud/longitud como forma de «lugar».

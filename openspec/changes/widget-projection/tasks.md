@@ -25,78 +25,79 @@
 
 ## 2. RED — el proyector puro: cada detección
 
-- [ ] 2.1 Crear `src/orchestrator/widget_projection.rs` con las firmas públicas (`detect`, `synthesize`, los
+- [x] 2.1 Crear `src/orchestrator/widget_projection.rs` con las firmas públicas (`detect`, `synthesize`, los
       tipos `Presentation` y `Widget`, y el tipo del tramo) y **sin** implementación, de modo que el módulo
       compile con los tests en rojo. `Presentation` SHALL llevar el tramo del bloque reconocido y `Widget`
       SHALL llevar el `span` en su payload.
-- [ ] 2.2 Tests de `detect` para `Options`: opciones etiquetadas `A)`/`B)`, `A.`/`B.`, `A:`/`B:`, `1)`/`2)`,
+- [x] 2.2 Tests de `detect` para `Options`: opciones etiquetadas `A)`/`B)`, `A.`/`B.`, `A:`/`B:`, `1)`/`2)`,
       `1.`/`2.` y `Opción A`/`Opción B`; y alternativas en viñetas cerradas por una interrogativa del tipo
       «¿cuál…?». Cada test SHALL comprobar además que el tramo delimita **exactamente** el bloque.
       Verificación: `cargo test widget_projection` — cada test falla por el `todo!`/`None` inicial.
-- [ ] 2.3 Tests de `detect` para `Checklist`: tabla Markdown cuya primera columna es un índice (`| # | Tarea |`),
+- [x] 2.3 Tests de `detect` para `Checklist`: tabla Markdown cuya primera columna es un índice (`| # | Tarea |`),
       tabla con casilla (`| [ ] | … |`), y lista de viñetas con forma de tarea. Igual: comprobar el tramo.
-- [ ] 2.4 Tests de `detect` para `Location`: una latitud/longitud y una dirección. (Si D1 aparca `Location` por
-      coste, estos tests se marcan `#[ignore]` con la nota correspondiente.)
-- [ ] 2.5 Test del contrato del tramo: es un rango **semiabierto** de **bytes UTF-8** —`content[start..end]`
+- [x] 2.4 Tests de `detect` para `Location` **solo con coordenadas** (D1, decidida en el RED: la forma
+      «dirección» queda aplazada). Se cubren el par etiquetado y el par con decimales; una dirección
+      suelta se cubre como **NO detección**.
+- [x] 2.5 Test del contrato del tramo: es un rango **semiabierto** de **bytes UTF-8** —`content[start..end]`
       corta sin pánico y devuelve el bloque—, la frase de encabezado y la de cierre quedan fuera, y dos bloques
       del mismo texto no producen tramos solapados.
-- [ ] 2.6 Ejecutar `cargo test widget_projection` y confirmar que **solo** fallan los tests nuevos.
+- [x] 2.6 Ejecutar `cargo test widget_projection` y confirmar que **solo** fallan los tests nuevos.
 
 ## 3. RED — el proyector puro: cada NO detección (el riesgo real)
 
-- [ ] 3.1 Tests de NO detección: un dato único («Son las 18:30»), una explicación sin listas, una
+- [x] 3.1 Tests de NO detección: un dato único («Son las 18:30»), una explicación sin listas, una
       tabla Markdown sin columna índice/casilla, un número suelto con decimales (que **no** es una
       coordenada), una enumeración dentro de una frase («puedes elegir entre A y B, pero…» sin lista) y
       una lista numerada que es un **procedimiento** y no opciones («1. Abre el fichero; 2. Edita…»).
-- [ ] 3.2 Test de que un texto vacío o solo espacios devuelve `None`.
-- [ ] 3.3 Ejecutar `cargo test widget_projection` y confirmar el rojo de los casos nuevos.
+- [x] 3.2 Test de que un texto vacío o solo espacios no detecta ningún bloque (`Vec` vacío).
+- [x] 3.3 Ejecutar `cargo test widget_projection` y confirmar el rojo de los casos nuevos.
 - [ ] 3.4 **Criterio de aceptación del RED**: cada NO detección es un test que falla por la
       implementación ausente, no por un test mal escrito. Revisar que ninguno pase por accidente.
 
 ## 4. GREEN — el proyector puro
 
-- [ ] 4.1 Implementar `detect` con los parsers mínimos que hacen pasar 2.2–2.6 y 3.1–3.2. **Ante la duda,
+- [x] 4.1 Implementar `detect` con los parsers mínimos que hacen pasar 2.2–2.6 y 3.1–3.2. **Ante la duda,
       `None`**: el falso positivo es peor que el falso negativo (D3).
-- [ ] 4.2 Implementar `synthesize`: `Options` → `QuickForm` con un campo `select`; `Checklist` → `Checklist`
+- [x] 4.2 Implementar `synthesize`: `Options` → `QuickForm` con un campo `select`; `Checklist` → `Checklist`
       con `items: [{id, label}]`; `Location` → `LocationWidget` con `latitude`/`longitude` (`address`
       opcional). Generar un `id` único por widget y **propagar el tramo** del bloque reconocido. Preferencia de
       datos: `data` de la herramienta del turno si la produjo; si no, el texto (D3).
-- [ ] 4.3 Verificar el contrato del tramo (2.5) en verde: delimita el bloque, respeta los límites de carácter de
+- [x] 4.3 Verificar el contrato del tramo (2.5) en verde: delimita el bloque, respeta los límites de carácter de
       UTF-8 y no se solapa con el de otro widget del mismo mensaje.
-- [ ] 4.4 Tests de `synthesize` con datos de herramienta y sin ella, y de que el widget resultante lleva el
+- [x] 4.4 Tests de `synthesize` con datos de herramienta y sin ella, y de que el widget resultante lleva el
       tramo del bloque del que salió.
-- [ ] 4.5 `cargo test widget_projection` en verde y `cargo check` sin errores.
+- [x] 4.5 `cargo test widget_projection` en verde y `cargo check` sin errores.
 
 ## 5. RED — la integración en el turno
 
-- [ ] 5.1 Test end-to-end en `src/orchestrator/agent.rs`: un turno cuyo texto final presenta una lista
+- [x] 5.1 Test end-to-end en `src/orchestrator/agent.rs`: un turno cuyo texto final presenta una lista
       de opciones y que **no** llama a `render_widget` acaba con `messages.widgets` no vacío y con un
       evento SSE `widget` **antes** del `done`.
-- [ ] 5.2 Test de fusión: un turno que ya invocó `render_widget` (Checklist) y cuyo texto presenta una
+- [x] 5.2 Test de fusión: un turno que ya invocó `render_widget` (Checklist) y cuyo texto presenta una
       lista de tareas acaba con **un solo** widget de ese tipo (el del modelo) — la proyección se omite
       para ese tipo.
-- [ ] 5.3 Test de que un turno sin forma reconocible deja `widgets` como `null` y no emite `widget`.
-- [ ] 5.4 Test del contenido íntegro y del tramo: el `content_buffer` persistido **contiene** el bloque
+- [x] 5.3 Test de que un turno sin forma reconocible deja `widgets` como `null` y no emite `widget`.
+- [x] 5.4 Test del contenido íntegro y del tramo: el `content_buffer` persistido **contiene** el bloque
       proyectado tal y como lo escribió el modelo; el widget persistido lleva un `span` que delimita
       exactamente ese bloque; y el evento `done` lleva un campo `content` igual al contenido persistido.
-- [ ] 5.5 Test de serialización: el `done` con el campo `content` (extiende `test_done_serialization`) y el
+- [x] 5.5 Test de serialización: el `done` con el campo `content` (extiende `test_done_serialization`) y el
       evento `widget` con el campo `span` **opcional** (ausente cuando el widget viene del modelo).
-- [ ] 5.6 Ejecutar `cargo test` y confirmar el rojo de los tests nuevos (el resto en verde).
+- [x] 5.6 Ejecutar `cargo test` y confirmar el rojo de los tests nuevos (el resto en verde).
 
 ## 6. GREEN — la integración en el turno
 
-- [ ] 6.1 En `src/orchestrator/agent.rs`, en el cierre del turno y **antes** de
+- [x] 6.1 En `src/orchestrator/agent.rs`, en el cierre del turno y **antes** de
       `MessagesRepo::set_widgets` / `publish_persisted_message`: `detect` sobre `content_buffer` →
       `synthesize` → fusionar con `rendered_widgets` deduplicando por nombre + payload (el del modelo gana)
       → persistir el texto **íntegro, sin recortar** → `set_widgets` con la lista fusionada, con el `span` de
       cada widget proyectado.
-- [ ] 6.2 Emitir el/los evento(s) SSE `widget` de la proyección **antes** del evento `done`, con el `span` del
+- [x] 6.2 Emitir el/los evento(s) SSE `widget` de la proyección **antes** del evento `done`, con el `span` del
       bloque que cada uno ocupa. El `id` de cada widget proyectado SHALL generarse una sola vez y reutilizarse
       para el evento y para la fila persistida (misma identidad `[widget:Name#id]`).
-- [ ] 6.3 Añadir el campo `content` a `SSEEvent::Done` (el texto íntegro persistido) y el campo **opcional**
+- [x] 6.3 Añadir el campo `content` a `SSEEvent::Done` (el texto íntegro persistido) y el campo **opcional**
       `span` a `SSEEvent::Widget` (`#[serde(skip_serializing_if = "Option::is_none")]`), sin cambiar la
       serialización de los eventos de widgets del modelo.
-- [ ] 6.4 `cargo test` y `cargo check` sin errores.
+- [x] 6.4 `cargo test` y `cargo check` sin errores.
 
 ## 7. La migración y el recordatorio
 

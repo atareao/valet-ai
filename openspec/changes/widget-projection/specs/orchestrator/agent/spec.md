@@ -5,8 +5,8 @@
 Al cerrar el turno, y **antes** de persistir el mensaje del asistente, el orquestador SHALL ejecutar una
 proyección determinista sobre el texto final del asistente (`content_buffer`): detectar una forma de
 presentación **y el tramo que ocupa**, sintetizar el widget correspondiente con ese tramo, fusionarlo
-con los widgets ya renderizados por el modelo (`render_widget`) deduplicando por **nombre de widget y
-payload**, persistir el resultado con
+con los widgets ya renderizados por el modelo (`render_widget`), de modo que un widget del modelo gane a
+la proyección de su mismo tipo y no se persista ningún duplicado, persistir el resultado con
 `MessagesRepo::set_widgets` y emitir el/los evento(s) SSE `widget` **antes** del evento `done` del
 turno.
 
@@ -23,7 +23,10 @@ comportamiento previo. Las formas reconocibles SHALL ser, al menos:
   de alternativas en viñetas cerrada por una interrogativa del tipo «¿cuál…?»;
 - **lista de tareas**: una tabla Markdown cuya primera columna es un índice o una casilla, o una lista
   de viñetas con forma de tarea (cosas que marcar);
-- **lugar**: una latitud y una longitud, o una dirección.
+- **lugar**: una latitud y una longitud.
+  La forma «dirección» queda **fuera de la v1**: el `LocationWidget` del cliente exige coordenadas
+  numéricas y, sin ellas, muestra un aviso en lugar del mapa, de modo que proyectar una dirección suelta
+  sería un widget peor que la prosa. Geocodificar no es viable porque la proyección SHALL ser pura.
 
 Los **datos** del widget SHALL tomarse del `data` de la herramienta del turno cuando esa herramienta
 haya producido la lista (por ejemplo `tasks::list_tasks`, `tasks::search_tasks`, `email_list_unread`,

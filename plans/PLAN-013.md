@@ -102,18 +102,19 @@ servidor *proyecta*. El modelo aporta contenido; el servidor decide presentació
 
 ### 4.1 Módulo nuevo puro `src/orchestrator/widget_projection.rs` (sin I/O, sin async)
 
-- `detect(text: &str) -> Option<Presentation>` — detección determinista sobre el texto final del
-  asistente:
+- `detect(text: &str) -> Vec<Presentation>` — detección determinista sobre el texto final del
+  asistente; devuelve **todos** los bloques reconocidos, en orden de aparición y con tramos que no
+  se solapan:
   - `Presentation::Options { title, options: Vec<String>, span }`: listas de opciones etiquetadas (`A)`,
     `A.`, `A:`, `1)`, `1.`, `Opción A`), o alternativas en viñetas cerradas por una interrogativa del tipo
     «¿cuál…?».
   - `Presentation::Checklist { title, items, span }`: tablas Markdown cuya primera columna es un índice o
     una casilla, o listas de viñetas con forma de tarea (cosas que marcar).
-  - `Presentation::Location { .., span }`: una latitud/longitud o una dirección.
-  - `None`: todo lo demás.
+  - `Presentation::Location { .., span }`: una latitud/longitud (la forma «dirección» queda aplazada, D1).
+  - **Lista vacía**: todo lo demás (ningún bloque reconocido).
   - **`span` es el tramo que el bloque ocupa**: rango semiabierto `[start, end)` en bytes UTF-8 sobre el
     texto.
-- `synthesize(presentation, tool_results) -> Vec<Widget>` — construye el payload (`{ id, name, data, span }`).
+- `synthesize(presentations, tool_results) -> Vec<Widget>` — construye el payload (`{ id, name, data, span }`).
   **Orden de preferencia para los datos:** si el turno llamó a una herramienta que produjo la lista
   (`tasks::list_tasks`, `tasks::search_tasks`, `email_list_unread`, `rss_list_unread`,
   `notifications::list_unread`), los ítems salen del `data` de esa herramienta (precisión, sin parsear
