@@ -260,6 +260,8 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-009-COMPLETED.md` | Integración de ZenNotes: el agente lee y escribe notas del vault vía API (change `zennotes-notes`) | ✅ Completado |
 | `plans/PLAN-010-PENDING.md` | Diagnóstico del TTL de sesión (8 h fijo) y opciones A–D | ⏸️ Pending |
 | `plans/PLAN-011-COMPLETED.md` | Integrar OpenTodo y retirar el TODO local: fase 1 (`opentodo-integration`, PR #265) y fase 2 (`remove-local-tasks`, PR #271/#272), desplegadas como v0.23.0 y v0.24.0 | ✅ Completado |
+| `plans/PLAN-013-COMPLETED.md` | Proyección determinista de widgets: el servidor proyecta, el modelo aporta contenido (change `widget-projection`; PR #289/#290) | ✅ Completado |
+| `plans/PLAN-014-COMPLETED.md` | La proyección reconoce los formatos reales del modelo (change `widget-projection-formats`; PR #291/#292, v0.27.0) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

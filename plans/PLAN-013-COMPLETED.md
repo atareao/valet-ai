@@ -1,6 +1,6 @@
 # PLAN-013 — El servidor proyecta los widgets, el modelo solo aporta contenido
 
-**Estado:** **aprobado** por el usuario el 2026-11-02; el TDD arranca en la sesión siguiente.
+**Estado:** ✅ completado el 2026-11-03 (change archivado; verificación 10.4/10.5 trasladada a PLAN-014 / widget-projection-formats).
 **Fecha:** 2026-11-02
 **Origen:** el cierre fallido de `PLAN-012` (`widgets-always-on`): su batería de aceptación (tarea 6.3)
 dio **0/3 widgets** con la guía nueva y la herramienta expuesta en el 100 % de los turnos.
