@@ -4565,7 +4565,7 @@ mod tests {
             .expect("the persisted widgets must be a JSON array");
         assert!(!widgets.is_empty(), "at least one widget must be persisted");
         assert_eq!(widgets[0]["name"], "QuickForm");
-        assert_eq!(widgets[0]["data"]["fields"][0]["type"], "select");
+        assert_eq!(widgets[0]["data"]["fields"][0]["type"], "radio");
         assert_eq!(
             widgets[0]["data"]["fields"][0]["options"],
             serde_json::json!(["Rojo", "Azul"])
@@ -7021,9 +7021,9 @@ mod tests {
         );
     }
 
-    /// Frase que **solo** existe en el recordatorio de widgets: la guía ya no
-    /// prescribe, porque el servidor proyecta los widgets al cerrar el turno.
-    const WIDGET_REMINDER_SENTENCE: &str = "Los widgets los proyecta el servidor";
+    /// Frase que **solo** existe en la guía de widgets vigente: declara la forma
+    /// de tabla que el servidor proyecta (`| Opción | … |`), en vez de prohibirla.
+    const WIDGET_GUIDE_SHAPE_SENTENCE: &str = "tabla Markdown con cabecera de opciones";
     /// Encabezado de la guía extensa **derogada**: ya no debe viajar.
     const RETIRED_WIDGET_GUIDE_HEADING: &str = "# Instrucciones de Interfaz y Widgets Interactivos";
 
@@ -7041,12 +7041,12 @@ mod tests {
         let system = system_message(&request);
 
         assert!(
-            system.contains(WIDGET_REMINDER_SENTENCE),
-            "el mensaje de sistema debe llevar el recordatorio de widgets: {system:?}"
+            system.contains(WIDGET_GUIDE_SHAPE_SENTENCE),
+            "el mensaje de sistema debe llevar la guía que declara la forma de tabla: {system:?}"
         );
         assert!(
             !system.contains(RETIRED_WIDGET_GUIDE_HEADING),
-            "la guía extensa ya no debe viajar; se recorta al recordatorio: {system:?}"
+            "la guía extensa derogada no debe viajar; la guía vigente declara la forma: {system:?}"
         );
     }
 
@@ -7067,12 +7067,12 @@ mod tests {
         let system = system_message(&request);
 
         assert!(
-            system.contains(WIDGET_REMINDER_SENTENCE),
-            "el mensaje de sistema debe llevar el recordatorio de widgets: {system:?}"
+            system.contains(WIDGET_GUIDE_SHAPE_SENTENCE),
+            "el mensaje de sistema debe llevar la guía que declara la forma de tabla: {system:?}"
         );
         assert!(
             !system.contains(RETIRED_WIDGET_GUIDE_HEADING),
-            "la guía extensa ya no debe viajar; se recorta al recordatorio: {system:?}"
+            "la guía extensa derogada no debe viajar; la guía vigente declara la forma: {system:?}"
         );
     }
 
@@ -7092,12 +7092,12 @@ mod tests {
         let system = system_message(&request);
 
         assert!(
-            system.contains(WIDGET_REMINDER_SENTENCE),
-            "el mensaje de sistema debe llevar el recordatorio de widgets: {system:?}"
+            system.contains(WIDGET_GUIDE_SHAPE_SENTENCE),
+            "el mensaje de sistema debe llevar la guía que declara la forma de tabla: {system:?}"
         );
         assert!(
             !system.contains(RETIRED_WIDGET_GUIDE_HEADING),
-            "la guía extensa ya no debe viajar; se recorta al recordatorio: {system:?}"
+            "la guía extensa derogada no debe viajar; la guía vigente declara la forma: {system:?}"
         );
     }
 

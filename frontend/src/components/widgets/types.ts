@@ -37,7 +37,7 @@ export interface WidgetInstance {
 export interface QuickFormField {
   name: string;
   label: string;
-  type: "text" | "textarea" | "number" | "select" | "checkbox" | "slider";
+  type: "text" | "textarea" | "number" | "select" | "checkbox" | "slider" | "radio";
   options?: string[];
   min?: number;
   max?: number;
