@@ -91,6 +91,34 @@ es la única vía.
   comprobar en la BD (copia con `sudo python3` + `backup`, nunca `immutable=1`) que las opciones llevan el texto
   de su fila, que el `span` delimita la tabla y que **ninguna** tabla de vueltas o splits proyecta widget.
 
+### 7.1 Evidencia end-to-end (2026-11-04, v0.27.1 en `co1`)
+
+Release: PR #295 mergeado en `development`, rama `release/v0.27.1` (bump `vampus upgrade --patch`) con PR #296
+mergeado en `main`, tag `v0.27.1` creado y pusheado. El workflow `image.yml` publicó `v0.27.1`, `0.27` y `latest`
+en GHCR. En `co1` se hizo copia de la BD (`/tmp/valet_pre_v0271.db`) y el stack se recreó
+(`docker compose pull && up -d --force-recreate`): contenedor `healthy` y `/api/health` interno
+`{"db":"connected","status":"ok","version":"0.27.1"}`.
+
+Migración: `20261104000001` aplicada. `SKILL_WIDGETS_PROMPT` queda en 929 car., sha256
+`2b4e3d6ab13fa1efd45f1161cd889f58c8992290899aa65ebc49087cddee943e`, contiene «tabla Markdown con cabecera de
+opciones» y `| Opción |`, conserva `render_widget` y ya no contiene la cabecera derogada
+`# Instrucciones de Interfaz y Widgets Interactivos`. La migración entró entera en la BD real.
+
+Turnos reales repetidos contra la instancia desplegada (sesión de operador acuñada con el `JWT_SECRET` del stack,
+`POST /api/chat/stream` con body `{"content": "..."}`), leídos después en la copia de la BD:
+
+| Turno | Mensaje | Widget | `span` | Opciones proyectadas |
+|:---|:---|:---|:---|:---|
+| «noticias?» | `3f6c5f81-17bb-470a-b507-a8b901432fe5` | `QuickForm` `radio` | `[1075, 1314]` | `A — Leer openGym (id 1411) — el más suyo` · `B — Leer el de los puertos Docker (id 1409)` · `C — Leer los siete y le hago un resumen` · `D — Marcar todo como leído` |
+| «que mas tenemos?» | `0cfd3719-1b1c-41c1-95bc-f636a706eebc` | `QuickForm` `radio` | `[863, 1146]` | `A — Repasar el timeline de hoy — qué ha quedado registrado` · `B — Ver los pendientes de OpenTodo` · `C — Revisar la sesión de cuestas de esta mañana en Strava` · `D — Leer alguno de los siete (dígame cuál)` |
+
+Las opciones llevan el **texto de su fila completa** y el `span` recae sobre la tabla de opciones. La tabla de RSS
+de siete filas (`| id | Titular | Feed |`, ids numéricos 1409–1415) que acompaña a ambos turnos **no proyectó
+widget**: la rama heurística exige etiquetas alfabéticas, así que una columna de números no se convierte en
+formulario. Contraste con el histórico: el widget del 2-nov (`64ec3ea2-9049-43db-96f6-0231cf962b70`) sigue
+persistido con `type: select` y opciones `A`/`B`/`C`/`D` sin su texto, porque el histórico no se migra (decisión
+del usuario).
+
 ## 8. Riesgos
 
 | Riesgo | Mitigación |
@@ -103,10 +131,11 @@ es la única vía.
 
 ## 9. Estado y siguientes pasos
 
-1. `[OPENSPEC - DRAFT]` Change `widget-options-contract`: proposal, design (con el texto exacto de la guía),
-   cuatro deltas y `tasks.md`. **Aprobación explícita del usuario antes de escribir tests o código.**
-2. RED → GREEN → REFACTOR con TDD, delegando la escritura y auditando con `@rust-reviewer` (la auditoría debe
-   comprobar que los tests nuevos fijan el texto de las opciones).
-3. Hotfix `v0.27.1`, imagen a GHCR y redespliegue del stack en `co1` por Dockge.
-4. Verificación end-to-end de la sección 7 y `openspec archive widget-options-contract`.
-5. Fase 2 del apartado 6 en paralelo, con su decisión documentada.
+1. ✅ `[OPENSPEC - ARCHIVE]` Change `widget-options-contract` aprobado, implementado con TDD (RED → GREEN →
+   REFACTOR) y archivado en `openspec/specs/`.
+2. ✅ Auditorías con `@rust-reviewer` (aprueba) y `@react-reviewer` (detectó y se corrigió la accesibilidad del
+   `radio`): la etiqueta del grupo va con `role="radiogroup"` + `aria-labelledby` y `name` único.
+3. ✅ Hotfix `v0.27.1`, imagen a GHCR y redespliegue del stack en `co1` por Dockge.
+4. ✅ Verificación end-to-end de la sección 7 (evidencia en §7.1).
+5. ⏳ **Fase 2 del apartado 6 pendiente** (no bloqueante): medidor desechable en
+   `/tmp/opencode/valet-widget-eval` con las cuatro variantes y su decisión documentada aquí.
