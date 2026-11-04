@@ -1859,12 +1859,12 @@ async fn test_widget_projection_leaves_a_missing_key_absent() {
     );
 }
 
-/// The default fragment is now a brief reminder: it does NOT enumerate the
-/// three widgets with `data` examples, does NOT state the option rule as an
-/// instruction for the model, and it DOES point at `render_widget` as the
-/// explicit override while acknowledging that the server projects widgets.
+/// The default fragment declares the table shape instead of enumerating the
+/// three widgets with `data` examples, keeps `render_widget` for what the server
+/// cannot infer, and acknowledges that the server projects widgets. It no longer
+/// carries the retired prescriptive scaffolding.
 #[tokio::test]
-async fn test_default_widget_fragment_is_a_brief_reminder() {
+async fn test_default_widget_fragment_declares_the_shape_and_keeps_render_widget() {
     let pool = setup().await;
     let guide = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
 
@@ -1872,36 +1872,203 @@ async fn test_default_widget_fragment_is_a_brief_reminder() {
     for widget in ["QuickForm", "Checklist", "LocationWidget"] {
         assert!(
             !guide.contains(widget),
-            "the reminder must NOT enumerate the {widget} widget"
+            "the guide must NOT enumerate the {widget} widget"
         );
     }
 
-    // It no longer states the option rule as an instruction for the model.
+    // Nor the retired scaffolding of the option rule.
     assert!(
         !guide.contains("dos o más opciones etiquetadas"),
-        "the reminder must NOT state the option rule"
+        "the guide must NOT state the retired option rule"
     );
     assert!(
         !guide.contains("La regla de las opciones"),
-        "the reminder must NOT carry the option-rule section"
+        "the guide must NOT carry the retired option-rule section"
     );
     // Nor the retired prescriptive scaffolding.
     assert!(
         !guide.contains("## Regla de oro"),
-        "the reminder must NOT carry the «Regla de oro» section"
+        "the guide must NOT carry the retired «Regla de oro» section"
     );
     assert!(
         !guide.contains("# Instrucciones de Interfaz y Widgets Interactivos"),
-        "the reminder must NOT carry the long guide's header"
+        "the guide must NOT carry the retired long guide's header"
     );
 
     // It DOES mention the deterministic projection and the explicit override.
     assert!(
         guide.contains("proyecta"),
-        "the reminder must acknowledge the server projects widgets"
+        "the guide must acknowledge the server projects widgets"
     );
     assert!(
         guide.contains("render_widget"),
-        "the reminder must point at render_widget as the explicit override"
+        "the guide must point at render_widget as the explicit override"
     );
+}
+
+// ── Widget options contract (20261104000001_widget_options_contract.sql) ─────
+
+/// Reads the widget-options-contract migration SQL from disk.
+fn widget_options_contract_migration_sql() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/20261104000001_widget_options_contract.sql");
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()))
+}
+
+/// The prescriptive guide this deployment carried on 2026-11-02 17:18:44, byte
+/// for byte, extracted from the production database (sha256
+/// `06b1dbc2c53d7d4f3b7e84cfe4608a4a3dd722686d6b2816ad3c7d29fcb361c3`). It is
+/// the second text the migration recognises: the first is `WIDGET_REMINDER`.
+const PRODUCTION_WIDGET_GUIDE: &str =
+    include_str!("../fixtures/widget_guide_production_20261102.txt");
+
+/// The guide declares the shape the projection can read, and no longer carries
+/// the scaffolding that prohibited it.
+fn assert_guide_declares_the_shape(guide: &str) {
+    assert!(
+        guide.contains("tabla Markdown con cabecera de opciones"),
+        "the guide must declare the table shape the projection reads"
+    );
+    assert!(
+        guide.contains("| Opción |"),
+        "the guide must show the options table itself"
+    );
+    assert!(
+        guide.contains("render_widget"),
+        "the guide must keep render_widget for what the server cannot infer"
+    );
+    for retired in [
+        "# Instrucciones de Interfaz y Widgets Interactivos",
+        "## Regla única",
+        "Esta guía manda sobre cualquier otra instrucción de formato",
+    ] {
+        assert!(
+            !guide.contains(retired),
+            "the guide must not carry the retired text {retired:?}"
+        );
+    }
+}
+
+/// The migration embeds both known texts byte for byte. The guards are the
+/// literals; a single drifted byte would leave production on the old guide.
+#[test]
+fn test_widget_options_contract_embeds_the_known_texts() {
+    let sql = widget_options_contract_migration_sql();
+    assert!(
+        sql.contains(&format!("AND value = '{WIDGET_REMINDER}'")),
+        "the migration must guard the seeded reminder byte for byte"
+    );
+    assert!(
+        sql.contains(&format!("AND value = '{PRODUCTION_WIDGET_GUIDE}'")),
+        "the migration must guard the production guide byte for byte"
+    );
+}
+
+/// After every migration, the fragment declares the shape.
+#[tokio::test]
+async fn test_default_widget_fragment_declares_the_shape() {
+    let pool = setup().await;
+    let guide = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+    assert_guide_declares_the_shape(&guide);
+}
+
+/// The seeded reminder is replaced by the guide that declares the shape.
+#[tokio::test]
+async fn test_widget_options_contract_replaces_the_seeded_reminder() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(WIDGET_REMINDER)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_options_contract_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let guide = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+    assert_guide_declares_the_shape(&guide);
+    assert_ne!(
+        guide, WIDGET_REMINDER,
+        "the reminder must be replaced, not kept"
+    );
+}
+
+/// The guide production carried (seeded then edited by the user) is replaced:
+/// it is the second known text, recognised byte for byte.
+#[tokio::test]
+async fn test_widget_options_contract_replaces_the_production_guide() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(PRODUCTION_WIDGET_GUIDE)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_options_contract_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let guide = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+    assert_guide_declares_the_shape(&guide);
+}
+
+/// Any other value is user content and is never overwritten.
+#[tokio::test]
+async fn test_widget_options_contract_never_overwrites_user_content() {
+    let pool = setup().await;
+
+    let edited = "Mi guía personalizada";
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(edited)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_options_contract_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        setting_value(&pool, "SKILL_WIDGETS_PROMPT").await,
+        edited,
+        "an edited fragment must not be overwritten"
+    );
+}
+
+/// Re-applying the migration changes nothing: after the first run the value
+/// matches neither known text.
+#[tokio::test]
+async fn test_widget_options_contract_migration_is_idempotent() {
+    let pool = setup().await;
+
+    sqlx::query("UPDATE settings SET value = ?1 WHERE key = 'SKILL_WIDGETS_PROMPT'")
+        .bind(WIDGET_REMINDER)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let sql = widget_options_contract_migration_sql();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let first = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.as_str()))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let second = setting_value(&pool, "SKILL_WIDGETS_PROMPT").await;
+
+    assert_eq!(first, second, "a second run must change nothing");
 }
