@@ -183,4 +183,51 @@ describe("QuickFormWidget", () => {
 
     expect(screen.getByText("Elige una opción")).toBeInTheDocument();
   });
+
+  it("muestra las alternativas de un campo `radio` a la vista y envía el texto elegido", async () => {
+    const user = userEvent.setup();
+    const onAction = vi.fn();
+    const data: QuickFormData = {
+      fields: [
+        {
+          name: "choice",
+          label: "Elige una opción",
+          type: "radio",
+          options: [
+            "A — Cambiar el evento de hoy a «Rodaje suave»",
+            "B — Dejarlo como «Andar suave 60 min»",
+          ],
+        },
+      ],
+      submit_label: "Enviar",
+    };
+
+    render(<QuickFormWidget data={data} onAction={onAction} />);
+
+    // Las alternativas SHALL verse a la vista, sin desplegar ningún control.
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("A — Cambiar el evento de hoy a «Rodaje suave»"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("B — Dejarlo como «Andar suave 60 min»"),
+    ).toBeInTheDocument();
+    // La etiqueta del campo SHALL actuar de pregunta.
+    expect(screen.getByText("Elige una opción")).toBeInTheDocument();
+    // El grupo SHALL exponerse como radiogroup y llevar la etiqueta del campo
+    // como nombre accesible (la etiqueta apunta al grupo, no a un div mudo).
+    expect(screen.getAllByRole("radiogroup")).toHaveLength(1);
+    expect(
+      screen.getByRole("radiogroup", { name: "Elige una opción" }),
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("radio", { name: "B — Dejarlo como «Andar suave 60 min»" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Enviar" }));
+
+    expect(onAction).toHaveBeenCalledWith("submit", {
+      choice: "B — Dejarlo como «Andar suave 60 min»",
+    });
+  });
 });

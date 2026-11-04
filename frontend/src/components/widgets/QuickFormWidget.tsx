@@ -1,8 +1,25 @@
-import { useId, useMemo, useState, type FC } from "react";
-import { Button, Checkbox, Input, InputNumber, Select, Slider, Typography } from "antd";
+import {
+  useId,
+  useMemo,
+  useState,
+  type AriaRole,
+  type ComponentProps,
+  type FC,
+} from "react";
+import { Button, Checkbox, Input, InputNumber, Radio, Select, Slider, Typography } from "antd";
 import type { QuickFormData, QuickFormField, WidgetProps } from "./types";
 
 const { Text } = Typography;
+
+/**
+ * `Radio.Group` no declara `role` en sus props (solo lo reenvía al `<div>` del
+ * grupo mediante `pickAttrs`), así que se afirma el tipo para poder exponerlo
+ * como `radiogroup`. Sin este `role`, el grupo no es un elemento etiquetable y
+ * ni `getByRole("radiogroup")` ni los lectores de pantalla lo reconocen.
+ */
+const RADIOGROUP_A11Y = { role: "radiogroup" } as Partial<
+  ComponentProps<typeof Radio.Group>
+> & { role: AriaRole };
 
 function initialValue(field: QuickFormField): unknown {
   if (field.type === "checkbox") return false;
@@ -79,6 +96,20 @@ export const QuickFormWidget: FC<WidgetProps<QuickFormData>> = ({
             onChange={(next) => setValue(field.name, next)}
           />
         );
+      case "radio":
+        return (
+          <Radio.Group
+            id={id}
+            name={`${baseId}-${field.name}`}
+            {...RADIOGROUP_A11Y}
+            aria-labelledby={`${id}-label`}
+            value={typeof value === "string" ? value : undefined}
+            options={(Array.isArray(field.options) ? field.options : []).map(
+              (option) => ({ label: option, value: option }),
+            )}
+            onChange={(e) => setValue(field.name, e.target.value)}
+          />
+        );
       case "checkbox":
         return (
           <Checkbox
@@ -133,9 +164,13 @@ export const QuickFormWidget: FC<WidgetProps<QuickFormData>> = ({
           if (field.type === "checkbox") {
             return <div key={field.name}>{renderField(field)}</div>;
           }
+          const isRadio = field.type === "radio";
           return (
             <div key={field.name}>
-              <label htmlFor={id} style={{ display: "block", marginBottom: 4 }}>
+              <label
+                {...(isRadio ? { id: `${id}-label` } : { htmlFor: id })}
+                style={{ display: "block", marginBottom: 4 }}
+              >
                 {field.label}
               </label>
               {renderField(field)}
