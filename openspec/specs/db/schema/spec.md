@@ -418,6 +418,12 @@ guía y sus reglas vigentes SHALL ser los fijados por «El fragmento de la skill
 recordatorio breve que remita a render_widget» (`orchestrator/skill-router`), que es el requisito que
 gobierna su redacción.
 
+La migración `20261104000001_widget_options_contract.sql` SHALL sustituir `settings.SKILL_WIDGETS_PROMPT` por el
+texto que declara la forma que el servidor sabe leer (ver `orchestrator/skill-router`) **solo si el valor
+actual es byte a byte uno de los dos textos conocidos** —el recordatorio sembrado por `20261102000001` o la
+guía imperativa de 3.812 caracteres— y SHALL NOT pisar ningún otro valor. La migración SHALL ser idempotente:
+reejecutarla no SHALL cambiar nada.
+
 #### Scenario: Instalación nueva recibe la sección de widgets
 
 **Given** una base de datos vacía
@@ -447,6 +453,17 @@ gobierna su redacción.
 **Then** el prompt base no contiene la cabecera `# Instrucciones de Interfaz y Widgets Interactivos`
 **And** `settings.SKILL_WIDGETS_PROMPT` contiene el recordatorio breve (no la guía extensa) y por tanto ya no lleva esa cabecera
 **And** el recordatorio es el fijado por «El fragmento de la skill widgets SHALL ser un recordatorio breve que remita a render_widget»
+
+#### Scenario: La guía reconocida se sustituye por el contrato de forma
+**Given** una base de datos cuyo `SKILL_WIDGETS_PROMPT` es el recordatorio sembrado por `20261102000001`
+**When** se ejecuta la migración `20261104000001_widget_options_contract.sql`
+**Then** `SKILL_WIDGETS_PROMPT` pasa a pedir la tabla con cabecera de opciones
+**And** reejecutar la migración no cambia nada
+
+#### Scenario: Un valor del usuario no se toca
+**Given** una base de datos cuyo `SKILL_WIDGETS_PROMPT` ha sido editado a un texto distinto de los dos conocidos
+**When** se ejecuta la migración `20261104000001_widget_options_contract.sql`
+**Then** el valor del usuario queda intacto
 
 ### Requirement: Migration SHALL add a kind column to llm_requests
 

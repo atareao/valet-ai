@@ -1217,7 +1217,7 @@ las acciones.
 `QuickFormWidget` SHALL renderizar, a partir de `QuickFormData`, un título y una lista de campos
 (antd), y un botón de envío. Al enviar, SHALL llamar a `onAction("submit", valores)` con un objeto que
 mapee el `name` de cada campo a su valor. Los tipos de campo admitidos son `text`, `textarea`, `number`,
-`select`, `checkbox` y `slider`; un campo con un `type` desconocido SHALL tratarse como texto.
+`select`, `checkbox`, `slider` y `radio`; un campo con un `type` desconocido SHALL tratarse como texto.
 
 #### Scenario: Envío de un campo de texto
 
@@ -1242,6 +1242,17 @@ mapee el `name` de cada campo a su valor. Los tipos de campo admitidos son `text
 **Given** un `QuickFormData` con un campo `notas` de tipo `textarea`
 **When** el usuario escribe un texto y envía el formulario
 **Then** se invoca `onAction("submit", { "notas": "<texto>" })`
+
+#### Scenario: Un campo de tipo `radio` muestra las alternativas a la vista
+**Given** un `QuickFormData` con un campo `choice` de tipo `radio` y tres alternativas con su texto completo
+**When** el widget se renderiza
+**Then** las tres alternativas SHALL verse en la pantalla, sin desplegar ningún control
+**And** la etiqueta del campo SHALL mostrarse como la pregunta
+
+#### Scenario: Envío de un campo de tipo `radio`
+**Given** un `QuickFormData` con un campo `choice` de tipo `radio`
+**When** el usuario elige la segunda alternativa y envía el formulario
+**Then** se invoca `onAction("submit", { "choice": "<texto de la segunda alternativa>" })`
 
 ### Requirement: El widget `Checklist` SHALL permitir marcar ítems y enviar la selección
 
