@@ -1,9 +1,10 @@
 # PLAN-015 — El formulario de opciones deja de ser un jeroglífico
 
-- **Estado:** 🟡 decisiones tomadas por el usuario el 2026-11-04; change `widget-options-contract` en redacción.
+- **Estado:** ✅ Completado, archivado y desplegado como **v0.27.1** el 2026-11-04.
 - **Fecha:** 2026-11-04
 - **Origen:** queja del usuario (2026-11-04): «El último cambio que hicimos para el uso de los formularios ha sido un fracaso. No se corresponden los formularios con el texto... Antes cuando lo sacaba funcionaba perfecto. El problema es que no lo sacaba siempre que era necesario. Ahora lo saca, y no tiene sentido».
-- **Change de OpenSpec:** `openspec/changes/widget-options-contract/`.
+- **Change de OpenSpec:** `widget-options-contract`, archivado en
+  `openspec/changes/archive/2026-11-04-widget-options-contract/`.
 - **Release:** hotfix `v0.27.1` desde `main`.
 
 ## 1. Objetivo
@@ -137,5 +138,7 @@ del usuario).
    `radio`): la etiqueta del grupo va con `role="radiogroup"` + `aria-labelledby` y `name` único.
 3. ✅ Hotfix `v0.27.1`, imagen a GHCR y redespliegue del stack en `co1` por Dockge.
 4. ✅ Verificación end-to-end de la sección 7 (evidencia en §7.1).
-5. ⏳ **Fase 2 del apartado 6 pendiente** (no bloqueante): medidor desechable en
-   `/tmp/opencode/valet-widget-eval` con las cuatro variantes y su decisión documentada aquí.
+5. ⏳ **Fase 2 del apartado 6 sin ejecutar** (no bloqueaba el cierre): el medidor desechable
+   (`/tmp/opencode/valet-widget-eval`) con las cuatro variantes quedó sin montar. Recuperar la autoría del widget
+   para el modelo exigiría un change **nuevo** (`openspec new change …`) que tomara esa medición como punto de
+   partida; entre tanto, la proyección fiel es la vía vigente.
