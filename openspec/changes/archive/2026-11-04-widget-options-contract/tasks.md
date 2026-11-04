@@ -50,10 +50,10 @@
 
 ## 7. Release y verificación en producción
 
-- [ ] 7.1 Hotfix `v0.27.1` (patch) desde `main`, con imagen a GHCR.
-- [ ] 7.2 Redesplegar el stack en `co1` por Dockge.
-- [ ] 7.3 Repetir los turnos que fallaron («noticias?», «que mas tenemos?») y comprobar en la BD: opciones con el texto de su fila, `span` sobre la tabla, ningún widget sobre tablas de vueltas o splits.
-- [ ] 7.4 `openspec archive widget-options-contract` con la verificación aprobada.
+- [x] 7.1 Hotfix `v0.27.1` (patch) desde `main`, con imagen a GHCR.
+- [x] 7.2 Redesplegar el stack en `co1` por Dockge.
+- [x] 7.3 Repetir los turnos que fallaron («noticias?», «que mas tenemos?») y comprobar en la BD: opciones con el texto de su fila, `span` sobre la tabla, ningún widget sobre tablas de vueltas o splits. (verificado el 2026-11-04 con v0.27.1: evidencia en `plans/PLAN-015.md` §7.1)
+- [x] 7.4 `openspec archive widget-options-contract` con la verificación aprobada.
 
 ## 8. Fase 2 — medición del disparador del modelo (en paralelo, no bloquea el release)
 
