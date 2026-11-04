@@ -185,6 +185,19 @@ fn option_text(cell: &str) -> Option<String> {
     }
 }
 
+/// Text of a whole table row as an option: every cell with content, in table order,
+/// joined by ` — `, with the emphasis stripped and the label included when present.
+/// `None` when the row carries no text at all. The projection never keeps a single cell
+/// of the row, because the widget *replaces* the table: whatever is left out disappears.
+fn row_option_text(cells: &[&str]) -> Option<String> {
+    let parts: Vec<String> = cells.iter().filter_map(|cell| option_text(cell)).collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" — "))
+    }
+}
+
 /// Whether a line opens or closes a Markdown code fence (```` ``` ```` or `~~~`).
 fn is_fence(line: &str) -> bool {
     let trimmed = line.trim_start();
@@ -409,9 +422,10 @@ fn option_label(cell: &str) -> Option<char> {
     }
 }
 
-/// Recognises a Markdown table of alternatives as options: either the first column
-/// carries consecutive labels (`A`, `B`, `C` / `1`, `2`, `3`) with the alternative
-/// text in the second column, or the header names an options column.
+/// Recognises a Markdown table of alternatives as options: either the header names an
+/// options column, or the first column carries consecutive **alphabetical** labels
+/// (`A`, `B`, `C`). A column of consecutive numbers is an index (laps, splits,
+/// enumerations), not a choice, so the headerless heuristic requires letters.
 /// Runs after `table_block`, so a checklist table is captured first and never degrades.
 fn options_table_block(lines: &[Line<'_>], index: usize) -> Option<(Presentation, usize)> {
     // Only a table that *starts* here counts; a run beginning in the middle of a table
@@ -439,21 +453,24 @@ fn options_table_block(lines: &[Line<'_>], index: usize) -> Option<(Presentation
     }
 
     let mut options = Vec::new();
-    if let Some(column) = header.iter().position(|cell| is_option_header(cell)) {
-        // The header names the options column: read every non-separator row from it.
+    if header.iter().any(|cell| is_option_header(cell)) {
+        // The header names the options column: every non-separator row contributes its
+        // whole row (label included), never just the named cell, because the widget
+        // replaces the table on screen.
         for row in &rows[1..] {
             let cells = table_cells(row.text).unwrap_or_default();
             if is_separator_row(&cells) {
                 continue;
             }
-            if let Some(text) = cells.get(column).copied().and_then(option_text) {
+            if let Some(text) = row_option_text(&cells) {
                 options.push(text);
             }
         }
     } else {
-        // Otherwise the first column must carry consecutive labels (`A`, `B`, `C`…)
-        // and the alternative text lives in the second column. Data rows drop the
-        // separator rows and, when present, the header row sitting directly above the
+        // Otherwise the first column must carry consecutive **alphabetical** labels
+        // (`A`, `B`, `C`…): a column of consecutive numbers is an index (laps, splits,
+        // enumerations), not a choice. Data rows drop the separator rows, the rows with
+        // no text at all, and — when present — the header row sitting directly above the
         // separator. A first row that is itself a labelled alternative (as in
         // `| A | Cine |` over `|---|`) is data, not a header.
         let has_header = rows.len() > 1
@@ -466,16 +483,21 @@ fn options_table_block(lines: &[Line<'_>], index: usize) -> Option<(Presentation
             .iter()
             .filter_map(|row| table_cells(row.text))
             .filter(|cells| !is_separator_row(cells))
+            .filter(|cells| row_option_text(cells).is_some())
             .collect();
         let labels: Vec<char> = data
             .iter()
             .filter_map(|cells| cells.first().and_then(|cell| option_label(cell)))
             .collect();
-        if data.len() < 2 || labels.len() != data.len() || !consecutive_ascending(&labels) {
+        if data.len() < 2
+            || labels.len() != data.len()
+            || !consecutive_ascending(&labels)
+            || !labels.iter().all(char::is_ascii_alphabetic)
+        {
             return None;
         }
         for cells in &data {
-            if let Some(text) = cells.get(1).copied().and_then(option_text) {
+            if let Some(text) = row_option_text(cells) {
                 options.push(text);
             }
         }
@@ -837,7 +859,7 @@ const LABEL_KEYS: &[&str] = &[
     "title", "subject", "label", "name", "summary", "message", "text",
 ];
 
-/// Default label of the `select` field when the presentation carries no title.
+/// Default label of the options field (emitted as `radio`) when the presentation carries no title.
 const DEFAULT_OPTION_LABEL: &str = "Elige una opción";
 
 /// Build widgets from the detected presentations. `tool_results` carries the
@@ -871,7 +893,7 @@ fn widget_for(presentation: &Presentation, tool_results: &[(String, Value)]) -> 
                 json!([{
                     "name": "choice",
                     "label": label,
-                    "type": "select",
+                    "type": "radio",
                     "options": options,
                 }]),
             );
@@ -1614,7 +1636,7 @@ mod tests {
                 "fields": [{
                     "name": "choice",
                     "label": "Elige una opción",
-                    "type": "select",
+                    "type": "radio",
                     "options": ["Rojo", "Azul"],
                 }],
                 "submit_label": "Enviar",
@@ -1639,7 +1661,7 @@ mod tests {
                 "fields": [{
                     "name": "choice",
                     "label": "¿Qué bebes?",
-                    "type": "select",
+                    "type": "radio",
                     "options": ["Café", "Té"],
                 }],
                 "submit_label": "Enviar",
@@ -1939,7 +1961,7 @@ mod tests {
     }
 
     /// 2.5 — Una tabla Markdown de alternativas con etiquetas consecutivas
-    /// (`A`, `B`, `C`) SHALL detectarse como `Options`.
+    /// (`A`, `B`, `C`) SHALL detectarse como `Options`, con la fila completa en cada opción.
     #[test]
     fn test_2_5_tabla_opciones_etiquetas_consecutivas() {
         let text = "| A | Cine |\n|---|---|\n| B | Cena |\n| C | Gimnasio |";
@@ -1954,11 +1976,11 @@ mod tests {
                 assert_eq!(
                     options,
                     &[
-                        "Cine".to_string(),
-                        "Cena".to_string(),
-                        "Gimnasio".to_string()
+                        "A — Cine".to_string(),
+                        "B — Cena".to_string(),
+                        "C — Gimnasio".to_string()
                     ],
-                    "las alternativas SHALL salir de la tabla"
+                    "cada alternativa SHALL ser el texto completo de su fila"
                 );
                 assert_eq!(
                     &text[span[0]..span[1]],
@@ -1971,7 +1993,7 @@ mod tests {
     }
 
     /// 2.6 — Una tabla Markdown cuya cabecera nombra opciones SHALL detectarse
-    /// como `Options`.
+    /// como `Options`, y cada opción SHALL llevar la fila completa (etiqueta incluida).
     #[test]
     fn test_2_6_tabla_opciones_cabecera() {
         let text = "| Opción | Descripción |\n|---|---|\n| Cine | Una hora y media |\n| Cena | Tranquila |\n| Gimnasio | Ducha larga |";
@@ -1984,9 +2006,13 @@ mod tests {
         match &detected[0] {
             Presentation::Options { options, .. } => {
                 assert_eq!(
-                    options.len(),
-                    3,
-                    "SHALL haber tres alternativas: {options:?}"
+                    options,
+                    &[
+                        "Cine — Una hora y media".to_string(),
+                        "Cena — Tranquila".to_string(),
+                        "Gimnasio — Ducha larga".to_string()
+                    ],
+                    "las alternativas SHALL llevar el texto de su fila completa, no una sola celda"
                 );
             }
             other => panic!("se esperaba Options, se obtuvo {other:?}"),
@@ -2051,11 +2077,11 @@ mod tests {
         );
     }
 
-    /// 2.10 — Las filas separadoras intercaladas se ignoran y una celda de texto vacía no
-    /// aporta opción; el detector NO SHALL entrar en pánico y devuelve las opciones con texto.
+    /// 2.10 — El separador intermedio se descarta y una fila sin ninguna celda con texto
+    /// no SHALL aportar opción.
     #[test]
     fn test_2_10_tabla_opciones_con_celdas_vacias_y_separador() {
-        let text = "| A | Cine |\n|---|---|\n| B | Cena |\n|---|---|\n| C |  |";
+        let text = "| A | Cine |\n|---|---|\n| B | Cena |\n|---|---|\n|  |  |\n| C | Ducha |";
         let detected = detect(text);
         assert_eq!(
             detected.len(),
@@ -2066,8 +2092,12 @@ mod tests {
             Presentation::Options { options, .. } => {
                 assert_eq!(
                     options,
-                    &["Cine".to_string(), "Cena".to_string()],
-                    "las celdas vacías no SHALL aportar opción"
+                    &[
+                        "A — Cine".to_string(),
+                        "B — Cena".to_string(),
+                        "C — Ducha".to_string()
+                    ],
+                    "la fila sin texto no SHALL aportar opción y el separador SHALL descartarse"
                 );
             }
             other => panic!("se esperaba Options, se obtuvo {other:?}"),
@@ -2090,7 +2120,7 @@ mod tests {
     }
 
     /// 2.12 — Una tabla con cabecera genérica (`Letra`/`Texto`) cuyo cuerpo lleva etiquetas
-    /// consecutivas SHALL detectarse como `Options`, descartando la fila de cabecera.
+    /// consecutivas SHALL detectarse como `Options`, descartando la cabecera y uniendo la fila.
     #[test]
     fn test_2_12_tabla_opciones_con_cabecera_generica() {
         let text = "| Letra | Texto |\n|---|---|\n| A | Cine |\n| B | Cena |";
@@ -2104,11 +2134,166 @@ mod tests {
             Presentation::Options { options, .. } => {
                 assert_eq!(
                     options,
-                    &["Cine".to_string(), "Cena".to_string()],
-                    "las alternativas SHALL salir del cuerpo, sin la cabecera"
+                    &["A — Cine".to_string(), "B — Cena".to_string()],
+                    "las alternativas SHALL salir del cuerpo, sin la cabecera, con la fila completa"
                 );
             }
             other => panic!("se esperaba Options, se obtuvo {other:?}"),
         }
+    }
+
+    /// 3.1 — Fixture literal de producción (turno del 2026-11-03T06:21): la columna `Opción`
+    /// lleva la etiqueta y el texto de la alternativa está a la derecha. La opción SHALL ser
+    /// la fila completa, no una celda suelta.
+    #[test]
+    fn test_3_1_tabla_real_opcion_es_la_fila_completa() {
+        let text = "| Opción | Acción |\n|---|---|\n| **A** | **Cambiar el evento de hoy** a «Rodaje suave» *(lo que acordamos el lunes)* |\n| **B** | **Dejarlo** como «Andar suave 60 min» |\n| **C** | **Borrar el evento** y crear «Rodaje suave» limpio |";
+        let detected = detect(text);
+        assert_eq!(
+            detected.len(),
+            1,
+            "SHALL detectarse una única presentación: {detected:?}"
+        );
+        match &detected[0] {
+            Presentation::Options { options, span, .. } => {
+                assert_eq!(
+                    options,
+                    &[
+                        "A — Cambiar el evento de hoy a «Rodaje suave» (lo que acordamos el lunes)"
+                            .to_string(),
+                        "B — Dejarlo como «Andar suave 60 min»".to_string(),
+                        "C — Borrar el evento y crear «Rodaje suave» limpio".to_string()
+                    ],
+                    "cada opción SHALL ser el texto completo de su fila, con la etiqueta"
+                );
+                assert_eq!(
+                    &text[span[0]..span[1]],
+                    text,
+                    "el tramo SHALL delimitar la tabla"
+                );
+            }
+            other => panic!("se esperaba Options, se obtuvo {other:?}"),
+        }
+    }
+
+    /// 3.2 — Una tabla de opciones de tres columnas SHALL unir las tres celdas en la opción.
+    #[test]
+    fn test_3_2_tabla_de_opciones_de_tres_columnas_une_las_tres_celdas() {
+        let text = "| Opción | Sesión | Hora |\n|---|---|---|\n| **A** | **Mañana** | 07:15 |\n| **B** | **Tarde** | 19:30 |";
+        let detected = detect(text);
+        assert_eq!(
+            detected.len(),
+            1,
+            "SHALL detectarse una única presentación: {detected:?}"
+        );
+        match &detected[0] {
+            Presentation::Options { options, .. } => {
+                assert_eq!(
+                    options,
+                    &[
+                        "A — Mañana — 07:15".to_string(),
+                        "B — Tarde — 19:30".to_string()
+                    ],
+                    "las tres celdas SHALL entrar en la opción"
+                );
+            }
+            other => panic!("se esperaba Options, se obtuvo {other:?}"),
+        }
+    }
+
+    /// 3.3 — Fixture literal de producción: una tabla de vueltas con la primera columna
+    /// numérica. Los números son un índice y NO SHALL producir opciones.
+    #[test]
+    fn test_3_3_tabla_de_vueltas_no_es_tabla_de_opciones() {
+        let text = "| Lap | Dist. | Ritmo | Pulso |\n|---|---|---|---|\n| 1 | 1,00 km | 7:08 | 124 |\n| 2 | 1,00 km | 6:32 | 133 |\n| 3 | 1,00 km | 6:34 | 136 |\n| 4 | 1,00 km | 6:41 | 139 |\n| 5 | 1,00 km | 6:24 | 140 |\n| 6 | 1,00 km | 6:32 | 142 |\n| 7 | 1,00 km | 6:33 | 144 |\n| 8 | 1,00 km | 7:06 | 143 |";
+        let detected = detect(text);
+        assert!(
+            !detected
+                .iter()
+                .any(|p| matches!(p, Presentation::Options { .. })),
+            "una columna numérica es un índice y NO SHALL producir opciones: {detected:?}"
+        );
+    }
+
+    /// 3.4 — Fixture literal de producción: tabla de splits con la primera columna numérica.
+    #[test]
+    fn test_3_4_tabla_de_splits_no_es_tabla_de_opciones() {
+        let text = "| Split | Ritmo | Desnivel |\n|---|---|---|\n| 1 | 7:11 | −0,6 m |\n| 2 | 6:56 | −3,4 m |\n| 3 | 6:59 | +3,2 m |\n| 4 | 6:42 | **+9,4 m** |\n| 5 | 6:22 | −8,0 m |\n| 6 | 6:35 | 0,0 m |\n| 7 | 6:36 | −1,0 m |\n| 8 | 7:06 | −3,8 m |";
+        let detected = detect(text);
+        assert!(
+            !detected
+                .iter()
+                .any(|p| matches!(p, Presentation::Options { .. })),
+            "una columna numérica es un índice y NO SHALL producir opciones: {detected:?}"
+        );
+    }
+
+    /// 3.5 — Regresión: una cabecera de opciones con texto en la columna de opciones
+    /// SIGUE proyectando, y cada opción es la fila completa.
+    #[test]
+    fn test_3_5_cabecera_de_opciones_con_texto_en_la_columna() {
+        let text = "| Opción | Descripción |\n|---|---|\n| **A** | Primera alternativa |\n| **B** | Segunda alternativa |";
+        let detected = detect(text);
+        assert_eq!(
+            detected.len(),
+            1,
+            "SHALL detectarse una única presentación: {detected:?}"
+        );
+        match &detected[0] {
+            Presentation::Options { options, .. } => {
+                assert_eq!(
+                    options,
+                    &[
+                        "A — Primera alternativa".to_string(),
+                        "B — Segunda alternativa".to_string()
+                    ],
+                    "cada opción SHALL ser la fila completa"
+                );
+            }
+            other => panic!("se esperaba Options, se obtuvo {other:?}"),
+        }
+    }
+
+    /// 3.6 — Una fila sin ninguna celda con texto no SHALL aportar opción.
+    #[test]
+    fn test_3_6_fila_sin_texto_no_aporta_opcion() {
+        let text = "| Opción | Descripción |\n|---|---|\n| **A** | Primera |\n|  |  |\n| **B** | Segunda |";
+        let detected = detect(text);
+        assert_eq!(
+            detected.len(),
+            1,
+            "SHALL detectarse una única presentación: {detected:?}"
+        );
+        match &detected[0] {
+            Presentation::Options { options, .. } => {
+                assert_eq!(
+                    options,
+                    &["A — Primera".to_string(), "B — Segunda".to_string()],
+                    "la fila vacía no SHALL aportar opción"
+                );
+            }
+            other => panic!("se esperaba Options, se obtuvo {other:?}"),
+        }
+    }
+
+    /// 3.7 — El widget de opciones proyectado SHALL emitir un campo de tipo `radio`.
+    #[test]
+    fn test_3_7_el_widget_de_opciones_emite_radio() {
+        let text = "A) Cine\nB) Cena\n¿Cuál prefiere?";
+        let widgets = synthesize(&detect(text), &[]);
+        let option_widget = widgets
+            .iter()
+            .find(|widget| widget.name == "QuickForm")
+            .expect("SHALL haber un QuickForm");
+        assert_eq!(
+            option_widget.data["fields"][0]["type"], "radio",
+            "el widget de opciones SHALL mostrar las alternativas a la vista"
+        );
+        assert_eq!(option_widget.data["fields"][0]["name"], "choice");
+        assert_eq!(
+            option_widget.data["fields"][0]["options"],
+            json!(["Cine", "Cena"]),
+            "las alternativas SHALL salir del texto, con su texto completo"
+        );
     }
 }
