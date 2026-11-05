@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Typography } from "antd";
 import { InfoCircleOutlined, CodeOutlined } from "@ant-design/icons";
 import ReactMarkdown from "react-markdown";
@@ -8,6 +8,7 @@ import valetIcon from "../assets/valet-icon.svg";
 import { UserAvatar } from "./UserAvatar";
 import { WidgetRenderer } from "./widgets/WidgetRenderer";
 import type { WidgetInstance } from "./widgets/types";
+import { composeMessage } from "./widgets/compose";
 
 const { Text } = Typography;
 
@@ -30,7 +31,7 @@ interface MessageBubbleProps {
   widgetsDisabled?: boolean;
 }
 
-export const MessageBubble: React.FC<MessageBubbleProps> = ({
+const MessageBubbleImpl: React.FC<MessageBubbleProps> = ({
   message,
   userAvatarUrl,
   widgets,
@@ -38,6 +39,31 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   widgetsDisabled,
 }) => {
   const config = getRoleConfig(message.role, userAvatarUrl);
+
+  // La composición por tramos solo aplica al texto del asistente/herramienta.
+  // Con widgets, `composeMessage` devuelve la secuencia texto/widget ordenada
+  // (un `span` inválido o ausente degrada el widget a debajo del texto, que es
+  // el render de hoy). Sin widgets no hay nada que colocar.
+  //
+  // `composeMessage` reconstruye el mapa byte→char (`Int32Array(byteLength+1)`),
+  // así que se memoiza por `content`/`widgets`: sin esto, cada chunk del stream
+  // recompone todas las burbujas y el coste del turno se vuelve O(n²).
+  const segments = useMemo(() => {
+    if (!widgets || widgets.length === 0) return null;
+    if (message.role !== "assistant" && message.role !== "tool") return null;
+    return composeMessage(message.content, widgets);
+  }, [message.content, message.role, widgets]);
+
+  const renderWidget = (widget: WidgetInstance) => (
+    <WidgetRenderer
+      key={widget.id}
+      id={widget.id}
+      name={widget.name}
+      data={widget.data}
+      disabled={widgetsDisabled}
+      onAction={(action, payload) => onWidgetAction?.(widget, action, payload)}
+    />
+  );
 
   return (
     <div
@@ -64,9 +90,24 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       >
         {message.role === "assistant" || message.role === "tool" ? (
           <div style={{ color: config.color, overflowX: "auto" }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {message.content}
-            </ReactMarkdown>
+            {segments
+              ? segments.map((segment, index) =>
+                  segment.kind === "text" ? (
+                    <ReactMarkdown
+                      key={`text-${index}`}
+                      remarkPlugins={[remarkGfm]}
+                    >
+                      {segment.text}
+                    </ReactMarkdown>
+                  ) : (
+                    renderWidget(segment.widget)
+                  ),
+                )
+              : (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {message.content}
+                  </ReactMarkdown>
+                )}
           </div>
         ) : (
           <Text style={{ color: config.color }}>{message.content}</Text>
@@ -91,20 +132,13 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             <span>La respuesta se interrumpió</span>
           </div>
         )}
-        {widgets && widgets.length > 0 && (
+        {/*
+          Widgets que NO pasan por la composición (roles no asistente o mensaje
+          sin `content` que colocar): se pintan debajo, como hoy.
+        */}
+        {widgets && widgets.length > 0 && !segments && (
           <div style={{ marginTop: 4 }}>
-            {widgets.map((widget) => (
-              <WidgetRenderer
-                key={widget.id}
-                id={widget.id}
-                name={widget.name}
-                data={widget.data}
-                disabled={widgetsDisabled}
-                onAction={(action, payload) =>
-                  onWidgetAction?.(widget, action, payload)
-                }
-              />
-            ))}
+            {widgets.map(renderWidget)}
           </div>
         )}
         {/* Metadata lines */}
@@ -126,6 +160,16 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     </div>
   );
 };
+
+/**
+ * `MessageBubble` se memoiza porque `ChatView` lo re-renderiza en cada chunk del
+ * stream (`streamingContent` cambia) y sus props son **estables** entre chunks:
+ * `message` (referencia fija salvo en la burbuja en curso), `widgets` (el array
+ * de `widgetsByMessage[id]` solo cambia si ese mensaje recibe widgets) y
+ * `onWidgetAction` (`useCallback` en `useMainChat`). Sin esto, todas las
+ * burbujas re-ejecutan su cuerpo por chunk; con él solo lo hace la del stream.
+ */
+export const MessageBubble = React.memo(MessageBubbleImpl);
 
 interface RoleConfig {
   justifyContent: string;

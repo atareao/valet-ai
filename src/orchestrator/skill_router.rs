@@ -269,12 +269,20 @@ impl SkillRouter {
         let mut selected = Vec::new();
         let mut recognized = 0usize;
         for spec in &routable {
-            let Some(&probability) = response.answers.get(spec.id) else {
-                continue;
+            let threshold = self.effective_threshold(spec);
+            let probability = match response.answers.get(spec.id) {
+                Some(&probability) => {
+                    recognized += 1;
+                    probabilities.push((spec.skill, probability));
+                    probability
+                }
+                // Umbral efectivo cero: la skill no está condicionada por el
+                // clasificador, de modo que la ausencia de respuesta no la
+                // descarta. No se reporta probabilidad: no hay dato que dar.
+                None if threshold <= 0.0 => 0.0,
+                None => continue,
             };
-            recognized += 1;
-            probabilities.push((spec.skill, probability));
-            if probability >= self.effective_threshold(spec) {
+            if probability >= threshold {
                 selected.push(spec.skill);
             }
         }
@@ -399,8 +407,36 @@ pub fn exposed_tools(selection: &Selection, config: &SkillRouterConfig) -> Vec<S
     }
 }
 
+/// ¿Está la skill **activa** en este turno? Lo está si **no** está deshabilitada
+/// y además figura en la selección **o** no está condicionada por el
+/// clasificador (umbral efectivo cero).
+///
+/// Es la **única** definición de «activa»: la comparten la composición de
+/// fragmentos y la lectura de fragmentos (vía [`active_skills`]). En los caminos
+/// de fallo abierto la selección va vacía, pero las skills incondicionadas
+/// siguen activas: sus herramientas se exponen y su guía debe viajar con ellas.
+fn is_active(spec: &SkillSpec, selection: &Selection, config: &SkillRouterConfig) -> bool {
+    !config.disabled_skills.contains(spec.id)
+        && (selection.skills.contains(&spec.skill) || effective_threshold(config, spec) <= 0.0)
+}
+
+/// Skills cuyos fragmentos de prompt deben viajar en el mensaje de sistema, en
+/// orden del catálogo. Ver [`is_active`].
+pub fn active_skills(selection: &Selection, config: &SkillRouterConfig) -> Vec<Skill> {
+    catalog()
+        .iter()
+        .filter(|spec| is_active(spec, selection, config))
+        .map(|spec| spec.skill)
+        .collect()
+}
+
 /// Fragmentos de las skills activas **habilitadas**, en orden del catálogo;
 /// omite los vacíos y los que ya estén presentes en `base_prompt`.
+///
+/// Una skill está **activa** si figura en la selección **o** si está
+/// habilitada y su umbral efectivo es cero: una skill no condicionada por el
+/// clasificador inyecta su fragmento también en los caminos de fallo abierto,
+/// donde la selección va vacía pero sus herramientas se exponen igual.
 ///
 /// Una skill deshabilitada es un filtro absoluto (igual que en
 /// [`exposed_tools`]): ni siquiera si aparece en la selección inyecta su
@@ -413,10 +449,7 @@ pub fn compose_skill_fragments(
 ) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for spec in catalog() {
-        if config.disabled_skills.contains(spec.id) {
-            continue;
-        }
-        if !selection.skills.contains(&spec.skill) {
+        if !is_active(spec, selection, config) {
             continue;
         }
         let Some(fragment) = fragments.get(spec.prompt_key) else {
@@ -1871,8 +1904,8 @@ mod tests {
         let widgets = effective_for(&router, "widgets");
         assert_eq!(
             widgets.map(pct),
-            Some(20),
-            "sin override, widgets usa su compilado 0.20; got {widgets:?}"
+            Some(0),
+            "sin override, widgets usa su compilado 0.00 (umbral cero); got {widgets:?}"
         );
 
         let agenda = effective_for(&router, "agenda");
@@ -1883,21 +1916,294 @@ mod tests {
         );
     }
 
+    /// Un override ilegible (`ROUTER_THRESHOLD_<ID>`) no debe colarse ni
+    /// recortarse: cae al umbral compilado de la skill.
+    ///
+    /// El test lleva **dos** claves porque la aserción que discrimina es la de
+    /// `agenda`: con `widgets` el compilado es `0`, así que `Some(0)` no
+    /// distinguiría «se ignoró el override» de «se recortó un valor ilegible
+    /// (p. ej. `-1`) a `0`». La de `agenda` (`0.10`) sí lo detecta. La de
+    /// `widgets` se conserva porque su compilado `0` es el valor que retira la
+    /// migración `20261101000001`.
     #[tokio::test]
-    async fn effective_threshold_ignores_unreadable_widget_overrides() {
+    async fn effective_threshold_ignores_unreadable_overrides() {
         let pool = db().await;
         for bad in ["", "NaN", "inf", "-inf", "2.5", "-1", "alta"] {
+            SettingsRepo::set(&pool, "ROUTER_THRESHOLD_AGENDA", bad)
+                .await
+                .unwrap();
             SettingsRepo::set(&pool, "ROUTER_THRESHOLD_WIDGETS", bad)
                 .await
                 .unwrap();
             let router = SkillRouter::new(None, read_router_config(&pool).await);
+
+            let agenda = effective_for(&router, "agenda");
+            assert_eq!(
+                agenda.map(pct),
+                Some(10),
+                "un override ilegible {bad:?} no debe colarse ni recortarse: agenda cae a su compilado 0.10; got {agenda:?}"
+            );
+
             let widgets = effective_for(&router, "widgets");
             assert_eq!(
                 widgets.map(pct),
-                Some(20),
-                "un override ilegible {bad:?} cae al compilado 0.20; got {widgets:?}"
+                Some(0),
+                "un override ilegible {bad:?} cae al compilado 0.00 de widgets; got {widgets:?}"
             );
         }
+    }
+
+    // ─── RED: skill a umbral cero siempre activa (widgets-always-on) ─────────
+
+    /// Primera línea exacta del fragmento de widgets (su `prompt_heading`).
+    const WIDGET_GUIDE_HEADING: &str = "# Instrucciones de Interfaz y Widgets Interactivos";
+    /// Cuerpo del fragmento de widgets, para detectar su inyección.
+    const WIDGET_FRAGMENT_BODY: &str = "FRAGMENTO_WIDGETS";
+
+    /// Fragmentos con la clave `SKILL_WIDGETS_PROMPT`, cuyo contenido empieza
+    /// exactamente por el encabezado real del catálogo.
+    fn widgets_fragments() -> HashMap<String, String> {
+        let fragment = format!("{WIDGET_GUIDE_HEADING}\n\n{WIDGET_FRAGMENT_BODY}");
+        fragments_map(&[(SKILL_WIDGETS_KEY, fragment.as_str())])
+    }
+
+    /// Configuración con el umbral de `widgets` sobreescrito a `value`.
+    fn config_with_widget_threshold(value: f32) -> SkillRouterConfig {
+        let mut overrides = HashMap::new();
+        overrides.insert("widgets".to_string(), value);
+        SkillRouterConfig {
+            enabled: true,
+            threshold_overrides: overrides,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn zero_threshold_skill_is_selected_at_probability_zero() {
+        let provider = FakeDecisions::new(&[("widgets", 0.00)]);
+        let config = enabled_config();
+        let router = SkillRouter::new(Some(provider), config.clone());
+
+        let sel = router.select("¿qué tenemos que despachar?", &[]).await;
+
+        assert!(
+            sel.skills.contains(&Skill::Widgets),
+            "una skill a umbral cero se selecciona aunque el clasificador devuelva 0.00: {:?}",
+            sel.skills
+        );
+        assert!(
+            exposed_tools(&sel, &config).contains(&"render_widget".to_string()),
+            "el conjunto expuesto debe llevar `render_widget`: {:?}",
+            exposed_tools(&sel, &config)
+        );
+        let out = compose_skill_fragments(&sel, "prompt base", &widgets_fragments(), &config);
+        assert!(
+            out.iter().any(|f| f.contains(WIDGET_FRAGMENT_BODY)),
+            "el fragmento de widgets debe viajar: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_answer_does_not_deactivate_a_zero_threshold_skill() {
+        // La respuesta trae una entrada para OTRA skill (agenda, por debajo de su
+        // umbral) y NINGUNA para `widgets`. No es una respuesta vacía: eso es
+        // otro caso (fallo abierto) y significa lo contrario.
+        let provider = FakeDecisions::new(&[("agenda", 0.05)]);
+        let config = enabled_config();
+        let router = SkillRouter::new(Some(provider), config.clone());
+
+        let sel = router.select("hola", &[]).await;
+
+        assert!(
+            sel.skills.contains(&Skill::Widgets),
+            "la ausencia de respuesta para `widgets` no puede desactivarla: {:?}",
+            sel.skills
+        );
+        assert!(
+            exposed_tools(&sel, &config).contains(&"render_widget".to_string()),
+            "el conjunto expuesto debe llevar `render_widget`: {:?}",
+            exposed_tools(&sel, &config)
+        );
+    }
+
+    #[tokio::test]
+    async fn an_empty_classifier_response_still_fails_open() {
+        // Guarda de regresión: una respuesta íntegramente vacía sigue siendo un
+        // fallo abierto (no se degrada el turno a solo el core).
+        let provider = FakeDecisions::new(&[]);
+        let config = enabled_config();
+        let router = SkillRouter::new(Some(provider), config.clone());
+
+        let sel = router.select("hola", &[]).await;
+
+        assert_eq!(
+            sel.source,
+            SelectionSource::Error,
+            "una respuesta sin ninguna entrada debe fallar abierto"
+        );
+        assert!(
+            sel.skills.is_empty(),
+            "el fallo abierto no selecciona skills: {:?}",
+            sel.skills
+        );
+        assert!(
+            exposed_tools(&sel, &config).contains(&"render_widget".to_string()),
+            "el fallo abierto expone `render_widget`: {:?}",
+            exposed_tools(&sel, &config)
+        );
+        let out = compose_skill_fragments(&sel, "prompt base", &widgets_fragments(), &config);
+        assert!(
+            out.iter().any(|f| f.contains(WIDGET_FRAGMENT_BODY)),
+            "el fallo abierto inyecta el fragmento de widgets: {out:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_disabled_zero_threshold_skill_is_neither_selected_nor_exposed_nor_injected() {
+        let provider = FakeDecisions::new(&[("widgets", 1.0), ("agenda", 0.9)]);
+        let config = SkillRouterConfig {
+            enabled: true,
+            disabled_skills: disabled(&["widgets"]),
+            ..Default::default()
+        };
+        let router = SkillRouter::new(Some(provider), config.clone());
+
+        let sel = router.select("convoca una reunión", &[]).await;
+
+        assert!(
+            !sel.skills.contains(&Skill::Widgets),
+            "una skill deshabilitada no se selecciona: {:?}",
+            sel.skills
+        );
+        assert!(
+            !exposed_tools(&sel, &config).contains(&"render_widget".to_string()),
+            "una skill deshabilitada no expone `render_widget`: {:?}",
+            exposed_tools(&sel, &config)
+        );
+        let out = compose_skill_fragments(&sel, "prompt base", &widgets_fragments(), &config);
+        assert!(
+            !out.iter().any(|f| f.contains(WIDGET_FRAGMENT_BODY)),
+            "una skill deshabilitada no inyecta su fragmento: {out:?}"
+        );
+    }
+
+    #[test]
+    fn fail_open_paths_inject_the_zero_threshold_fragment() {
+        // `NoRoutableSkills` exige que TODAS las skills estén deshabilitadas, lo
+        // que también deshabilitaría `widgets`; por eso la selección se construye
+        // a mano con la fuente de cada camino de fallo abierto y `widgets`
+        // habilitada.
+        let config = enabled_config();
+        let fragments = widgets_fragments();
+        for source in [
+            SelectionSource::Disabled,
+            SelectionSource::NoRoutableSkills,
+            SelectionSource::Error,
+        ] {
+            let sel = Selection {
+                skills: Vec::new(),
+                probabilities: Vec::new(),
+                source: source.clone(),
+                usage: None,
+            };
+            assert!(
+                sel.skills.is_empty(),
+                "un fallo abierto deja la selección vacía: {:?}",
+                sel.skills
+            );
+            let out = compose_skill_fragments(&sel, "prompt base", &fragments, &config);
+            assert!(
+                out.iter().any(|f| f.contains(WIDGET_FRAGMENT_BODY)),
+                "el fallo abierto ({source:?}) debe inyectar el fragmento de widgets: {out:?}"
+            );
+            let exposed = exposed_tools(&sel, &config);
+            assert!(
+                exposed.contains(&"render_widget".to_string()),
+                "el fallo abierto ({source:?}) debe exponer `render_widget`: {exposed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_disabled_zero_threshold_skill_is_not_injected_when_failing_open() {
+        // El test vecino solo cubre `source: Router`. Aquí se recorren los tres
+        // caminos de fallo abierto con `widgets` deshabilitada: ni siquiera con
+        // la selección vacía (que es cuando una incondicionada sí se inyectaría)
+        // viaja su fragmento.
+        let config = SkillRouterConfig {
+            enabled: true,
+            disabled_skills: disabled(&["widgets"]),
+            ..Default::default()
+        };
+        let fragments = widgets_fragments();
+        for source in [
+            SelectionSource::Disabled,
+            SelectionSource::NoRoutableSkills,
+            SelectionSource::Error,
+        ] {
+            let sel = Selection {
+                skills: Vec::new(),
+                probabilities: Vec::new(),
+                source: source.clone(),
+                usage: None,
+            };
+            let out = compose_skill_fragments(&sel, "prompt base", &fragments, &config);
+            assert!(
+                !out.iter().any(|f| f.contains(WIDGET_FRAGMENT_BODY)),
+                "una skill deshabilitada no inyecta su fragmento ni al fallar \
+                 abierto ({source:?}): {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn active_skills_includes_unconditioned_enabled_skills_on_fail_open() {
+        // La definición única de «activa»: en un fallo abierto la selección va
+        // vacía, pero una skill habilitada a umbral cero sigue activa —y por eso
+        // su fragmento viaja. Deshabilitada, deja de estarlo.
+        let selection = Selection {
+            skills: Vec::new(),
+            probabilities: Vec::new(),
+            source: SelectionSource::Error,
+            usage: None,
+        };
+
+        let active = active_skills(&selection, &enabled_config());
+        assert!(
+            active.contains(&Skill::Widgets),
+            "una skill incondicionada sigue activa al fallar abierto: {active:?}"
+        );
+
+        let disabled_config = SkillRouterConfig {
+            enabled: true,
+            disabled_skills: disabled(&["widgets"]),
+            ..Default::default()
+        };
+        let active = active_skills(&selection, &disabled_config);
+        assert!(
+            !active.contains(&Skill::Widgets),
+            "una skill deshabilitada no está activa ni al fallar abierto: {active:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_override_above_zero_conditions_the_skill_again() {
+        let provider = FakeDecisions::new(&[("widgets", 0.10)]);
+        let config = config_with_widget_threshold(0.20);
+        let router = SkillRouter::new(Some(provider), config.clone());
+
+        let sel = router.select("hola", &[]).await;
+
+        assert!(
+            !sel.skills.contains(&Skill::Widgets),
+            "un umbral efectivo 0.20 condiciona de nuevo a `widgets`: {:?}",
+            sel.skills
+        );
+        assert!(
+            !exposed_tools(&sel, &config).contains(&"render_widget".to_string()),
+            "`render_widget` no se expone si `widgets` no se selecciona: {:?}",
+            exposed_tools(&sel, &config)
+        );
     }
 
     // ─── RED: criterios efectivos (skill-router-tuning 1.3) ─────────────────

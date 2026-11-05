@@ -122,7 +122,12 @@ static CATALOG: [SkillSpec; 12] = [
         instructions: "¿La respuesta requiere mostrar algo interactivo en pantalla (formulario, lista para marcar, opciones, mapa o datos geográficos)?",
         criteria_true: "El turno implica pedir varios datos a la vez, dar una lista para marcar, ofrecer una elección entre opciones, presentar un plan con pasos, o mostrar direcciones, un mapa, una tabla de datos geográficos o estadísticas. Cuenta también si el usuario pide expresamente un widget, un formulario, un checklist, un plano o un mapa. Cuenta también un saludo de apertura del día, que abre un panel con los datos del día.",
         criteria_false: "El turno se resuelve con una explicación, un dato o una lista de texto.",
-        threshold: 0.20,
+        // Umbral cero: `widgets` NO está condicionada por el clasificador, de
+        // modo que se selecciona en todos los turnos —también cuando el
+        // clasificador no devuelve respuesta para ella— y `render_widget` figura
+        // siempre en el conjunto expuesto. Un override positivo
+        // (`ROUTER_THRESHOLD_WIDGETS`) vuelve a condicionarla.
+        threshold: 0.0,
         tools: &["render_widget"],
         prompt_key: "SKILL_WIDGETS_PROMPT",
         // The real heading of the seeded fragment (copied verbatim from the
@@ -773,19 +778,32 @@ mod tests {
     // ─── RED: umbrales por defecto por skill (skill-router-tuning 1.2) ───────
 
     #[test]
-    fn every_skill_declares_a_positive_threshold() {
+    fn conditioned_skills_declare_a_positive_threshold() {
+        // Lista explícita de skills **incondicionales** (umbral cero). Añadir
+        // otra skill incondicional debe obligar a declararla aquí: es la
+        // excepción exacta a la regla «umbral > 0.0».
+        const UNCONDITIONAL_SKILLS: [&str; 1] = ["widgets"];
+
         for spec in catalog() {
-            assert!(
-                spec.threshold > 0.0,
-                "la skill {} debe declarar un umbral > 0.0 (threshold={})",
-                spec.id,
-                spec.threshold
-            );
+            if UNCONDITIONAL_SKILLS.contains(&spec.id) {
+                assert_eq!(
+                    spec.threshold, 0.0,
+                    "la skill incondicional `{}` debe declarar umbral 0.0 (threshold={})",
+                    spec.id, spec.threshold
+                );
+            } else {
+                assert!(
+                    spec.threshold > 0.0,
+                    "la skill condicionada `{}` debe declarar un umbral > 0.0 (threshold={})",
+                    spec.id,
+                    spec.threshold
+                );
+            }
         }
     }
 
     #[test]
-    fn domain_skills_share_threshold_010_and_widgets_is_020() {
+    fn domain_skills_share_threshold_010_and_widgets_is_000() {
         for id in [
             "agenda",
             "pendientes",
@@ -804,30 +822,38 @@ mod tests {
                 "el dominio `{id}` debe declarar un umbral de 0.10"
             );
         }
+        // `widgets` es la única skill que no está condicionada por el
+        // clasificador: su umbral `0` es la condición que lo produce, y por eso
+        // se selecciona en todos los turnos, incluso sin respuesta para ella.
         assert_eq!(
             threshold_of("widgets").map(pct),
-            Some(20),
-            "widgets debe declarar un umbral de 0.20"
+            Some(0),
+            "widgets debe declarar un umbral de 0.00"
         );
     }
 
+    /// Sustituye al test `widgets_threshold_is_strictly_above_every_domain`
+    /// («el umbral de widgets es más alto que el de las skills de dominio»),
+    /// retirado por el change `widgets-always-on`: ahora lo que importa es que
+    /// `widgets` sea la **única** skill a umbral `0`, porque de esa unicidad
+    /// depende que la regla del umbral cero se aplique a una sola skill.
     #[test]
-    fn widgets_threshold_is_strictly_above_every_domain() {
-        let widgets = threshold_of("widgets").unwrap_or(0.0);
-        for id in [
-            "agenda",
-            "pendientes",
-            "recuerdos",
-            "entorno",
-            "web",
-            "running",
-            "timeline",
-            "email",
-        ] {
-            let domain = threshold_of(id).unwrap_or(0.0);
+    fn widgets_is_the_only_skill_with_a_zero_threshold() {
+        let widgets = threshold_of("widgets").expect("widgets debe estar en el catálogo");
+        assert!(
+            (widgets - 0.0).abs() < f32::EPSILON,
+            "el umbral de `widgets` debe ser exactamente 0.0; got {widgets}"
+        );
+
+        for spec in catalog() {
+            if spec.skill == Skill::Widgets {
+                continue;
+            }
             assert!(
-                widgets > domain,
-                "widgets ({widgets}) debe superar el umbral de `{id}` ({domain})"
+                spec.threshold != 0.0,
+                "solo `widgets` puede tener umbral 0; `{}` tiene {}",
+                spec.id,
+                spec.threshold
             );
         }
     }

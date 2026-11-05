@@ -302,13 +302,10 @@ async fn test_list_skills_catalog_tools_exist_in_the_production_registry() {
 
 #[tokio::test]
 async fn test_list_skills_exposes_effective_values_without_overrides() {
-    // Given a freshly migrated database (no per-skill criterion overrides; the
-    //       migration seeds an explicit `ROUTER_THRESHOLD_WIDGETS` equal to the
-    //       catalog default)
+    // Given a freshly migrated database (no per-skill criterion or threshold
+    //       overrides: the always-on change retires the seeded widget threshold)
     // When GET /api/skills is called
-    // Then every effective value is the catalog's, and the only marked field is
-    //      the widget threshold —an explicit per-skill override— while a raised
-    //      global would mark nothing.
+    // Then every effective value is the catalog's and nothing is marked.
     let app = TestApp::new().await;
 
     let resp = app.get("/api/skills").await;
@@ -348,19 +345,11 @@ async fn test_list_skills_exposes_effective_values_without_overrides() {
             .iter()
             .filter_map(|v| v.as_str())
             .collect();
-        if id == "widgets" {
-            assert_eq!(
-                overridden,
-                vec!["threshold"],
-                "the seeded widget override is the only marked field"
-            );
-        } else {
-            assert_eq!(
-                overridden,
-                Vec::<&str>::new(),
-                "nothing is overridden for {id} without settings overrides"
-            );
-        }
+        assert_eq!(
+            overridden,
+            Vec::<&str>::new(),
+            "nothing is overridden for {id} without settings overrides"
+        );
     }
 }
 
