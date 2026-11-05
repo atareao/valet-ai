@@ -223,6 +223,15 @@ Lo que no se reabre sin orden explícita:
 - **El enlace del header es una constante del frontend**, no se deriva de `opentodo_base_url`: si algún día se cambia el ajuste, el enlace no lo sigue. Se prefirió eso a un `GET /api/opentodo/status` en cada arranque solo para pintar un botón.
 - **Sin token, la herramienta falla** en vez de caer a un almacén local. Ya no hay segunda fuente de verdad, y `seed_tasks` (que además estaba roto desde el 2026-09-26: insertaba `status='pending'`, que el CHECK GTD rechaza) desapareció con el resto.
 
+**17. El widget de opciones lee el texto de la fila y solo proyecta tablas declaradas.** Decidido el 2026-11-04 al cerrar el change `widget-options-contract` (PR #295, desplegado como **v0.27.1**). Antes el formulario salía con las opciones «A», «B», «C», «D» —las etiquetas— sin su texto, de modo que no se correspondía con lo que decía el mensaje.
+
+- **El texto de la opción es el de su fila completa:** todas las celdas con contenido de la fila, en el orden de la tabla, unidas por ` — `, con la etiqueta incluida. Una fila sin texto no aporta opción.
+- **Solo opciones declaradas.** Una tabla es de opciones cuando su cabecera **nombra** la columna de opciones (`Opción`/`Alternativa`/`Option`) o cuando su primera columna lleva **letras** consecutivas. Una columna de **números** consecutivos es un **índice** y nunca produce opciones: las tablas de vueltas/splits de Strava y la de titulares del RSS dejan de generar formularios. **Cambio de comportamiento aceptado:** una tabla de alternativas numeradas sin cabecera `Opción` deja de proyectarse (su texto se sigue leyendo entero).
+- **El widget emite `type: "radio"`** y el frontend pinta las alternativas a la vista, con el grupo etiquetado (`role="radiogroup"` + `aria-labelledby`) y `name` único por grupo.
+- **La guía declara la forma**, no la prohíbe: `SKILL_WIDGETS_PROMPT` pasa a pedir `| Opción | … |` y conserva `render_widget` para lo que el servidor no infiere (varios datos, plan, mapa). La migración `20261104000001` lleva **guarda byte a byte** por cada texto conocido y no pisa nada que no reconozca.
+- **El histórico no se migra** (decisión del usuario): los widgets ya persistidos siguen con sus opciones viejas y `type: select`.
+- Queda **sin medir** el disparador del modelo (fase 2 de `plans/PLAN-015-COMPLETED.md` §6): `render_widget` del modelo sumó 0 llamadas en los 39 turnos medidos, y el arreglo no depende de que el modelo cambie de costumbres.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
@@ -260,6 +269,10 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-009-COMPLETED.md` | Integración de ZenNotes: el agente lee y escribe notas del vault vía API (change `zennotes-notes`) | ✅ Completado |
 | `plans/PLAN-010-PENDING.md` | Diagnóstico del TTL de sesión (8 h fijo) y opciones A–D | ⏸️ Pending |
 | `plans/PLAN-011-COMPLETED.md` | Integrar OpenTodo y retirar el TODO local: fase 1 (`opentodo-integration`, PR #265) y fase 2 (`remove-local-tasks`, PR #271/#272), desplegadas como v0.23.0 y v0.24.0 | ✅ Completado |
+| `plans/PLAN-012-COMPLETED.md` | Los widgets, siempre presentes: la guía prescriptiva falló (batería 0/3) y el objetivo lo cumplió la proyección determinista (change `widgets-always-on`; PR #285, v0.25.0) | ✅ Completado |
+| `plans/PLAN-013-COMPLETED.md` | Proyección determinista de widgets: el servidor proyecta, el modelo aporta contenido (change `widget-projection`; PR #289/#290) | ✅ Completado |
+| `plans/PLAN-014-COMPLETED.md` | La proyección reconoce los formatos reales del modelo (change `widget-projection-formats`; PR #291/#292, v0.27.0) | ✅ Completado |
+| `plans/PLAN-015-COMPLETED.md` | El formulario de opciones deja de ser un jeroglífico: la opción lleva el texto de su fila y solo se proyectan tablas declaradas (change `widget-options-contract`; PR #295, v0.27.1) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

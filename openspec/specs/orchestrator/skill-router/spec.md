@@ -38,7 +38,7 @@ El catálogo SHALL declarar, en código, un conjunto **cerrado de doce skills de
 #### Scenario: El widget se enruta con umbral propio
 - **Given** la skill `widgets`
 - **When** se inspecciona su umbral por defecto
-- **Then** es más alto que el de las skills de dominio
+- **Then** es `0`, de modo que la skill no está condicionada por el clasificador
 - **And** cubre la herramienta `render_widget`
 
 #### Scenario: Una skill cubre los prerrequisitos de sus herramientas
@@ -157,13 +157,50 @@ Con el enrutador activo, la decisión SHALL tomarse **una única vez por turno**
 
 ### Requirement: La selección SHALL gobernar también el turno sin herramientas
 
-Si ninguna probabilidad alcanza **el umbral efectivo de su skill**, la selección SHALL ser vacía y el turno SHALL exponer **únicamente el conjunto core**.
+Un **umbral efectivo de cero** SHALL significar que la skill **no está condicionada por el
+clasificador**: SHALL seleccionarse en todos los turnos, incluso cuando el clasificador no devuelva
+respuesta para ella. Las skills con umbral mayor que cero SHALL seguir necesitando que su
+probabilidad lo alcance. Por tanto, mientras exista al menos una skill habilitada con umbral cero,
+la selección **nunca** SHALL ser vacía y el turno SHALL exponer, además del core, las herramientas de
+esas skills. Solo cuando **ninguna** probabilidad alcanza el umbral efectivo de su skill **y ninguna
+skill habilitada tiene umbral cero** la selección SHALL ser vacía y el turno SHALL exponer únicamente
+el conjunto core.
+
+La skill `widgets` SHALL declarar umbral por defecto `0`, de modo que `render_widget` SHALL figurar en
+el conjunto expuesto en **todos** los turnos y su fragmento SHALL viajar en todos los mensajes de
+sistema.
 
 #### Scenario: Un turno conversacional no expone herramientas enrutables
-- **Given** el enrutador activo y un turno conversacional sin petición de acción (p. ej. «gracias, perfecto»)
+- **Given** el enrutador activo, ninguna skill a umbral cero y un turno conversacional sin petición de acción (p. ej. «gracias, perfecto»)
 - **When** todas las probabilidades quedan por debajo del umbral efectivo de su skill
 - **Then** la selección es vacía
 - **And** la petición lleva solo las herramientas del core
+
+#### Scenario: Una skill a umbral cero se selecciona siempre
+- **Given** la skill `widgets` con umbral efectivo `0` y un clasificador que devuelve `0.00` para ella
+- **When** se procesa el turno
+- **Then** `widgets` figura en la selección
+- **And** `render_widget` figura en el conjunto expuesto
+- **And** el fragmento de `widgets` figura en el mensaje de sistema
+
+#### Scenario: Sin respuesta no se desactiva una skill a umbral cero
+- **Given** la skill `widgets` con umbral efectivo `0` y una respuesta del clasificador **sin** entrada para `widgets`
+- **When** se construye la selección
+- **Then** `widgets` figura en la selección
+- **And** `render_widget` figura en el conjunto expuesto
+
+#### Scenario: Una skill a umbral cero deshabilitada no se selecciona
+- **Given** la skill `widgets` con `ROUTER_SKILL_WIDGETS_ENABLED` a `false`
+- **When** se procesa el turno
+- **Then** `widgets` NO figura en la selección
+- **And** `render_widget` NO figura en el conjunto expuesto
+- **And** su fragmento NO se inyecta
+
+#### Scenario: Un umbral mayor que cero sigue condicionando
+- **Given** la skill `widgets` con `ROUTER_THRESHOLD_WIDGETS` a `0.20`
+- **When** el clasificador devuelve `0.10` para ella
+- **Then** `widgets` NO figura en la selección
+- **And** `render_widget` NO figura en el conjunto expuesto
 
 ### Requirement: El enrutador SHALL fallar abierto
 
@@ -195,7 +232,17 @@ Ante cualquier fallo, el resultado SHALL ser **el comportamiento sin enrutador r
 
 ### Requirement: Los fragmentos de prompt SHALL inyectarse solo para las skills activas y sin duplicar
 
-Los fragmentos SHALL leerse de `settings.SKILL_<ID>_PROMPT` y SHALL añadirse al mensaje de sistema **solo para las skills activas**, en el orden del catálogo, después del prompt base y antes de las secciones compuestas en código. Un fragmento vacío o en blanco SHALL NOT dejar rastro alguno. Un fragmento cuyo encabezado **ya esté presente en el prompt base** SHALL NOT inyectarse. El prompt de personalidad (`settings.system_prompt`) SHALL NOT modificarse.
+Los fragmentos SHALL leerse de `settings.SKILL_<ID>_PROMPT` y SHALL añadirse al mensaje de sistema
+**solo para las skills activas**, en el orden del catálogo, después del prompt base y antes de las
+secciones compuestas en código. Una skill SHALL considerarse **activa** si figura en la selección
+**o** si está habilitada y su umbral efectivo es **cero**. Un fragmento vacío o en blanco SHALL NOT
+dejar rastro alguno. Un fragmento cuyo encabezado **ya esté presente en el prompt base** SHALL NOT
+inyectarse. El prompt de personalidad (`settings.system_prompt`) SHALL NOT modificarse.
+
+El fragmento de una skill a umbral cero SHALL inyectarse también en los caminos de **fallo abierto**
+—enrutador deshabilitado, sin clasificador, sin skills enrutables habilitadas, error, timeout o
+respuesta inútil—, donde la selección va vacía pero el conjunto expuesto sí lleva sus herramientas.
+Una skill **deshabilitada** SHALL NOT inyectar su fragmento en ningún caso.
 
 #### Scenario: Solo se inyectan los fragmentos de las skills activas
 - **Given** una selección con la skill de agenda y la de tareas
@@ -218,6 +265,19 @@ Los fragmentos SHALL leerse de `settings.SKILL_<ID>_PROMPT` y SHALL añadirse al
 - **Given** un `settings.system_prompt` personalizado por el usuario
 - **When** se procesa un turno con el enrutador activo
 - **Then** el prompt base llega al modelo sin modificaciones
+
+#### Scenario: La skill a umbral cero inyecta su fragmento aunque no esté en la selección
+- **Given** un fallo abierto del enrutador y la skill `widgets` habilitada con umbral `0`
+- **When** se compone el mensaje de sistema
+- **Then** la selección va vacía
+- **And** el mensaje de sistema contiene el fragmento de `widgets`
+- **And** la petición lleva `render_widget` entre las herramientas ofrecidas
+
+#### Scenario: Una skill deshabilitada no inyecta ni al fallar abierto
+- **Given** la skill `widgets` deshabilitada y un clasificador que devuelve un error
+- **When** se compone el mensaje de sistema
+- **Then** no contiene su fragmento
+- **And** `render_widget` no figura entre las herramientas ofrecidas
 
 ### Requirement: El enrutador SHALL registrar su decisión y su coste sin alterar las estadísticas del chat
 
@@ -339,34 +399,6 @@ Las instrucciones y las `criteria` con las que se pregunta al clasificador SHALL
 - **Then** la pregunta devuelta es la sobrescrita y figura marcada como sobrescrita
 - **And** los criterios devueltos son los del catálogo, sin la marca
 
-### Requirement: La guía de widgets SHALL residir en el fragmento de su skill
-
-La guía de uso de `render_widget` SHALL NOT residir de forma permanente en `settings.system_prompt`, porque la herramienta deja de estar siempre expuesta y el prompt base no puede ordenar el uso de una herramienta ausente. Una migración SHALL retirar ese bloque del prompt base **solo si se encuentra verbatim** (identificado por su encabezado) y SHALL depositarlo como contenido de `SKILL_WIDGETS_PROMPT`; si el bloque no se encuentra verbatim, SHALL NOT retirar nada y el fragmento SHALL sembrarse igualmente. La regla anti-duplicado del ensamblador de fragmentos SHALL seguir vigente como red de seguridad. Con la skill `widgets` inactiva SHALL NOT enviarse ni el esquema de la herramienta ni la guía.
-
-#### Scenario: El bloque verbatim se muda al fragmento
-- **Given** un prompt base que contiene el bloque de widgets tal y como lo añadió la migración original
-- **When** se aplica la migración
-- **Then** el bloque deja de estar en el prompt base
-- **And** su contenido queda en `SKILL_WIDGETS_PROMPT`
-
-#### Scenario: Un bloque editado no se retira
-- **Given** un prompt base en el que el usuario ha modificado el bloque de widgets
-- **When** se aplica la migración
-- **Then** el prompt base conserva el texto del usuario
-- **And** el fragmento se siembra igualmente
-- **And** la regla anti-duplicado impide que la guía viaje dos veces
-
-#### Scenario: Con la skill inactiva no viaja la guía
-- **Given** un turno en el que la skill `widgets` no se selecciona
-- **When** se compone el mensaje de sistema
-- **Then** no contiene la guía de widgets
-- **And** la herramienta `render_widget` no figura entre las ofrecidas
-
-#### Scenario: La migración es idempotente
-- **Given** una base de datos ya migrada
-- **When** se vuelve a aplicar la migración
-- **Then** el prompt base y el fragmento quedan igual
-
 ### Requirement: Las criteria por defecto del briefing SHALL reconocer el saludo de apertura del día
 
 Las `criteria_true` por defecto de las skills `agenda`, `pendientes`, `entorno` y `widgets` SHALL declarar el **saludo de apertura del día** («buenos días», «¿qué tal?») como caso afirmativo, porque en este asistente un saludo abre el **briefing matutino**: la agenda del día, lo pendiente, la previsión y un panel con los datos. Las skills `recuerdos` y `web` SHALL NOT declararlo. El resto de cada criterio SHALL seguir describiendo su dominio.
@@ -406,7 +438,23 @@ El conjunto anunciado al modelo SHALL ser `core ∪ (skills_seleccionadas ∩ sk
 
 ### Requirement: La configuración del enrutador SHALL vivir en settings con habilitación por skill y umbral por skill
 
-La configuración SHALL vivir en la tabla `settings` —`ROUTER_ENABLED` (sembrado como `true`; un valor **ausente o ilegible** SHALL caer al default compilado `false`), `ROUTER_MODEL`, **el umbral por skill `ROUTER_THRESHOLD_<ID>` (sin ningún umbral global)**, la habilitación por skill `ROUTER_SKILL_<ID>_ENABLED` (por defecto habilitada; ausencia = habilitada), `ROUTER_TIMEOUT_MS`, `ROUTER_HISTORY_TURNS` (por defecto `6`) y las claves de criterios y fragmentos por skill—, sembrada y ajustada por migraciones **idempotentes** que SHALL fijar un valor solo cuando siga siendo **exactamente el sembrado**. SHALL leerse en cada turno de modo que editarla surta efecto sin reiniciar. El umbral efectivo de una skill SHALL ser su `ROUTER_THRESHOLD_<ID>` si existe y, si no, su umbral por defecto compilado; un valor ausente o ilegible SHALL caer al default registrando un warning. El endpoint y la credencial SHALL proceder del entorno.
+La configuración SHALL vivir en la tabla `settings` —`ROUTER_ENABLED` (sembrado como `true`; un valor
+**ausente o ilegible** SHALL caer al default compilado `false`), `ROUTER_MODEL`, **el umbral por
+skill `ROUTER_THRESHOLD_<ID>` (sin ningún umbral global)**, la habilitación por skill
+`ROUTER_SKILL_<ID>_ENABLED` (por defecto habilitada; ausencia = habilitada), `ROUTER_TIMEOUT_MS`,
+`ROUTER_HISTORY_TURNS` (por defecto `6`) y las claves de criterios y fragmentos por skill—, sembrada
+y ajustada por migraciones **idempotentes** que SHALL fijar un valor solo cuando siga siendo
+**exactamente el sembrado**. SHALL leerse en cada turno de modo que editarla surta efecto sin
+reiniciar. El umbral efectivo de una skill SHALL ser su `ROUTER_THRESHOLD_<ID>` si existe y, si no,
+su umbral por defecto compilado; un valor ausente o ilegible SHALL caer al default registrando un
+warning.
+
+La skill `widgets` SHALL tener umbral por defecto **`0`**, y su override sembrado
+(`ROUTER_THRESHOLD_WIDGETS` a `0.20`) SHALL retirarse con una migración que SHALL borrar la clave
+**solo si sigue valiendo `0.20`**. Un valor distinto SHALL conservarse: subir el umbral es la forma
+de volver a condicionar la skill por el clasificador, y es una decisión del usuario.
+
+El endpoint y la credencial SHALL proceder del entorno.
 
 #### Scenario: Por defecto el enrutado está encendido
 - **Given** una base de datos recién migrada
@@ -425,10 +473,22 @@ La configuración SHALL vivir en la tabla `settings` —`ROUTER_ENABLED` (sembra
 - **Then** esa skill queda habilitada
 
 #### Scenario: El umbral por skill no depende de un global
-- **Given** `ROUTER_THRESHOLD_WIDGETS` en `0.20` y ninguna otra clave de umbral
+- **Given** ninguna clave `ROUTER_THRESHOLD_<ID>` en `settings`
 - **When** se resuelve el umbral efectivo de cada skill
-- **Then** `widgets` usa `0.20`
-- **And** las skills sin clave usan su umbral por defecto compilado
+- **Then** `widgets` usa `0`, su umbral compilado
+- **And** las demás skills usan su umbral por defecto compilado
+
+#### Scenario: El override sembrado de widgets se retira
+- **Given** `ROUTER_THRESHOLD_WIDGETS` con el valor sembrado `0.20`
+- **When** se aplica la migración
+- **Then** la clave deja de existir
+- **And** el umbral efectivo de `widgets` es `0`
+
+#### Scenario: Un umbral subido a propósito se respeta
+- **Given** `ROUTER_THRESHOLD_WIDGETS` con un valor distinto de `0.20`
+- **When** se aplica la migración
+- **Then** el valor del usuario se conserva
+- **And** el umbral efectivo de `widgets` es el suyo
 
 #### Scenario: Un umbral ilegible cae al default
 - **Given** un `ROUTER_THRESHOLD_<ID>` con un valor no numérico o fuera de `[0, 1]`
@@ -440,3 +500,111 @@ La configuración SHALL vivir en la tabla `settings` —`ROUTER_ENABLED` (sembra
 - **Given** el enrutado apagado
 - **When** se pone `ROUTER_ENABLED` a `true` desde los ajustes
 - **Then** el turno siguiente ya enruta
+
+### Requirement: El fragmento de la skill widgets SHALL ser un recordatorio breve que remita a render_widget
+
+El fragmento `settings.SKILL_WIDGETS_PROMPT` SHALL NOT residir de forma permanente en
+`settings.system_prompt`. La migración `20261008000001` SHALL retirar ese bloque del prompt base **solo si se
+encuentra verbatim** (identificado por su encabezado) y SHALL depositarlo como contenido de
+`SKILL_WIDGETS_PROMPT`; si el bloque no se encuentra verbatim, SHALL NOT retirar nada y el fragmento SHALL
+sembrarse igualmente. La regla anti-duplicado del ensamblador de fragmentos SHALL seguir vigente como red de
+seguridad. Como la skill `widgets` tiene umbral cero, la guía SHALL viajar en el mensaje de sistema de
+**todos** los turnos, también con el enrutador caído o apagado. Con la skill `widgets` **deshabilitada** SHALL
+NOT enviarse ni el esquema de la herramienta ni la guía.
+
+El fragmento SHALL **declarar la forma** que el servidor sabe leer, no decidir la presentación. La proyección
+determinista al cerrar el turno (ver `orchestrator/agent`) lee la tabla con cabecera de opciones que el modelo
+escribe, de modo que el fragmento SHALL pedir esa forma como **instrucción de formato**: alternativas como
+tabla Markdown con cabecera de opciones, una fila por alternativa, con la etiqueta y el texto de la
+alternativa en la misma fila. El fragmento SHALL NOT enumerar los tres nombres de `widget_name` con ejemplos
+de `data`, ni exponer un catálogo de widgets; SHALL limitarse a esa forma, a pedir que no se anuncie el widget,
+no se pida permiso y no se repita la lista en prosa, y a señalar que `render_widget` sigue disponible para lo
+que el servidor no puede inferir del texto (varios datos en un mismo formulario, un plan con pasos, un mapa
+cuyos datos no aparezcan escritos).
+
+La migración `20261102000001_widget_projection.sql` SHALL sustituir la guía extensa sembrada por
+`20261101000001_widgets_always_on.sql` por el recordatorio **solo si su valor sigue siendo byte a byte** el
+texto sembrado; si el usuario lo ha editado, SHALL NOT pisarlo.
+
+La migración `20261104000001_widget_options_contract.sql` SHALL sustituir el fragmento por el texto que declara
+la forma **solo si su valor es byte a byte uno de los dos textos conocidos**: el recordatorio sembrado por
+`20261102000001` o la guía imperativa de 3.812 caracteres que quedó en producción al editarse aquel valor.
+Cualquier otro valor es contenido del usuario y SHALL NOT pisarse.
+
+El texto exacto del fragmento SHALL ser:
+
+> # Cómo presentar alternativas
+>
+> Cuando tu respuesta ofrezca alternativas para elegir —dos o más opciones, un «¿cuál prefieres?»— escríbelas
+> como una **tabla Markdown con cabecera de opciones**, una fila por alternativa, con la etiqueta y el texto
+> en la misma fila:
+>
+> | Opción | Acción |
+> |---|---|
+> | **A** | **Marcar los 38 como leídos** — bandeja a cero |
+> | **B** | **Marcar solo los 4 de IA** que ya hemos visto |
+>
+> El servidor convierte esa tabla en un formulario de elección: no lo anuncies, no pidas permiso y no repitas
+> la lista en prosa. Escribe solo la frase que la acompaña.
+>
+> Las listas de cosas que marcar (tareas, avisos, correos) y un punto en el mapa también los proyecta el
+> servidor a partir de tu texto.
+>
+> Para lo que el servidor no puede inferir —pedir **varios datos** en un mismo formulario, un **plan con
+> pasos** o un mapa cuyos datos no aparezcan escritos— usa la herramienta `render_widget`, que sigue
+> disponible.
+
+#### Scenario: El bloque verbatim se muda al fragmento
+- **Given** un prompt base que contiene el bloque de widgets tal y como lo añadió la migración original
+- **When** se aplica la migración
+- **Then** el bloque deja de estar en el prompt base
+- **And** su contenido queda en `SKILL_WIDGETS_PROMPT`
+
+#### Scenario: Un bloque editado no se retira
+- **Given** un prompt base en el que el usuario ha modificado el bloque de widgets
+- **When** se aplica la migración
+- **Then** el prompt base conserva el texto del usuario
+- **And** el fragmento se siembra igualmente
+- **And** la regla anti-duplicado impide que la guía viaje dos veces
+
+#### Scenario: La guía viaja en todos los turnos
+- **Given** la skill `widgets` habilitada con umbral `0` y un turno cualquiera
+- **When** se compone el mensaje de sistema
+- **Then** contiene la guía de widgets
+- **And** la petición ofrece `render_widget`
+
+#### Scenario: Con la skill inactiva no viaja la guía
+- **Given** un turno en el que la skill `widgets` está deshabilitada (`ROUTER_SKILL_WIDGETS_ENABLED` a `false`)
+- **When** se compone el mensaje de sistema
+- **Then** no contiene la guía de widgets
+- **And** la herramienta `render_widget` no figura entre las ofrecidas
+
+#### Scenario: Un fragmento editado por el usuario no se pisa
+- **Given** un `SKILL_WIDGETS_PROMPT` con texto del usuario
+- **When** se aplica la migración `20261102000001_widget_projection.sql`
+- **Then** el valor del usuario se conserva
+
+#### Scenario: La migración es idempotente
+- **Given** una base de datos ya migrada
+- **When** se vuelve a aplicar la migración
+- **Then** el prompt base y el fragmento quedan igual
+
+#### Scenario: La guía se recorta al recordatorio y no prescribe la regla de las opciones
+- **Given** el fragmento `SKILL_WIDGETS_PROMPT` con la guía extensa sembrada por `20261101000001`
+- **When** se aplica la migración `20261102000001_widget_projection.sql`
+- **Then** el fragmento pasa a ser un recordatorio breve
+- **And** NO enumera los tres widgets con ejemplos de `data`
+- **And** NO enuncia la regla de las opciones como una instrucción que el modelo deba aplicar
+- **And** remite a que `render_widget` sigue disponible como vía explícita
+
+#### Scenario: El fragmento declara la forma que el servidor sabe leer
+**Given** el fragmento `SKILL_WIDGETS_PROMPT` con el recordatorio sembrado por `20261102000001`
+**When** se aplica la migración `20261104000001_widget_options_contract.sql`
+**Then** el fragmento pide escribir las alternativas como tabla Markdown con cabecera de opciones
+**And** NO enumera los tres nombres de `widget_name` ni ejemplos de `data`
+**And** remite a `render_widget` para lo que el servidor no puede inferir
+
+#### Scenario: Un fragmento editado no se pisa
+**Given** un fragmento `SKILL_WIDGETS_PROMPT` con un texto distinto de los dos textos conocidos
+**When** se aplica la migración `20261104000001_widget_options_contract.sql`
+**Then** el fragmento conserva el texto del usuario

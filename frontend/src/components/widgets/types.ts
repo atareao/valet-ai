@@ -22,12 +22,22 @@ export interface WidgetInstance {
   id: string;
   name: string;
   data: unknown;
+  /**
+   * Tramo del mensaje del asistente que este widget **ocupa**, expresado como
+   * rango **semiabierto** `[start, end)` en **bytes UTF-8** sobre el `content`
+   * persistido (change `widget-projection`, D2 opción (c)).
+   *
+   * Es **opcional**: sin él el widget se pinta **debajo** del texto, como hoy.
+   * Es el caso de los widgets que renderiza el modelo (`render_widget`) y de
+   * todas las filas anteriores a este change (sin backfill).
+   */
+  span?: [number, number];
 }
 
 export interface QuickFormField {
   name: string;
   label: string;
-  type: "text" | "textarea" | "number" | "select" | "checkbox" | "slider";
+  type: "text" | "textarea" | "number" | "select" | "checkbox" | "slider" | "radio";
   options?: string[];
   min?: number;
   max?: number;

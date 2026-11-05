@@ -170,11 +170,24 @@ export type SSEEventType =
 
 export interface SSEStreamEvent {
   type: SSEEventType;
+  /**
+   * Texto del evento. En `chunk` es el fragmento emitido; en `done` es el
+   * **contenido íntegro y autoritativo** del mensaje (el mismo texto que se
+   * persiste y contra el que están calculados los `span` de los widgets), tal
+   * como fija `stream-route` en el change `widget-projection`.
+   */
   content?: string;
   id?: string;
   name?: string;
   args?: unknown;
   data?: unknown;
+  /**
+   * Tramo `[start, end)` en **bytes UTF-8** sobre el `content` del mensaje que
+   * el widget ocupa. **Opcional**: ausente en los widgets renderizados por el
+   * modelo y en todas las filas anteriores al change `widget-projection`.
+   * Solo llega en el evento `widget`.
+   */
+  span?: [number, number];
   success?: boolean;
   message_id?: string;
   user_message_id?: string;

@@ -4,10 +4,22 @@ import type { SSEStreamEvent, BrowserContext } from "../types";
 
 export interface UseSSEOptions {
   onChunk?: (content: string) => void;
-  onDone?: (messageId: string, userMessageId?: string, location?: string | null, tools_used?: string, user_location?: string, user_created_at?: string) => void;
+  /**
+   * `content` es el texto **íntegro y autoritativo** del mensaje que el server
+   * envía en el evento `done` (change `widget-projection`). Es la base contra la
+   * que están calculados los `span` de los widgets. Va al final de la firma para
+   * no romper los usos existentes y puede llegar `undefined` con un server
+   * anterior.
+   */
+  onDone?: (messageId: string, userMessageId?: string, location?: string | null, tools_used?: string, user_location?: string, user_created_at?: string, content?: string) => void;
   onToolCall?: (name: string, args: unknown) => void;
   onToolResult?: (name: string, success: boolean) => void;
-  onWidget?: (id: string, name: string, data: unknown) => void;
+  /**
+   * `span` es el tramo `[start, end)` en bytes UTF-8 sobre el `content` del
+   * mensaje que el widget ocupa (`widget-projection`). Es **opcional**: llega
+   * `undefined` en los widgets renderizados por el modelo.
+   */
+  onWidget?: (id: string, name: string, data: unknown, span?: [number, number]) => void;
   /**
    * `status` es el código HTTP cuando el fallo cortó la petición antes de abrir
    * el stream (p. ej. `409` con el chat ocupado); `undefined` si el turno se
@@ -124,6 +136,7 @@ export function useSSE() {
                       event.tools_used,
                       event.user_location,
                       event.user_created_at,
+                      event.content,
                     );
                     break;
                   case "error":
@@ -150,7 +163,12 @@ export function useSSE() {
                       );
                       break;
                     }
-                    options.onWidget?.(event.id, event.name || "", event.data);
+                    options.onWidget?.(
+                      event.id,
+                      event.name || "",
+                      event.data,
+                      event.span,
+                    );
                     break;
                   case "approval_required":
                     options.onApprovalRequired?.(
