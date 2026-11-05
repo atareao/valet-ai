@@ -32,6 +32,8 @@ pub enum Presentation {
         longitude: f64,
         span: Span,
     },
+    /// A closed yes/no question that closes the turn.
+    BinaryChoice { question: String, span: Span },
 }
 
 /// A widget ready to be persisted and pushed to the client.
@@ -204,6 +206,21 @@ fn is_fence(line: &str) -> bool {
     trimmed.starts_with("```") || trimmed.starts_with("~~~")
 }
 
+/// The semi-open byte range any presentation occupies. Every variant carries one.
+fn presentation_span(presentation: &Presentation) -> Span {
+    match presentation {
+        Presentation::Options { span, .. }
+        | Presentation::Checklist { span, .. }
+        | Presentation::Location { span, .. }
+        | Presentation::BinaryChoice { span, .. } => *span,
+    }
+}
+
+/// Whether two semi-open spans share at least one byte.
+fn spans_overlap(left: Span, right: Span) -> bool {
+    left[0] < right[1] && right[0] < left[1]
+}
+
 /// Detect every presentation block in `text`, in order of appearance.
 /// Empty vector when nothing is recognised. Spans never overlap.
 pub fn detect(text: &str) -> Vec<Presentation> {
@@ -244,6 +261,23 @@ pub fn detect(text: &str) -> Vec<Presentation> {
             }
         }
     }
+
+    // A closed yes/no question is the weakest form: it is projected only when the turn
+    // produced no options, so a question that closes an alternatives list never grows a
+    // second, contradictory widget. It must not reuse a span either: a location line that
+    // happens to end in a question would otherwise add two widgets over the same text and
+    // the client degrades overlapping spans by moving one to the end (back to prose).
+    let has_options = presentations
+        .iter()
+        .any(|presentation| matches!(presentation, Presentation::Options { .. }));
+    let choice = binary_choice_block(&lines)
+        .filter(|_| !has_options)
+        .filter(|choice| {
+            !presentations.iter().any(|existing| {
+                spans_overlap(presentation_span(existing), presentation_span(choice))
+            })
+        });
+    presentations.extend(choice);
 
     presentations
 }
@@ -692,7 +726,11 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
 }
 
 /// Whether a line closes a list of alternatives with a «¿cuál…?»-style question.
-/// Only that family counts: a plain yes/no question leaves a procedure as a procedure.
+///
+/// Only that family counts **here**: a plain yes/no question does not close a list of
+/// alternatives — it leaves a procedure as a procedure. The turn-closing yes/no question is
+/// a different form, handled by `binary_choice_block`, which only acts when no options were
+/// projected.
 fn is_interrogative(line: &str) -> bool {
     let trimmed = line.trim();
     if !(trimmed.contains('¿') || trimmed.ends_with('?')) {
@@ -741,6 +779,128 @@ fn question_options_block(lines: &[Line<'_>], index: usize) -> Option<(Presentat
         },
         end,
     ))
+}
+
+/// Recognises a closed yes/no question that closes the turn.
+///
+/// Only the **last line with content** counts: a question in the middle of the text is
+/// usually rhetorical or a quotation of the user's own question. Open interrogatives
+/// (`qué`, `cuál`, …) and questions that coordinate two **named** alternatives with `o`
+/// are rejected, so a `Sí`/`No` pair never answers a question that was not binary.
+fn binary_choice_block(lines: &[Line<'_>]) -> Option<Presentation> {
+    let last = last_content_line_outside_fences(lines)?;
+    let question = closed_yes_no_question(lines[last].text)?;
+    Some(Presentation::BinaryChoice {
+        question,
+        span: [
+            lines[last].start + first_non_blank(lines[last].text),
+            lines[last].end,
+        ],
+    })
+}
+
+/// Index of the last line with content that lies **outside** any fenced code block, or
+/// `None` when there is no such line.
+///
+/// The fence automaton lives here, in a single forward pass: `binary_choice_block` no longer
+/// re-scans the text to find the last line and then its fence state (the old `rposition` plus
+/// toggle loop).
+fn last_content_line_outside_fences(lines: &[Line<'_>]) -> Option<usize> {
+    let mut in_fence = false;
+    let mut last = None;
+    for (index, line) in lines.iter().enumerate() {
+        if is_fence(line.text) {
+            in_fence = !in_fence;
+        } else if !in_fence && !line.text.trim().is_empty() {
+            last = Some(index);
+        }
+    }
+    last
+}
+
+/// Removes a leading Markdown quote marker (`>`) or list bullet (`- `, `* `, `• `) from a
+/// line so a question keeps only its text. Cosmetic for prose, but the label is user-facing.
+fn strip_line_prefix(line: &str) -> &str {
+    let mut text = line.trim_start();
+    loop {
+        if let Some(rest) = text.strip_prefix('>') {
+            text = rest.trim_start();
+            continue;
+        }
+        match ["- ", "* ", "• "]
+            .iter()
+            .find_map(|prefix| text.strip_prefix(prefix))
+        {
+            Some(rest) => text = rest.trim_start(),
+            None => break,
+        }
+    }
+    text.trim_end()
+}
+
+/// Returns the question text when the line is a closed yes/no question, `None` otherwise.
+///
+/// The emphasis is stripped **before** the `?` gate, so «**¿Hacemos esto o no?**» is
+/// recognised and its label carries no Markdown markers.
+///
+/// Accents are load-bearing and are kept on purpose: `qué`/`cuál`/… are interrogatives while
+/// their unaccented twins are relatives or conjunctions, so folding them would drop
+/// legitimate binary questions or accept open ones. The accented forms are the main path;
+/// `cual` is kept only as a safety net for the common accent-typing mistake (`¿cual
+/// prefieres?`) and does not harm binary questions. The other unaccented twins (`que`,
+/// `cuantos`, `quienes`, …) are deliberately **not** included: they are frequent relatives
+/// or conjunctions and would kill legitimate binary questions. Do not "normalise" this list.
+fn closed_yes_no_question(line: &str) -> Option<String> {
+    let question = strip_markdown_emphasis(strip_line_prefix(line));
+    if !question.ends_with('?') {
+        return None;
+    }
+    let lower = question.to_lowercase();
+    const OPEN_INTERROGATIVES: [&str; 14] = [
+        "qué", "cuál", "cual", "quién", "cómo", "cuándo", "dónde", "cuánto", "cuáles", "quiénes",
+        "cuántos", "cuántas", "cuánta", "adónde",
+    ];
+    if OPEN_INTERROGATIVES
+        .iter()
+        .any(|word| contains_word(&lower, word))
+    {
+        return None;
+    }
+    if coordinates_named_alternatives(&lower) {
+        return None;
+    }
+    // A bare `?` (or `¿?`) leaves no alphanumeric content, so it never grows a choice.
+    if question
+        .trim_matches(|character: char| !character.is_alphanumeric())
+        .is_empty()
+    {
+        return None;
+    }
+    Some(question)
+}
+
+/// Whether the question coordinates two **named** alternatives with `o`, `ó` or `u`.
+///
+/// «o no» and «o sí» are the binary form itself, not alternatives, so they are allowed;
+/// any other conjunction pair («¿Lo hago ahora o mañana?», «¿Son 7 ó 8?», «¿Son 7 u 8?»)
+/// means a `Sí`/`No` answer would be wrong.
+fn coordinates_named_alternatives(lower: &str) -> bool {
+    let mut words = lower.split_whitespace();
+    while let Some(word) = words.next() {
+        let conjunction = trim_word(word);
+        if conjunction == "o" || conjunction == "ó" || conjunction == "u" {
+            match words.next().map(trim_word) {
+                Some("no") | Some("sí") => {}
+                _ => return true,
+            }
+        }
+    }
+    false
+}
+
+/// Strips the punctuation around a token so `no?` compares as `no`.
+fn trim_word(word: &str) -> &str {
+    word.trim_matches(|character: char| !character.is_alphanumeric())
 }
 
 /// Number of digits after the decimal point, or `None` when the token is not a decimal number.
@@ -871,6 +1031,30 @@ pub fn synthesize(presentations: &[Presentation], tool_results: &[(String, Value
         .collect()
 }
 
+/// Builds the `QuickForm` payload shared by the options form and the binary choice: a single
+/// `radio` group labelled with `label`, the given `options`, and the fixed `Enviar` submit.
+/// `title` is omitted when empty; the binary choice never carries one.
+fn quick_form(label: &str, options: Value, title: &str, span: Span) -> Widget {
+    let mut data = Map::new();
+    if !title.is_empty() {
+        data.insert("title".to_string(), Value::String(title.to_string()));
+    }
+    data.insert(
+        "fields".to_string(),
+        json!([{
+            "name": "choice",
+            "label": label,
+            "type": "radio",
+            "options": options,
+        }]),
+    );
+    data.insert(
+        "submit_label".to_string(),
+        Value::String("Enviar".to_string()),
+    );
+    widget("QuickForm", Value::Object(data), span)
+}
+
 /// Builds the widget for a single presentation, preferring the turn's tool data when it fits.
 fn widget_for(presentation: &Presentation, tool_results: &[(String, Value)]) -> Widget {
     match presentation {
@@ -884,24 +1068,7 @@ fn widget_for(presentation: &Presentation, tool_results: &[(String, Value)]) -> 
             } else {
                 title.as_str()
             };
-            let mut data = Map::new();
-            if !title.is_empty() {
-                data.insert("title".to_string(), Value::String(title.clone()));
-            }
-            data.insert(
-                "fields".to_string(),
-                json!([{
-                    "name": "choice",
-                    "label": label,
-                    "type": "radio",
-                    "options": options,
-                }]),
-            );
-            data.insert(
-                "submit_label".to_string(),
-                Value::String("Enviar".to_string()),
-            );
-            widget("QuickForm", Value::Object(data), *span)
+            quick_form(label, json!(options), title, *span)
         }
         Presentation::Checklist { title, items, span } => {
             let labels = tool_items(tool_results).unwrap_or_else(|| items.clone());
@@ -932,6 +1099,9 @@ fn widget_for(presentation: &Presentation, tool_results: &[(String, Value)]) -> 
             data.insert("latitude".to_string(), json!(*latitude));
             data.insert("longitude".to_string(), json!(*longitude));
             widget("LocationWidget", Value::Object(data), *span)
+        }
+        Presentation::BinaryChoice { question, span } => {
+            quick_form(question, json!(["Sí", "No"]), "", *span)
         }
     }
 }
@@ -1004,7 +1174,8 @@ mod tests {
         match presentation {
             Presentation::Options { span, .. }
             | Presentation::Checklist { span, .. }
-            | Presentation::Location { span, .. } => *span,
+            | Presentation::Location { span, .. }
+            | Presentation::BinaryChoice { span, .. } => *span,
         }
     }
 
@@ -1403,8 +1574,20 @@ mod tests {
     }
 
     #[test]
-    fn no_detection_procedure_with_yes_no_question() {
-        assert!(detect("1. Abre el fichero\n2. Edita la línea\n¿Quieres que continúe?").is_empty());
+    fn procedure_with_yes_no_question_projects_only_the_choice() {
+        // The numbered steps stay a procedure (no `cuál` interrogative, so no options);
+        // the closing yes/no question is the turn-closing binary choice.
+        let text = "1. Abre el fichero\n2. Edita la línea\n¿Quieres que continúe?";
+        let presentations = detect(text);
+        assert_eq!(presentations.len(), 1);
+        assert!(matches!(
+            presentations[0],
+            Presentation::BinaryChoice { .. }
+        ));
+        // The procedure itself SHALL NOT degrade into an options widget.
+        assert!(!presentations
+            .iter()
+            .any(|presentation| matches!(presentation, Presentation::Options { .. })));
     }
 
     #[test]
@@ -2295,5 +2478,206 @@ mod tests {
             json!(["Cine", "Cena"]),
             "las alternativas SHALL salir del texto, con su texto completo"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Detection — Binary choice
+    // ---------------------------------------------------------------------
+
+    /// The single widget a text projects, panicking when it is not exactly one.
+    fn only_widget(text: &str) -> Widget {
+        let mut widgets = synthesize(&detect(text), &[]);
+        assert_eq!(widgets.len(), 1, "expected exactly one widget for {text:?}");
+        widgets.remove(0)
+    }
+
+    #[test]
+    fn binary_choice_question_closes_turn() {
+        let text = "Vale, lo dejamos así.\n¿Hacemos esto o no?";
+        let widget = only_widget(text);
+        assert_eq!(widget.name, "QuickForm");
+        assert_eq!(widget.data["fields"][0]["type"], "radio");
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+        assert_eq!(widget.data["fields"][0]["label"], "¿Hacemos esto o no?");
+        assert!(widget.data.get("title").is_none());
+        let start = text.find('¿').unwrap();
+        assert_eq!(widget.span, Some([start, text.len()]));
+    }
+
+    #[test]
+    fn binary_choice_short_question() {
+        let text = "¿Te parece bien?";
+        let widget = only_widget(text);
+        assert_eq!(widget.name, "QuickForm");
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+        assert_eq!(widget.data["fields"][0]["label"], "¿Te parece bien?");
+        assert!(widget.data.get("title").is_none());
+        assert_eq!(widget.span, Some([0, text.len()]));
+    }
+
+    #[test]
+    fn binary_choice_single_word_question() {
+        let text = "¿Empezamos?";
+        let widget = only_widget(text);
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+        assert_eq!(widget.data["fields"][0]["label"], "¿Empezamos?");
+        assert_eq!(widget.span, Some([0, text.len()]));
+    }
+
+    #[test]
+    fn binary_choice_open_question_is_not_binary() {
+        for text in [
+            "¿Qué prefieres?",
+            "¿Cuándo lo hacemos?",
+            "¿Cómo lo hacemos?",
+            "¿Por qué falla?",
+        ] {
+            assert!(detect(text).is_empty(), "unexpected detection for {text:?}");
+        }
+    }
+
+    #[test]
+    fn binary_choice_named_alternatives_are_not_binary() {
+        assert!(detect("¿Lo hago ahora o mañana?").is_empty());
+    }
+
+    #[test]
+    fn binary_choice_question_must_close_the_turn() {
+        let text = "¿Hacemos esto o no?\n\nPuedes pensarlo con calma.";
+        assert!(detect(text).is_empty());
+    }
+
+    #[test]
+    fn binary_choice_inside_fence_is_not_detected() {
+        assert!(detect("Mira el bloque:\n```\n¿Hacemos esto o no?").is_empty());
+        assert!(detect("Mira:\n```\n¿Hacemos esto o no?\n```").is_empty());
+    }
+
+    #[test]
+    fn binary_choice_before_a_closing_fence_is_detected() {
+        // "Last line with content" means the last one *outside* fenced blocks: a closing
+        // code fence must not hide a question that precedes it.
+        let text = "¿Hacemos esto o no?\n```\ncode\n```";
+        let presentations = detect(text);
+        assert_eq!(presentations.len(), 1);
+        assert!(matches!(
+            presentations[0],
+            Presentation::BinaryChoice { .. }
+        ));
+        assert_eq!(span_of(&presentations[0]), [0, "¿Hacemos esto o no?".len()]);
+    }
+
+    #[test]
+    fn binary_choice_bare_question_mark_is_not_binary() {
+        // A line that is only `?` (or `¿?`) has no alphanumeric content and must not grow a
+        // Sí/No choice labelled "?".
+        assert!(detect("?").is_empty());
+        assert!(detect("¿?").is_empty());
+    }
+
+    #[test]
+    fn binary_choice_trailing_spaces_are_detected() {
+        let text = "¿Hacemos esto o no?   ";
+        let presentations = detect(text);
+        assert_eq!(presentations.len(), 1);
+        assert!(matches!(
+            presentations[0],
+            Presentation::BinaryChoice { .. }
+        ));
+        match &presentations[0] {
+            Presentation::BinaryChoice { question, .. } => {
+                assert_eq!(question, "¿Hacemos esto o no?");
+            }
+            other => panic!("expected a binary choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn binary_choice_yields_to_options() {
+        let text = "1) Rojo\n2) Azul\n¿Cuál prefieres?\n¿Te parece bien?";
+        let presentations = detect(text);
+        assert_eq!(presentations.len(), 1);
+        assert!(matches!(presentations[0], Presentation::Options { .. }));
+    }
+
+    #[test]
+    fn binary_choice_absent_when_no_question_closes() {
+        assert!(detect("Todo listo.\nSin preguntas pendientes.").is_empty());
+    }
+
+    #[test]
+    fn binary_choice_plural_and_feminine_interrogatives_are_not_binary() {
+        // `contains_word` needs a non-alphanumeric boundary, so the singular list misses
+        // these accented plural/feminine forms unless they are spelled out.
+        for text in [
+            "¿Cuáles son los eventos de mañana?",
+            "¿Cuántos eventos hay?",
+            "¿Quiénes asisten?",
+            "¿Adónde vamos?",
+            "¿Cuánta gente viene?",
+        ] {
+            assert!(detect(text).is_empty(), "unexpected detection for {text:?}");
+        }
+    }
+
+    #[test]
+    fn binary_choice_accented_or_and_u_conjunctions_are_not_binary() {
+        // `ó` and `u` coordinate alternatives just like `o`, so a Sí/No answer would be wrong.
+        assert!(detect("¿Son 7 ó 8?").is_empty());
+        assert!(detect("¿Son 7 u 8?").is_empty());
+    }
+
+    #[test]
+    fn binary_choice_o_si_is_allowed() {
+        let text = "¿Hacemos esto o sí?";
+        let widget = only_widget(text);
+        assert_eq!(widget.data["fields"][0]["label"], "¿Hacemos esto o sí?");
+    }
+
+    #[test]
+    fn binary_choice_por_correo_o_por_nota_is_not_binary() {
+        assert!(detect("¿Por correo o por nota?").is_empty());
+    }
+
+    #[test]
+    fn binary_choice_emphasis_label_has_no_markers() {
+        // The `?` gate must run after stripping the emphasis, or the trailing `**` hides it.
+        let text = "Vale.\n**¿Hacemos esto o no?**";
+        let widget = only_widget(text);
+        assert_eq!(widget.data["fields"][0]["label"], "¿Hacemos esto o no?");
+        assert!(!widget.data["fields"][0]["label"]
+            .as_str()
+            .unwrap()
+            .contains("**"));
+    }
+
+    #[test]
+    fn binary_choice_quote_prefix_is_trimmed_from_label() {
+        let text = "> ¿Hacemos esto o no?";
+        let widget = only_widget(text);
+        assert_eq!(widget.data["fields"][0]["label"], "¿Hacemos esto o no?");
+    }
+
+    #[test]
+    fn binary_choice_yields_to_location_on_the_same_line() {
+        // A location line that also ends in a question must not grow two widgets over the
+        // same span: the closing-question form must yield, keeping spans disjoint.
+        let text = "lat: 40.4168, lon: -3.7038 ¿Es esta la ubicación?";
+        let presentations = detect(text);
+        assert_eq!(presentations.len(), 1);
+        assert!(matches!(presentations[0], Presentation::Location { .. }));
+        assert!(!presentations
+            .iter()
+            .any(|presentation| matches!(presentation, Presentation::BinaryChoice { .. })));
+        let spans: Vec<Span> = presentations.iter().map(span_of).collect();
+        for left in 0..spans.len() {
+            for right in left + 1..spans.len() {
+                assert!(
+                    !spans_overlap(spans[left], spans[right]),
+                    "spans {left} and {right} overlap: {:?}",
+                    spans
+                );
+            }
+        }
     }
 }
