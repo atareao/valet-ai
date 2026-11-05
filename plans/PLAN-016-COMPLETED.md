@@ -1,8 +1,11 @@
 # PLAN-016 — Desbloquear el CI: el test de la ventana temporal de `background_summary` deja de depender del reloj
 
-**Change OpenSpec asociado:** `stats-test-clock-independence` (usa `skip_specs: true`, como el precedente
-`2026-09-29-fix-spec-validation-lint-flaky`).
-**Estado:** 🚧 En curso (abierto el 2026-11-05).
+- **Estado:** ✅ Completado, archivado y desplegado como **v0.27.2** el 2026-11-05.
+- **Fecha:** 2026-11-05
+- **Change de OpenSpec:** `stats-test-clock-independence` (`skip_specs: true`, como el precedente
+  `2026-09-29-fix-spec-validation-lint-flaky`), archivado en
+  `openspec/changes/archive/2026-11-05-stats-test-clock-independence/`.
+- **Release:** `v0.27.2` desde `main`.
 
 ---
 
@@ -87,13 +90,13 @@ del repositorio.
 
 ## 6. Criterios de aceptación
 
-- [ ] `cargo test` en verde: 1562 tests de lib + migraciones.
-- [ ] `cargo clippy --all-targets -- -D warnings` sin warnings y `cargo fmt --all -- --check` sin diffs.
-- [ ] El test no contiene ninguna fecha absoluta ni compara contra un literal de fecha.
-- [ ] El test cubre dentro / fuera de ventana / sin filas de forma determinista.
-- [ ] CI de `development` y de `main` en verde el mismo día.
-- [ ] Los cinco PRs de Dependabot resueltos según §7.
-- [ ] `openspec validate --all --strict` sin errores.
+- [x] `cargo test` en verde: 1562 tests de lib + migraciones.
+- [x] `cargo clippy --all-targets -- -D warnings` sin warnings y `cargo fmt --all -- --check` sin diffs.
+- [x] El test no contiene ninguna fecha absoluta ni compara contra un literal de fecha.
+- [x] El test cubre dentro / fuera de ventana / sin filas de forma determinista.
+- [x] CI de `development` y de `main` en verde el mismo día.
+- [x] Los cinco PRs de Dependabot resueltos según §7.
+- [x] `openspec validate --all --strict` sin errores.
 
 ## 7. Cola de mantenimiento de Dependabot
 
@@ -131,7 +134,20 @@ release. Por eso **se recrea el bump de `rustls` en una rama desde `development`
   publicar un release con CI verde (el tag se crea a mano, así que un release podría salir con el CI rojo sin
   que nadie lo note).
 
-## 9. Estado
+## 9. Estado y siguientes pasos
 
-🚧 En curso. Abierto el 2026-11-05 tras el bloqueo del CI detectado al intentar mergear los cinco PRs de
-Dependabot.
+1. ✅ `[OPENSPEC - ARCHIVE]` Change `stats-test-clock-independence` aprobado, implementado con TDD (RED → GREEN →
+   REFACTOR) y archivado en `openspec/changes/archive/2026-11-05-stats-test-clock-independence/`.
+2. ✅ Auditoría de `@rust-reviewer` sobre el diff del test: **APRUEBA** (0 bloqueantes, 0 mayores). Nits resueltos
+   (tareas marcadas, alcance trazado, riesgo residual registrado en `design.md`) o aceptados conscientemente.
+3. ✅ Mergeado a `development` con su CI verde (PR #304) y **desbloqueo verificado**: los cuatro PRs de Dependabot
+   que apuntaban a `development` pasaron a verde y se mergearon (#278 `uuid` 1.29.0, #279 `sha2` 0.11.1, #283
+   `@testing-library/user-event` 14.6.8, #282 `typescript-eslint` 8.72).
+4. ✅ El bump de `rustls` 0.23.45 → 0.23.46 se recreó en `development` (PR #305) —**cierra las 4 alertas** de
+   `rustls`: #22 low, #23 medium, #24 low, #25 low— y el PR #268 se **cerró** explicando el enrutado por `release`.
+5. ✅ Release **v0.27.2** (PR #306, tag `v0.27.2`): CI de `main` en verde y los dos `Image` runs (push a `main` y
+   tag) publicados sin incidencias.
+6. ⏸️ Pendientes de adaptación (saltos mayores, piden trabajo y no se mergean): #284 (`antd` 5→6), #281
+   (`react-leaflet` 4→5), #280 (`react` + `@types/react`) y la decisión del usuario sobre #288
+   (`chore/docs-agents-lock`, en conflicto con este índice).
+7. ⏸️ Pendiente menor: la alerta de `minimatch` (npm, *dev*) sigue sin PR abierto de Dependabot.
