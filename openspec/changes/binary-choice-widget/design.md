@@ -6,6 +6,11 @@ Solo se reconoce la **última línea con contenido** del turno. Una pregunta en 
 retórica (una figura del propio relato) o una cita de lo que preguntó el usuario. La última, en cambio, es la
 que pide una decisión: es la posición en la que el agente pide permiso o confirmación.
 
+«Última línea con contenido» significa **la última fuera de los bloques de código**: el autómata de vallas
+(`last_content_line_outside_fences`) ignora las líneas encerradas entre ``` ``` ``` o ```~~~```, de modo que un
+bloque de código de cierre no oculta una pregunta que lo precede (p. ej. «¿Hacemos esto o no?\n```\ncode\n```»
+sigue proyectando la elección binaria).
+
 ## D2. Precisión antes que cobertura
 
 Dos exclusiones acotan el falso positivo, que es el riesgo real de esta forma:
@@ -55,9 +60,21 @@ configuración sin uso real.
 **Fuera de alcance:** el frontend; la guía de widgets (`SKILL_WIDGETS_PROMPT`), porque el disparador es el texto
 y no el modelo; un ajuste para las etiquetas; y un widget binario de un toque.
 
+**Cambio de comportamiento aceptado:** el test `no_detection_procedure_with_yes_no_question` (heredado del cambio
+`widget-projection`) exigía que «1. Abre el fichero\n2. Edita la línea\n¿Quieres que continúe?» no produjera
+**nada**. Codificaba la política antigua («una pregunta de sí/no deja un procedimiento como procedimiento»), que
+este change revierte para la pregunta de cierre. Pasa a `procedure_with_yes_no_question_projects_only_the_choice`:
+los pasos siguen sin ser opciones y la pregunta se convierte en la elección. La spec vigente no respaldaba la
+aserción antigua (no había escenario de «procedimiento + sí/no»), así que el vuelco no contradice ningún requisito
+preexistente; queda cubierto por el escenario nuevo del delta.
+
 **Riesgos:**
 
 - **Falso positivo** (una pregunta de cierre que no sea de sí/no y acabe con widget). Se acota con D1 y D2 y se
   blinda con los **escenarios negativos** de la spec, que son la mitad del trabajo del change.
 - **Pregunta duplicada o perdida en pantalla**. Mitigado por D3, con su escenario propio.
 - **Concurrencia con la forma de opciones**. Mitigado por la regla de precedencia de D5.
+- **Solapamiento de tramos** con otra forma (`Location`, `Checklist`): un turno con una línea de coordenadas que
+  además termina en pregunta generaría dos widgets sobre el mismo `span` y el cliente degradaría uno a prosa.
+  Mitigado por el filtro de intersección de `detect`: la elección de cierre solo se proyecta si su `span` no pisa
+  el de ninguna presentación ya recogida, lo que preserva el invariante «spans never overlap».

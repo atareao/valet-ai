@@ -39,10 +39,11 @@ opciones SHALL exigir etiquetas **alfabéticas**.
 
 Una pregunta cerrada de sí/no SHALL reconocerse **solo** cuando cierre el turno: la última línea con contenido
 SHALL terminar en `?`, y SHALL NOT llevar ningún interrogativo abierto (`qué`, `cuál`, `quién`, `cómo`,
-`cuándo`, `dónde`, `cuánto`, `por qué`) ni coordinar dos alternativas **nombradas** con `o` —salvo `o no` y
-`o sí`, que son precisamente la forma binaria—. Una pregunta que no cierre el turno, una pregunta abierta, una
-pregunta con alternativas nombradas («¿Lo hago ahora o mañana?») y una pregunta dentro de un bloque de código
-SHALL NOT reconocerse.
+`cuándo`, `dónde`, `cuánto`, `por qué`, y sus formas plurales o femeninas acentuadas `cuáles`, `quiénes`,
+`cuántos`, `cuántas`, `cuánta`, `adónde`) ni coordinar dos alternativas **nombradas** con `o` —ni con sus
+variantes `ó` y `u`—, salvo `o no` y `o sí`, que son precisamente la forma binaria—. Una pregunta que no cierre
+el turno, una pregunta abierta, una pregunta con alternativas nombradas («¿Lo hago ahora o mañana?», «¿Son 7 ó
+8?») y una pregunta dentro de un bloque de código SHALL NOT reconocerse.
 
 La elección binaria SHALL emitirse con las dos opciones fijas `Sí` y `No` y SHALL NOT proyectarse si el turno
 ya produjo un widget de **opciones**: SHALL proyectarse **una sola** cuando ambas formas compitan. La
@@ -206,3 +207,10 @@ SHALL omitirse: el widget del modelo gana, porque su payload es más rico.
 **When** el turno cierra
 **Then** SHALL proyectarse un solo widget de opciones
 **And** SHALL NOT proyectarse ningún widget de elección binaria
+
+#### Scenario: Un procedimiento seguido de una pregunta de sí/no no se degrada a opciones
+
+**Given** un turno cuyo texto final presenta una lista numerada de pasos y termina en una pregunta cerrada de sí/no (por ejemplo «1. Abre el fichero\n2. Edita la línea\n¿Quieres que continúe?»)
+**When** el turno cierra
+**Then** SHALL proyectarse un widget de elección con las opciones `Sí` y `No`
+**And** SHALL NOT proyectarse un widget de opciones para el procedimiento

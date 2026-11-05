@@ -48,4 +48,7 @@ preguntas se quedan sin widget.
 - Sin cambios en el frontend, en el esquema de base de datos ni en la API.
 - Sin migración y sin tocar la guía de widgets (`SKILL_WIDGETS_PROMPT`): el disparador es el texto, no el modelo.
 - Comportamiento observable: los turnos que terminan en una pregunta de sí/no pasan a mostrar un widget de
-  `Sí`/`No` en el sitio de la pregunta. El resto de formas y no-detecciones quedan intactas.
+  `Sí`/`No` en el sitio de la pregunta. El resto de formas no cambia: con un `Location` o una `Checklist` en el
+  turno **y** una pregunta de cierre se proyectan **dos** widgets, en tramos distintos. Solo se revierte **una**
+  no-detección heredada: un procedimiento numerado cerrado por una pregunta de sí/no deja de no proyectar nada y
+  pasa a proyectar la elección (el procedimiento en sí sigue sin ser opciones). Es el caso que motivó el change.
