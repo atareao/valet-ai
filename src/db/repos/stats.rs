@@ -644,6 +644,26 @@ mod tests {
         .unwrap();
     }
 
+    /// Pins a row's `created_at` to `datetime('now', <offset>)` (an SQLite
+    /// modifier such as `"-1 day"` or `"-40 days"`), so window tests compare
+    /// against the same clock the query uses and never expire as the calendar
+    /// moves. `created_at` is TEXT and SQLite compares it as a string, so an
+    /// absolute fixture date silently falls out of a relative window.
+    async fn set_created_at(pool: &SqlitePool, id: &str, offset: &str) {
+        let result =
+            sqlx::query("UPDATE llm_requests SET created_at = datetime('now', ?1) WHERE id = ?2")
+                .bind(offset)
+                .bind(id)
+                .execute(pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            result.rows_affected(),
+            1,
+            "fixture row {id} must exist before its created_at is pinned"
+        );
+    }
+
     /// Like [`setup`] but with SQLite foreign-key enforcement enabled, matching
     /// production (`db::init_db` sets `foreign_keys(true)`).
     async fn setup_with_fk() -> SqlitePool {
@@ -1329,23 +1349,14 @@ mod tests {
         for i in 0..10 {
             let id = format!("old-{i}");
             insert_request(
-                &pool,
-                &id,
-                "gpt-4o",
-                10,
-                5,
-                15,
-                0,
-                0,
-                0.001,
-                None,
-                "success",
-                None,
-                None,
-                Some("2026-07-01T00:00:00"),
+                &pool, &id, "gpt-4o", 10, 5, 15, 0, 0, 0.001, None, "success", None, None, None,
             )
             .await;
         }
+        sqlx::query("UPDATE llm_requests SET created_at = datetime('now', '-60 days') WHERE id LIKE 'old-%'")
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // 10 new records (today)
         for i in 0..10 {
@@ -2109,49 +2120,66 @@ mod tests {
         assert!(bg.iter().all(|b| b.suspicious_calls == 0));
     }
 
-    /// `last_call_at` is the maximum `created_at` of the pair, and `None` for
-    /// an origin with no rows.
+    /// `last_call_at` is the maximum `created_at` **inside the window**, and
+    /// `None` for an origin with no rows.
+    ///
+    /// The fixtures are relative to `datetime('now')` on purpose: the query
+    /// compares `created_at` against `datetime('now', '-N days')`, so an
+    /// absolute fixture date would make this test expire the day the calendar
+    /// moves past it.
     #[tokio::test]
     async fn test_background_summary_last_call_at() {
         let pool = setup().await;
 
+        // Same `(kind, model)` pair for all three rows.
         insert_request_with_kind(
-            &pool,
-            "lc-a",
-            "router",
-            "A",
-            1,
-            1,
-            2,
-            0.01,
-            None,
-            "success",
-            None,
-            Some("2026-10-01T10:00:00"),
+            &pool, "lc-a", "router", "A", 1, 1, 2, 0.01, None, "success", None, None,
         )
         .await;
         insert_request_with_kind(
-            &pool,
-            "lc-b",
-            "router",
-            "A",
-            1,
-            1,
-            2,
-            0.01,
-            None,
-            "success",
-            None,
-            Some("2026-10-05T10:00:00"),
+            &pool, "lc-b", "router", "A", 1, 1, 2, 0.01, None, "success", None, None,
         )
         .await;
+        insert_request_with_kind(
+            &pool, "lc-c", "router", "A", 1, 1, 2, 0.01, None, "success", None, None,
+        )
+        .await;
+
+        // Distinct day offsets on purpose: `datetime('now')` has second
+        // granularity and two rows written in the same second would tie.
+        set_created_at(&pool, "lc-a", "-40 days").await; // outside a 30-day window
+        set_created_at(&pool, "lc-b", "-2 days").await; // inside, not the newest
+        set_created_at(&pool, "lc-c", "-1 day").await; // inside and the newest
+
+        // The expectation is read back from the database: the invariant is
+        // "the newest row inside the window", not a literal date string.
+        let expected: String =
+            sqlx::query_scalar("SELECT created_at FROM llm_requests WHERE id = 'lc-c'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         let bg = StatsRepo::background_summary(&pool, 30).await.unwrap();
         let router = bg.iter().find(|b| b.kind == "router").unwrap();
-        assert_eq!(router.last_call_at.as_deref(), Some("2026-10-05T10:00:00"));
+        assert_eq!(router.last_call_at.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            router.calls, 2,
+            "the -40 days row is outside the 30-day window"
+        );
+
+        // Widening the window pulls the old row back in: the cutoff is measured
+        // from `now`, not from a fixed date.
+        let bg = StatsRepo::background_summary(&pool, 90).await.unwrap();
+        let router = bg.iter().find(|b| b.kind == "router").unwrap();
+        assert_eq!(
+            router.calls, 3,
+            "the -40 days row is inside the 90-day window"
+        );
+        assert_eq!(router.last_call_at.as_deref(), Some(expected.as_str()));
 
         let archivist = bg.iter().find(|b| b.kind == "archivist").unwrap();
         assert!(archivist.last_call_at.is_none());
+        assert_eq!(archivist.calls, 0);
     }
 
     /// The `days` window discards rows older than the cutoff.
@@ -2166,20 +2194,10 @@ mod tests {
         .await;
         // Old (60 days ago).
         insert_request_with_kind(
-            &pool,
-            "w-old",
-            "router",
-            "A",
-            1,
-            1,
-            2,
-            0.01,
-            None,
-            "success",
-            None,
-            Some("2026-08-01T00:00:00"),
+            &pool, "w-old", "router", "A", 1, 1, 2, 0.01, None, "success", None, None,
         )
         .await;
+        set_created_at(&pool, "w-old", "-60 days").await;
 
         let bg = StatsRepo::background_summary(&pool, 7).await.unwrap();
         let router = bg.iter().find(|b| b.kind == "router").unwrap();
@@ -2278,20 +2296,10 @@ mod tests {
         )
         .await;
         insert_request_with_kind(
-            &pool,
-            "bm-old",
-            "chat",
-            "gpt-4o",
-            100,
-            50,
-            150,
-            0.01,
-            None,
-            "success",
-            None,
-            Some("2026-08-01T00:00:00"),
+            &pool, "bm-old", "chat", "gpt-4o", 100, 50, 150, 0.01, None, "success", None, None,
         )
         .await;
+        set_created_at(&pool, "bm-old", "-60 days").await;
 
         let models = StatsRepo::by_model(&pool, 7).await.unwrap();
         let gpt = models.iter().find(|m| m.model == "gpt-4o").unwrap();
