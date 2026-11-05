@@ -273,7 +273,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-013-COMPLETED.md` | Proyección determinista de widgets: el servidor proyecta, el modelo aporta contenido (change `widget-projection`; PR #289/#290) | ✅ Completado |
 | `plans/PLAN-014-COMPLETED.md` | La proyección reconoce los formatos reales del modelo (change `widget-projection-formats`; PR #291/#292, v0.27.0) | ✅ Completado |
 | `plans/PLAN-015-COMPLETED.md` | El formulario de opciones deja de ser un jeroglífico: la opción lleva el texto de su fila y solo se proyectan tablas declaradas (change `widget-options-contract`; PR #295, v0.27.1) | ✅ Completado |
-| `plans/PLAN-016.md` | Desbloquear el CI: el test de la ventana temporal de `background_summary` deja de depender del reloj, y la cola de Dependabot (change `stats-test-clock-independence`) | 🚧 En curso |
+| `plans/PLAN-016-COMPLETED.md` | Desbloquear el CI: el test de la ventana temporal de `background_summary` deja de depender del reloj, y la cola de Dependabot (change `stats-test-clock-independence`; PRs #304/#305, v0.27.2) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
