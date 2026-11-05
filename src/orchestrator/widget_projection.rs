@@ -2296,4 +2296,90 @@ mod tests {
             "las alternativas SHALL salir del texto, con su texto completo"
         );
     }
+
+    // ---------------------------------------------------------------------
+    // Detection — Binary choice
+    // ---------------------------------------------------------------------
+
+    /// The single widget a text projects, panicking when it is not exactly one.
+    fn only_widget(text: &str) -> Widget {
+        let mut widgets = synthesize(&detect(text), &[]);
+        assert_eq!(widgets.len(), 1, "expected exactly one widget for {text:?}");
+        widgets.remove(0)
+    }
+
+    #[test]
+    fn binary_choice_question_closes_turn() {
+        let text = "Vale, lo dejamos así.\n¿Hacemos esto o no?";
+        let widget = only_widget(text);
+        assert_eq!(widget.name, "QuickForm");
+        assert_eq!(widget.data["fields"][0]["type"], "radio");
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+        assert_eq!(widget.data["fields"][0]["label"], "¿Hacemos esto o no?");
+        assert!(widget.data.get("title").is_none());
+        let start = text.find('¿').unwrap();
+        assert_eq!(widget.span, Some([start, text.len()]));
+    }
+
+    #[test]
+    fn binary_choice_short_question() {
+        let text = "¿Te parece bien?";
+        let widget = only_widget(text);
+        assert_eq!(widget.name, "QuickForm");
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+        assert_eq!(widget.data["fields"][0]["label"], "¿Te parece bien?");
+        assert!(widget.data.get("title").is_none());
+        assert_eq!(widget.span, Some([0, text.len()]));
+    }
+
+    #[test]
+    fn binary_choice_single_word_question() {
+        let text = "¿Empezamos?";
+        let widget = only_widget(text);
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+        assert_eq!(widget.data["fields"][0]["label"], "¿Empezamos?");
+        assert_eq!(widget.span, Some([0, text.len()]));
+    }
+
+    #[test]
+    fn binary_choice_open_question_is_not_binary() {
+        for text in [
+            "¿Qué prefieres?",
+            "¿Cuándo lo hacemos?",
+            "¿Cómo lo hacemos?",
+            "¿Por qué falla?",
+        ] {
+            assert!(detect(text).is_empty(), "unexpected detection for {text:?}");
+        }
+    }
+
+    #[test]
+    fn binary_choice_named_alternatives_are_not_binary() {
+        assert!(detect("¿Lo hago ahora o mañana?").is_empty());
+    }
+
+    #[test]
+    fn binary_choice_question_must_close_the_turn() {
+        let text = "¿Hacemos esto o no?\n\nPuedes pensarlo con calma.";
+        assert!(detect(text).is_empty());
+    }
+
+    #[test]
+    fn binary_choice_inside_fence_is_not_detected() {
+        assert!(detect("Mira el bloque:\n```\n¿Hacemos esto o no?").is_empty());
+        assert!(detect("Mira:\n```\n¿Hacemos esto o no?\n```").is_empty());
+    }
+
+    #[test]
+    fn binary_choice_yields_to_options() {
+        let text = "1) Rojo\n2) Azul\n¿Cuál prefieres?\n¿Te parece bien?";
+        let presentations = detect(text);
+        assert_eq!(presentations.len(), 1);
+        assert!(matches!(presentations[0], Presentation::Options { .. }));
+    }
+
+    #[test]
+    fn binary_choice_absent_when_no_question_closes() {
+        assert!(detect("Todo listo.\nSin preguntas pendientes.").is_empty());
+    }
 }
