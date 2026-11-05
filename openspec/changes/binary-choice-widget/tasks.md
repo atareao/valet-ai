@@ -28,13 +28,13 @@
 
 - [x] 4.1 Limpieza y comentarios del porqué (la exclusión de alternativas nombradas y de interrogativos abiertos).
 - [x] 4.2 `cargo clippy --all-targets -- -D warnings` sin warnings y `cargo fmt --all -- --check` sin diffs.
-- [ ] 4.3 Auditoría de `@rust-reviewer` sobre el diff: 0 bloqueantes, 0 mayores.
+- [x] 4.3 Auditoría de `@rust-reviewer` sobre el diff: 0 bloqueantes, 0 mayores.
 
 ## 5. Verificación
 
-- [ ] 5.1 `just check-all` → exit 0.
-- [ ] 5.2 `openspec validate --all --strict` sin errores.
-- [ ] 5.3 Comprobación de que el frontend no necesita cambios (contrato `QuickForm` sin tocar).
+- [x] 5.1 `just check-all` → exit 0.
+- [x] 5.2 `openspec validate --all --strict` sin errores.
+- [x] 5.3 Comprobación de que el frontend no necesita cambios (contrato `QuickForm` sin tocar).
 
 ## 6. Release
 
@@ -54,3 +54,4 @@
 - [x] 7.8 (M8) Una sola construcción con `presentations.extend(...)` en vez del `if`/`if let` anidado.
 - [x] 7.9 (M9/M10/M11/M12/M13) Matices de documentación (`is_interrogative`, `proposal.md`, `design.md`, acentos de `closed_yes_no_question`) y recorte del prefijo de cita/viñeta en la etiqueta.
 - [x] 7.10 `cargo test --lib`, `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings` y `openspec validate` en verde.
+- [x] 7.11 (N1–N4) Cierre de la reauditoría: comentario de `closed_yes_no_question` alineado con el array; `?`/`¿?` sueltos descartados (rama muerta eliminada); fijado por test y documentado en `design.md` §D1 que la pregunta puede preceder a una valla de cierre; y bordes de espacios finales cubiertos (con `?»`/`?)` declarado como limitación conocida).
