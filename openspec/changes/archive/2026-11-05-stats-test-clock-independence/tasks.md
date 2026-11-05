@@ -29,13 +29,13 @@
 
 ## 5. Desbloqueo de la cola de Dependabot
 
-- [ ] 5.1 Mergear el arreglo a `development` (PR propio con su CI verde) y comprobar que el CI de `development` pasa a verde.
-- [ ] 5.2 `update-branch` + espera de CI de los cuatro PRs que apuntan a `development` (#278 `uuid`, #279 `sha2`, #283 `@testing-library/user-event`, #282 `typescript-eslint`) y mergearlos con `--merge --delete-branch`.
-- [ ] 5.3 Recrear el bump de `rustls` 0.23.45 → 0.23.46 (security update) en una rama desde `development`, para que fluya por `release` → `main` sin mover la imagen `latest` a un commit sin release; cerrar el PR #268 explicando el motivo.
-- [ ] 5.4 Sincronizar `main` ← `development` y confirmar el CI de `main` en verde.
-- [ ] 5.5 Anotar como pendientes de trabajo de adaptación los saltos mayores con CI rojo: #284 (`antd` 5→6), #281 (`react-leaflet` 4→5), #280 (`react` + `@types/react`), y decidir el PR #288 (`chore/docs-agents-lock`, en conflicto).
+- [x] 5.1 Mergear el arreglo a `development` (PR propio con su CI verde) y comprobar que el CI de `development` pasa a verde.
+- [x] 5.2 `update-branch` + espera de CI de los cuatro PRs que apuntan a `development` (#278 `uuid`, #279 `sha2`, #283 `@testing-library/user-event`, #282 `typescript-eslint`) y mergearlos con `--merge --delete-branch`.
+- [x] 5.3 Recrear el bump de `rustls` 0.23.45 → 0.23.46 (security update) en una rama desde `development`, para que fluya por `release` → `main` sin mover la imagen `latest` a un commit sin release; cerrar el PR #268 explicando el motivo.
+- [x] 5.4 Sincronizar `main` ← `development` y confirmar el CI de `main` en verde.
+- [x] 5.5 Anotar como pendientes de trabajo de adaptación los saltos mayores con CI rojo: #284 (`antd` 5→6), #281 (`react-leaflet` 4→5), #280 (`react` + `@types/react`), y decidir el PR #288 (`chore/docs-agents-lock`, en conflicto).
 
 ## 6. Cierre
 
-- [ ] 6.1 `openspec archive stats-test-clock-independence`.
-- [ ] 6.2 Renombrar el plan a `plans/PLAN-016-COMPLETED.md` y actualizar la fila del índice en `AGENTS.md` §VI.
+- [x] 6.1 `openspec archive stats-test-clock-independence`.
+- [x] 6.2 Renombrar el plan a `plans/PLAN-016-COMPLETED.md` y actualizar la fila del índice en `AGENTS.md` §VI.
