@@ -1,6 +1,6 @@
 # PLAN-012 — Los widgets, siempre presentes
 
-**Estado:** activo
+**Estado:** ✅ Cerrado el 2026-11-04. El objetivo se cumplió por la vía determinista (`PLAN-013`); la vía de este plan —la guía prescriptiva— **midió 0/3** y se abandonó.
 **Fecha:** 2026-11-01
 **Origen:** queja del usuario — «Quiero que los widgets estuvieran siempre presentes. En las últimas
 ocasiones me ofrece varias alternativas, y en lugar de mostrar un widget me dice que elija A, B o C…
@@ -129,11 +129,14 @@ El detalle vive en `openspec/changes/widgets-always-on/tasks.md`. Resumen por fa
 
 ## 8. Estado y siguientes pasos
 
-1. Validar el change y **esperar la aprobación explícita del usuario** (protocolo SDD).
-2. RED → GREEN → REFACTOR con TDD, delegando la escritura en los subagentes y auditando con
-   `@rust-reviewer`.
-3. Release (minor: añade capacidad de comportamiento) y despliegue en `co1`.
-4. Batería de la tarea 6.3 sobre el despliegue y decisión sobre la fase determinista.
+1. ✅ Change `widgets-always-on` validado, aprobado e implementado con TDD, auditado con `@rust-reviewer` (el
+   fallo crítico de la inyección por umbral cero se corrigió) y **archivado** el 2026-11-02.
+2. ✅ Merge del PR #285 (`feature/widgets-always-on`) y release **v0.25.0**, con la imagen a GHCR.
+3. ❌ **La batería de la tarea 6.3 midió 0/3 widgets** (ni sobre la conversación real ni, después, sobre una
+   conversación vacía), con la guía nueva y `render_widget` expuesto en el 100 % de los turnos. El criterio de
+   aceptación de este plan **no se cumplió**: el modelo no llama a la herramienta aunque la tenga delante.
+4. ➡️ Se adoptó la vía determinista que el punto 5 del relevo dejaba abierta: `PLAN-013` (el servidor proyecta, el
+   modelo aporta contenido), continuada por `PLAN-014` y `PLAN-015`. **Ese es el mecanismo que decide hoy.**
 
 ## 9. Relevo para la sesión siguiente (1-nov-2026)
 
@@ -175,3 +178,20 @@ Evidencia ya obtenida: suite completa en verde (1944 pasan, 0 fallan, 1 ignorado
 **Nota de higiene:** no usar `route-eval --threshold` para validar este change (riesgo 5 de la
 sección 7). **Pendiente diferido, ajeno a este plan:** la comprobación visual de las pestañas
 verticales de ajustes al desplegar.
+
+## 10. Cierre (2026-11-04)
+
+Este plan no se cierra por su propia vía, sino porque su objetivo —que los widgets estén siempre presentes— lo
+cumplió otra: el servidor **proyecta** el widget de forma determinista (`PLAN-013`, `PLAN-014`, `PLAN-015`).
+
+Lo que queda registrado, y no se reabre sin orden explícita:
+
+- **La guía en prescriptivo no basta.** Con `render_widget` expuesto en el 100 % de los turnos y
+  `SKILL_WIDGETS_PROMPT` reescrita en prescriptivo, la batería real dio **0/3**: la decisión de renderizar se toma
+  antes de que exista la respuesta, así que el modelo no tiene qué renderizar cuando decide.
+- **La tarea 6.3 no se repitió** y el archive quedó con 6.3, 6.4 y 6.5 **sin marcar**
+  (`openspec/changes/archive/2026-11-02-widgets-always-on/tasks.md`). No es un cabo suelto: el resultado negativo
+  está medido y es la razón de ser de `PLAN-013`.
+- **El mecanismo de este plan sigue en producción**, como una de las dos capas: la skill `widgets` mantiene el
+  umbral `0.0` (incondicionada por el clasificador), así que `render_widget` y su guía se exponen siempre. Lo que
+  cambió es que ya no es él quien decide; la proyección determinista es la que decide.
