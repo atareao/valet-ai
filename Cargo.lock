@@ -3398,7 +3398,7 @@ dependencies = [
 
 [[package]]
 name = "valet"
-version = "0.31.0"
+version = "0.31.1"
 dependencies = [
  "anyhow",
  "async-stream",
