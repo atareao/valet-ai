@@ -242,6 +242,14 @@ Lo que no se reabre sin orden explícita:
 - **Medición post-despliegue (200 turnos reales):** de **0 a 41 (20,5 %)** — 9 binarios y 32 de dos caminos. Ningún turno produjo más de un `QuickForm`. La nota del punto 17 sigue vigente y es otro asunto: allí lo «sin medir» es el `render_widget` que decide el **modelo**; aquí la proyección es determinista del **servidor** y su disparador está medido.
 - **Observaciones aceptadas, no defectos:** en los turnos 67 y 156 el texto ofrece tres alternativas y el widget emite dos (fusiona las dos últimas), y en el turno 46 una tabla de opciones eclipsa una pregunta binaria del mismo turno.
 
+**19. El frontend sube a React 19 con react-leaflet 5 y chart.js 4.6.1 (etapa B).** Decidido y ejecutado el 2026-11-06 al cerrar el change `frontend-react19-antd6` (PR #321 mergeado; **v0.31.0** desplegada en `co1`). La etapa A (antd 6, v0.30.0) ya estaba cerrada; esta etapa completa el salto de React 18 → 19. `just check-all` verde (2083 tests Rust, 678 vitest, 0 deprecaciones antd) y bundle inicial en **69.99 kB / 70.00 kB**. Lo que no se reabre sin orden explícita:
+
+- **Versiones absorbidas:** `react` y `react-dom` **19.3.1**, `react-leaflet` **5.0.0**, `chart.js` **4.6.1**, `antd` **6.7.0**. Los PRs de Dependabot que la migración dejaba atrás (`#280`, `#281`, `#284`, `#310`, `#311`) quedaron **cerrados** y sus versiones viven ya en `frontend/package.json`.
+- **`react-leaflet` 5 tuvo que subir con React 19:** su peer `react ^18` rompía `npm ci`, así que no se puede quedar en la serie 4.x.
+- **Cambios necesarios:** el `JSX.Element` global pasó a `React.JSX.Element` (namespace `JSX`), no quedó ninguna API retirada (`render`, `hydrate`, `findDOMNode`, etc.) y se corrigió el *timing* de `Suspense`/`lazy` en 4 ficheros de test (aserciones síncronas → asíncronas, **sin relajar ninguna**).
+- **Bundle inicial al límite:** 69.99 kB / 70.00 kB (~1,7 % de margen); `vendor-react` creció con React 19. **No se sube el límite** del control de bundle.
+- **`frontend/src/test/dependency-stack.test.ts` solo cubre la etapa A** (su comentario anticipa la etapa B): candidato a endurecer, **sin tarea asignada** — no se amplió el alcance en este change.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)

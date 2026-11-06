@@ -46,14 +46,14 @@
 ## 5. Etapa B — release
 
 - [x] 5.1 `release/v0.31.0` desde `development`, PR a `main` y tag (verificación: el tag existe y el PR está mergeado en `main`).
-- [ ] 5.2 Despliegue en `co1` y verificación de la versión (verificación: `curl -s https://valet.territoriolinux.es/api/health` devuelve `0.31.0`).
+- [x] 5.2 Despliegue en `co1` y verificación de la versión (verificación: `curl -s https://valet.territoriolinux.es/api/health` devuelve `0.31.0`) — desplegado en co1, /api/health → version 0.31.0.
 - [ ] 5.3 Verificación visual en producción de las mismas vistas (verificación: idénticas a la etapa A; un cambio visual aquí es señal de un problema de tipos mal resuelto).
 
 ## 6. Verificación de integración
 
 - [ ] 6.1 `just check-all` sobre `development` con ambas etapas dentro (verificación: código 0, incluidos los chequeos de Rust, que no se han tocado).
 - [ ] 6.2 `openspec validate --all --strict` (verificación: 0 fallos).
-- [ ] 6.3 Cerrar como obsoletos los PRs de Dependabot que la migración absorbe (`#280`, `#281`, `#284`, `#311`) y confirmar que `#310` quedó mergeado o absorbido (verificación: no queda ningún PR de Dependabot de `frontend` abierto que la migración deje atrás).
+- [x] 6.3 Cerrar como obsoletos los PRs de Dependabot que la migración absorbe (`#280`, `#281`, `#284`, `#311`) y confirmar que `#310` quedó mergeado o absorbido (verificación: no queda ningún PR de Dependabot de `frontend` abierto que la migración deje atrás) — PRs #280, #281, #284, #310 y #311 cerrados; sus versiones absorbidas en `frontend/package.json` (react 19.3.1, react-dom 19.3.1, react-leaflet 5.0.0, chart.js 4.6.1, antd 6.7.0).
 
 ## 7. Cierre
 
