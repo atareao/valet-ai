@@ -475,7 +475,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
       width={1000}
     >
       <Tabs
-        tabPosition="left"
+        tabPlacement="start"
         items={[
           {
             key: "profile",
@@ -584,7 +584,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 onFinish={handleSettingsSubmit}
               >
                 <Tabs
-                  tabPosition="left"
+                  tabPlacement="start"
                   items={[
                     {
                       key: "system",
@@ -671,7 +671,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                     type="warning"
                     showIcon
                     style={{ marginBottom: 16 }}
-                    message={`Faltan placeholders en el prompt del consolidador: ${missingConsolidatorPlaceholders.join(", ")}`}
+                    title={`Faltan placeholders en el prompt del consolidador: ${missingConsolidatorPlaceholders.join(", ")}`}
                   />
                 )}
                 <Button type="primary" htmlType="submit" loading={saving}>
@@ -699,7 +699,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
             ) : (
               <section aria-label="Tipo de memoria">
                 <Tabs
-                  tabPosition="left"
+                  tabPlacement="start"
                   items={[
                     {
                       key: "episodic",
@@ -768,7 +768,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
                 onFinish={handleSettingsSubmit}
               >
                 <Tabs
-                  tabPosition="left"
+                  tabPlacement="start"
                   aria-label="Rol de generación"
                   items={GENERATION_BLOCKS.map((block) => ({
                     key: block.key,

@@ -2721,8 +2721,8 @@ describe("SettingsDialog", () => {
     }
 
     // Verticales: rc-tabs marca `aria-orientation="vertical"` en el `tablist`
-    // cuando `tabPosition` es lateral. Es el atributo que fija la orientación,
-    // así que el test falla si alguien quita el `tabPosition`.
+    // cuando `tabPlacement` es lateral. Es el atributo que fija la orientación,
+    // así que el test falla si alguien quita el `tabPlacement`.
     expect(nested).toHaveAttribute("aria-orientation", "vertical");
 
     // Orden: sus posiciones en el DOM son estrictamente crecientes.
@@ -2739,7 +2739,7 @@ describe("SettingsDialog", () => {
   // ════════════════════════════════════════════════════════════════
   // RED — change `settings-tabs-vertical`: pestañas verticales
   // Requisito: el diálogo de ajustes y sus `Tabs` anidados usan
-  // `tabPosition="left"`, que rc-tabs expone como
+  // `tabPlacement="start"`, que rc-tabs expone como
   // `aria-orientation="vertical"` en el `tablist`.
   // ════════════════════════════════════════════════════════════════
 

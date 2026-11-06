@@ -78,6 +78,8 @@ describe("JournalView", () => {
 
     const items = entryItems();
     expect(items).toHaveLength(2);
+    // Las filas son `listitem`: el contenedor que las agrupa debe ser `list`.
+    expect(screen.getByRole("list")).toContainElement(items[0]);
     // El backend ya entrega de más reciente a más antigua: el orden se respeta.
     expect(within(items[0]).getByText("18 de octubre de 2026")).toBeInTheDocument();
     expect(within(items[1]).getByText("16 de octubre de 2026")).toBeInTheDocument();

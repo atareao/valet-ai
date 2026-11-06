@@ -96,6 +96,8 @@ describe("NotesView", () => {
 
     const items = noteItems();
     expect(items).toHaveLength(2);
+    // Las filas son `listitem`: el contenedor que las agrupa debe ser `list`.
+    expect(screen.getByRole("list")).toContainElement(items[0]);
 
     const recent = within(items[0]);
     // La categoría se muestra con una etiqueta legible (idea → «Idea»).

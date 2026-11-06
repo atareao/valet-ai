@@ -157,9 +157,9 @@ fmt:
 frontend-check:
     cd frontend && npx tsc --noEmit && npm run build
 
-# Frontend: ESLint en modo CI
+# Frontend: ESLint en modo CI + puerta de deprecaciones de antd
 frontend-lint:
-    cd frontend && npm run lint:ci
+    cd frontend && npm run lint:ci && npm run lint:antd
 
 # Frontend: tests con Vitest (una sola pasada)
 frontend-test:

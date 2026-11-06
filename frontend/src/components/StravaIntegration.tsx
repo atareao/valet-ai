@@ -170,7 +170,7 @@ function StravaIntegrationView({
         <Alert
           type="success"
           showIcon
-          message="Conexión con Strava correcta"
+          title="Conexión con Strava correcta"
           description={`Atleta: ${athlete}`}
         />
       );
@@ -179,7 +179,7 @@ function StravaIntegrationView({
       <Alert
         type="error"
         showIcon
-        message="La comprobación con Strava ha fallado"
+        title="La comprobación con Strava ha fallado"
         description={checkResult.error ?? "Error desconocido"}
       />
     );
@@ -198,7 +198,7 @@ function StravaIntegrationView({
         <Alert
           type="warning"
           showIcon
-          message="No se pudo consultar el estado de Strava"
+          title="No se pudo consultar el estado de Strava"
           description={error}
         />
       );
@@ -207,7 +207,7 @@ function StravaIntegrationView({
       return <Text>No conectada</Text>;
     }
     return (
-      <Space direction="vertical" size={4} style={{ width: "100%" }}>
+      <Space orientation="vertical" size={4} style={{ width: "100%" }}>
         <Text>{`Conectada como ${athleteLabel}`}</Text>
         <Text type="secondary">
           {`Permisos concedidos: ${status?.scope ?? "desconocidos"}`}
@@ -216,7 +216,7 @@ function StravaIntegrationView({
           <Alert
             type="warning"
             showIcon
-            message="Permisos insuficientes"
+            title="Permisos insuficientes"
             description="La cuenta no concedió activity:read_all; vuelve a conectar para autorizar la lectura de actividades."
           />
         )}
@@ -265,7 +265,7 @@ function StravaIntegrationView({
         </Button>
       </Form>
 
-      <Space direction="vertical" size="middle" style={{ width: "100%", marginTop: 16 }}>
+      <Space orientation="vertical" size="middle" style={{ width: "100%", marginTop: 16 }}>
         <div aria-live="polite">{renderStatus()}</div>
 
         {(checkResult || disconnectWarning) && (
@@ -278,7 +278,7 @@ function StravaIntegrationView({
               <Alert
                 type="warning"
                 showIcon
-                message="Revisa el acceso en Strava"
+                title="Revisa el acceso en Strava"
                 description={disconnectWarning}
               />
             )}
