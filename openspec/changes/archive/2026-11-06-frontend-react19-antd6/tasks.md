@@ -53,7 +53,7 @@
 
 - [ ] 6.1 `just check-all` sobre `development` con ambas etapas dentro (verificación: código 0, incluidos los chequeos de Rust, que no se han tocado).
 - [ ] 6.2 `openspec validate --all --strict` (verificación: 0 fallos).
-- [ ] 6.3 Cerrar como obsoletos los PRs de Dependabot que la migración absorbe (`#280`, `#281`, `#284`, `#311`) y confirmar que `#310` quedó mergeado o absorbido (verificación: no queda ningún PR de Dependabot de `frontend` abierto que la migración deje atrás).
+- [x] 6.3 Cerrar como obsoletos los PRs de Dependabot que la migración absorbe (`#280`, `#281`, `#284`, `#311`) y confirmar que `#310` quedó mergeado o absorbido (verificación: no queda ningún PR de Dependabot de `frontend` abierto que la migración deje atrás) — PRs #280, #281, #284, #310 y #311 cerrados; sus versiones absorbidas en `frontend/package.json` (react 19.3.1, react-dom 19.3.1, react-leaflet 5.0.0, chart.js 4.6.1, antd 6.7.0).
 
 ## 7. Cierre
 
