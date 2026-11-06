@@ -85,7 +85,9 @@ describe("useEvents", () => {
       expect(api.listEvents).toHaveBeenCalledTimes(2);
     });
 
-    expect(result.current.events).toHaveLength(2);
+    await waitFor(() => {
+      expect(result.current.events).toHaveLength(2);
+    });
     expect(result.current.events[1].title).toBe("New Event");
   });
 

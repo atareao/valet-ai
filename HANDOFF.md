@@ -4,32 +4,29 @@
 
 ## Estado
 
-La etapa A del change `frontend-react19-antd6` (antd 5 → 6 sobre React 18) está **cerrada, desplegada y verificada** como **v0.30.0**. PR #318 en `development` y PR #319 a `main` mergeados, tag `v0.30.0` e imagen `ghcr.io/atareao/valet-ai:v0.30.0` publicados; el stack `valet` de `co1` recreado desde Dockge y `/api/health` devuelve `{"version":"0.30.0"}`.
+Etapa B del change `frontend-react19-antd6` (React 18 → 19) **implementada y en PR**. La rama `feature/frontend-react19` (desde `development`) lleva la subida a React `^19.3.1`, `react-leaflet` 5, `chart.js` 4.6.1 y los ajustes derivados; **PR #321** abierto hacia `development` con CI en curso. La etapa A (antd 6, v0.30.0) sigue desplegada y verde.
 
-## Tarea pendiente
+## Tareas completadas (etapa B)
 
-Etapa B del mismo change: **React 18 → 19**, `react-leaflet` 5 y `chart.js` 4.6.1.
+- **4.1–4.9** ✅ — rama + baseline verde, subida de versiones, `React.JSX.Element`, react-leaflet 5, chart.js 4.6.1, sin APIs retiradas, `frontend-lint`/`test`/`check` en verde (678 tests), README e índice de `AGENTS.md`.
+- **4.11** ✅ — auditoría `@react-reviewer`: **0 bloqueantes**.
+- **4.12** — PR #321 abierto; **CI pendiente** (`Backend (Rust)` y `Frontend (Node)`).
 
-Tareas en `openspec/changes/frontend-react19-antd6/tasks.md`:
+## Tareas pendientes
 
-- **4.1 a 4.12** — rama, subida de versiones, `React.JSX.Element`, migración de leaflet y chart.js, limpieza de APIs retiradas, lint/test/check, docs, auditoría y PR.
-- **5.1 a 5.3** — release `v0.31.0`, despliegue en `co1` y verificación visual en producción.
-- **6.1 a 6.3** — `just check-all` y `openspec validate --all --strict`, y cierre de los PRs de Dependabot absorbidos.
-- **7.1 a 7.3** — archive del change, renombrado a `plans/PLAN-019-COMPLETED.md` y entrada de decisión cerrada en `AGENTS.md`.
+- **4.10** — verificación manual en local de las vistas de la etapa A (sin cambios visuales, sin avisos en consola). **A cargo del usuario.**
+- **4.12** — confirmar CI verde en PR #321 y mergear a `development`.
+- **5.1–5.3** — release `v0.31.0`, despliegue en `co1` y verificación visual en producción.
+- **6.1–6.3** — `just check-all` + `openspec validate --all --strict`; cerrar los PRs de Dependabot absorbidos.
+- **7.1–7.3** — archive del change, renombrado a `plans/PLAN-019-COMPLETED.md` y entrada de decisión cerrada en `AGENTS.md`.
 
-## Punto de partida verificado
+## Hallazgos / notas (no bloqueantes)
 
-- Rama a crear: `feature/frontend-react19` **desde `development`** (que ya trae antd 6 y el release v0.30.0).
-- `just check-all` verde en el punto de partida.
-- Versiones actuales: antd 6.7.0, `@ant-design/icons` ^6.0.0, React 18, `react-leaflet` 4.2.1, `chart.js` 4.5.1.
-
-## Trampas conocidas
-
-- (a) `List`/`Listy` ya está migrado: no rehacerlo.
-- (b) `Descriptions` conserva `bordered` — no existe `variant`.
-- (c) La puerta `npm run lint:antd` (`frontend/scripts/check-antd-deprecations.mjs`) ya está en `just frontend-lint` y en el job `Frontend (Node)` del CI, y solo falla por `deprecated`.
-- (d) El doble no-op de `ResizeObserver` vive en `frontend/src/test/setup.ts`.
-- (e) `frontend/src/theme.ts` declara tokens que antd **no** valida en tiempo de tipos: si algo cambia de color, es un token renombrado, no un error de compilación.
+- **`react-leaflet` 5 tuvo que subir junto con React 19** en la tarea 4.2: su peer `react ^18` rompía `npm ci`.
+- **Bundle inicial al límite:** 69.99 kB / 70.00 kB (headroom ~1.7 %). `vendor-react` creció con React 19.
+- **`AGENTS.md` ya apunta a `plans/PLAN-019-COMPLETED.md`**, que aún no existe: se crea en el rename de la tarea 7.2.
+- **`dependency-stack.test.ts` solo cubre la etapa A** (su comentario anticipa las asserts de la etapa B). Candidato a endurecer, **sin tarea asignada**; no se hizo para no ampliar alcance.
+- Fix de timing `Suspense`/`lazy` en React 19 en 4 ficheros de test (aserciones síncronas → asíncronas positivas, sin relajar nada) + un flaky preexistente en `useEvents.test.ts`.
 
 ## Restricciones
 

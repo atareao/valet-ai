@@ -118,7 +118,7 @@ describe("AppLayout — bitácora", () => {
     await waitFor(() => {
       expect(screen.getByText("📖 Bitácora")).toBeInTheDocument();
     });
-    expect(screen.getByTestId("journal-view")).toBeInTheDocument();
+    expect(await screen.findByTestId("journal-view")).toBeInTheDocument();
   });
 
   it("la vista no se monta hasta que se abre su modal", async () => {
