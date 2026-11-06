@@ -828,22 +828,41 @@ formas reconocibles SHALL ser, al menos:
   sin ellas, muestra un aviso en lugar del mapa, de modo que proyectar una dirección suelta sería un widget
   peor que la prosa. Geocodificar no es viable porque la proyección SHALL ser pura.
 
-- **elección binaria**: la **última línea con contenido** del turno es una **pregunta cerrada de sí/no**;
+- **elección de cierre**: la **última línea con pregunta** del **párrafo final** del turno es una pregunta
+  cerrada de sí/no o una pregunta de dos caminos «¿X o Y?»;
 
 Una columna cuyas celdas sean **números** consecutivos SHALL leerse como un **índice** de la tabla (vueltas,
 divisiones, enumeraciones de datos) y SHALL NOT producir opciones: la rama heurística sin cabecera que nombre
 opciones SHALL exigir etiquetas **alfabéticas**.
 
-Una pregunta cerrada de sí/no SHALL reconocerse **solo** cuando cierre el turno: la última línea con contenido
-SHALL terminar en `?`, y SHALL NOT llevar ningún interrogativo abierto (`qué`, `cuál`, `quién`, `cómo`,
-`cuándo`, `dónde`, `cuánto`, `por qué`, y sus formas plurales o femeninas acentuadas `cuáles`, `quiénes`,
-`cuántos`, `cuántas`, `cuánta`, `adónde`) ni coordinar dos alternativas **nombradas** con `o` —ni con sus
-variantes `ó` y `u`—, salvo `o no` y `o sí`, que son precisamente la forma binaria—. Una pregunta que no cierre
-el turno, una pregunta abierta, una pregunta con alternativas nombradas («¿Lo hago ahora o mañana?», «¿Son 7 ó
-8?») y una pregunta dentro de un bloque de código SHALL NOT reconocerse.
+Una pregunta de cierre SHALL reconocerse **solo** en el **párrafo final** del turno: SHALL buscarse hacia atrás
+la última línea con contenido que contenga `?`, **sin cruzar una línea en blanco** (frontera de párrafo) y sin
+salir de un bloque de código delimitado por vallas. La línea SHALL NOT llevar ningún interrogativo abierto
+(`qué`, `cuál`, `quién`, `cómo`, `cuándo`, `dónde`, `cuánto`, `por qué`, y sus formas plurales o femeninas
+acentuadas `cuáles`, `quiénes`, `cuántos`, `cuántas`, `cuánta`, `adónde`).
 
-La elección binaria SHALL emitirse con las dos opciones fijas `Sí` y `No` y SHALL NOT proyectarse si el turno
-ya produjo un widget de **opciones**: SHALL proyectarse **una sola** cuando ambas formas compitan. La
+Antes de extraer la pregunta, la línea SHALL normalizarse con `strip_line_prefix` y
+`strip_markdown_emphasis`. Sobre la línea normalizada, la pregunta SHALL extraerse entre el **último** `¿` de la
+línea y el **primer** `?` a partir de ahí. Cuando la línea SHALL NOT llevar `¿`, la pregunta SHALL empezar en su
+primer carácter con contenido y SHALL terminar en el primer `?`, que SHALL considerarse de cierre **solo** si
+tras él no queda ningún carácter alfanumérico (espacios, emoji, puntuación o marcadores): un `?` con texto
+alfanumérico detrás SHALL NOT cerrar la pregunta, de modo que una línea como `Más info en
+https://ejemplo.com/x?from=2026-11-01` SHALL NOT ser una pregunta. El `span` SHALL calcularse siempre sobre el
+texto **original** y SHALL NOT verse alterado por la normalización.
+
+Si la pregunta contiene una conjunción `o`/`ó`/`u` a nivel de palabra y la palabra siguiente **no** es
+`no`/`sí`/`si`, la pregunta SHALL ser de **dos caminos**: SHALL partirse por **la** conjunción y SHALL
+emitirse **dos opciones** con los dos tramos. Si la palabra siguiente a la conjunción **sí** es `no`/`sí`/`si`,
+la pregunta SHALL ser **binaria** y SHALL emitirse con las dos opciones fijas `Sí` y `No`.
+
+Cada tramo de una pregunta de dos caminos SHALL recortarse, quitar sus guiones o rayas y comas, `;` y `:` finales, quitar
+el `¿` inicial y el `?` final, y capitalizar la primera letra. La elección de dos caminos SHALL NOT proyectarse
+si: hay **más de una** conjunción `o`/`ó`/`u` (una elección de tres o más caminos), algún tramo queda vacío o
+con menos de 3 caracteres alfanuméricos, o algún tramo supera los 160 caracteres.
+
+La elección de cierre SHALL emitirse como `Presentation::ClosingChoice { question, options, span }`, donde
+`options` es `["Sí","No"]` en el caso binario o los dos caminos en el caso «¿X o Y?». SHALL NOT proyectarse si
+el turno ya produjo un widget de **opciones**: SHALL proyectarse **una sola** cuando ambas formas compitan. La
 **pregunta SHALL ser la etiqueta del grupo de opciones** (`label`) y el widget SHALL NOT llevar `title`: el
 `span` sustituye el texto que ocupa, de modo que sin la pregunta dentro del widget esta desaparecería de la
 pantalla. El `span` SHALL delimitar exactamente la línea de la pregunta, y la etiqueta SHALL llevar el texto de
@@ -868,6 +887,10 @@ requisito siguiente).
 
 Si el modelo ya renderizó con éxito un widget de un tipo (`render_widget`), la proyección **para ese tipo**
 SHALL omitirse: el widget del modelo gana, porque su payload es más rico.
+
+La verificación de la elección de cierre SHALL incluir un **corpus de regresión con cadenas literales extraídas
+de producción**, además de los casos sintéticos, de modo que un cambio en la normalización o en las guardas no
+pueda volver a pasar en verde sin cubrir la prosa real del modelo.
 
 #### Scenario: Una lista de opciones acaba en widget sin que el modelo lo pida
 
@@ -967,43 +990,89 @@ SHALL omitirse: el widget del modelo gana, porque su payload es más rico.
 
 #### Scenario: Una pregunta de sí/no que cierra el turno acaba en widget de elección
 
-**Given** un turno cuyo texto final termina en una pregunta cerrada de sí/no (por ejemplo «¿Hacemos esto o no?» o «¿Te parece bien?») y que **no** llamó a `render_widget`
+**Given** un turno cuyo texto final es `> ¿Le saco el detalle?` o `> ¿Cerramos por hoy, Lorenzo?` y que **no** llamó a `render_widget`
 **When** el turno cierra
 **Then** `widgets` SHALL contener un widget de elección con las opciones `Sí` y `No`
 **And** la pregunta SHALL ser la etiqueta del grupo de opciones
 **And** el widget SHALL NOT llevar `title`
 **And** el `span` SHALL delimitar la línea de la pregunta
 
-#### Scenario: Una pregunta abierta no es una elección binaria
+#### Scenario: El emoji tras el signo de interrogación no impide la elección
 
-**Given** un turno cuyo texto final termina en una pregunta con un interrogativo abierto (por ejemplo «¿Qué prefieres?» o «¿Cuándo lo hacemos?»)
+**Given** un turno cuyo texto final es `> ¿Le doy el parte del día — tiempo, agenda y entrenamiento — o va directo a algo concreto? ☕️` o `> ¿Le pongo un recordatorio un rato antes, o lo dejo así? ☕️`
 **When** el turno cierra
-**Then** NO SHALL proyectarse ningún widget de elección binaria
+**Then** SHALL proyectarse un widget de elección
+**And** el emoji SHALL NOT impedir la elección **porque la pregunta termina en el `?`**: lo que sigue al `?` SHALL ser solo no alfanumérico
+**And** el `span` SHALL seguir delimitando la línea original, emoji incluido
 
 #### Scenario: Una pregunta con alternativas nombradas no es una elección binaria
 
-**Given** un turno cuyo texto final termina en una pregunta que coordina dos alternativas nombradas con `o` (por ejemplo «¿Lo hago ahora o mañana?»)
+**Given** un turno cuyo texto final es `> ¿Le busco el repositorio y las instrucciones de instalación, o lo dejamos para mañana con luz? ☕️`
 **When** el turno cierra
-**Then** NO SHALL proyectarse ningún widget de elección binaria
+**Then** `widgets` SHALL contener un widget de elección con **dos** opciones, los dos caminos
+**And** la primera opción SHALL ser `Le busco el repositorio y las instrucciones de instalación`
+**And** la segunda opción SHALL ser `Lo dejamos para mañana con luz`
+**And** SHALL NOT emitirse las opciones fijas `Sí` y `No`
+**And** la pregunta completa SHALL ser la etiqueta del grupo de opciones
+**And** el widget SHALL NOT llevar `title`
+
+#### Scenario: Una pregunta de dos caminos con la conjunción en medio de la frase se parte por la última conjunción
+
+**Given** un turno cuyo texto final es `> ¿Quiere que le suba el tono de guasa o se lo deje más sobrio? Confirme y sale disparado. 🎩`
+**When** el turno cierra
+**Then** SHALL proyectarse un widget de elección con las opciones `Quiere que le suba el tono de guasa` y `Se lo deje más sobrio`
+**And** el `span` SHALL delimitar la línea de la pregunta
+
+#### Scenario: La forma binaria «o no» se mantiene como Sí/No
+
+**Given** un turno cuyo texto final es `> ¿Hacemos esto o no?`
+**When** el turno cierra
+**Then** `widgets` SHALL contener un widget de elección con las opciones `Sí` y `No`
+**And** SHALL NOT emitirse dos opciones con los tramos de la pregunta
+
+#### Scenario: Una pregunta de tres caminos no se proyecta
+
+**Given** un turno cuyo texto final es `> ¿Prefieres A, B o C?`
+**When** el turno cierra
+**Then** NO SHALL proyectarse ningún widget de elección
+
+#### Scenario: Una pregunta abierta no es una elección binaria
+
+**Given** un turno cuyo texto final es `> ¿Qué necesita? 😒`, `> ¿Cuál, Lorenzo?` o `> ¿Por dónde empezamos, Lorenzo?`
+**When** el turno cierra
+**Then** NO SHALL proyectarse ningún widget de elección
+
+#### Scenario: Un cierre sin pregunta no proyecta elección
+
+**Given** un turno cuyo texto final es `> Dígame. ☕️` o `> Todo cerrado, Lorenzo. **Ahora sí, a la calle** — el progresivo no se corre desde el sofá. 😒☕️`
+**When** el turno cierra
+**Then** NO SHALL proyectarse ningún widget de elección
+
+#### Scenario: La pregunta no tiene que ser la última línea del párrafo final
+
+**Given** un turno cuyo texto final es `### 📋 ¿Seguimos?` o una línea `…o se lo deje más sobrio? Confirme y sale disparado. 🎩`
+**When** el turno cierra
+**Then** SHALL proyectarse un widget de elección para esa pregunta
+**And** el `span` SHALL delimitar la pregunta: hasta el final de la línea cuando tras el `?` solo haya emoji o puntuación, y hasta el `?` inclusive cuando tras él venga prosa
 
 #### Scenario: Una pregunta que no cierra el turno no proyecta elección binaria
 
-**Given** un turno cuyo texto final lleva una pregunta de sí/no en medio del texto y **no** termina en una pregunta
+**Given** un turno cuyo texto final lleva una pregunta de sí/no en un párrafo anterior, seguida de una línea en blanco y de un párrafo final sin pregunta
 **When** el turno cierra
-**Then** NO SHALL proyectarse ningún widget de elección binaria
+**Then** NO SHALL proyectarse ningún widget de elección
 
 #### Scenario: Una pregunta dentro de un bloque de código no se proyecta
 
 **Given** un turno cuyo texto final contiene una pregunta de sí/no dentro de un bloque de código delimitado por vallas
 **When** el turno cierra
-**Then** NO SHALL proyectarse ningún widget de elección binaria para esa pregunta
+**Then** NO SHALL proyectarse ningún widget de elección para esa pregunta
 
 #### Scenario: El turno ya proyectó opciones y no se añade la elección binaria
 
 **Given** un turno cuyo texto final presenta una lista de alternativas cerrada por una interrogativa y además una pregunta de sí/no al final
 **When** el turno cierra
 **Then** SHALL proyectarse un solo widget de opciones
-**And** SHALL NOT proyectarse ningún widget de elección binaria
+**And** SHALL NOT proyectarse ningún widget de elección de cierre
 
 #### Scenario: Un procedimiento seguido de una pregunta de sí/no no se degrada a opciones
 
