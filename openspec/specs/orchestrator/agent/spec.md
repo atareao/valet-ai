@@ -828,9 +828,26 @@ formas reconocibles SHALL ser, al menos:
   sin ellas, muestra un aviso en lugar del mapa, de modo que proyectar una dirección suelta sería un widget
   peor que la prosa. Geocodificar no es viable porque la proyección SHALL ser pura.
 
+- **elección binaria**: la **última línea con contenido** del turno es una **pregunta cerrada de sí/no**;
+
 Una columna cuyas celdas sean **números** consecutivos SHALL leerse como un **índice** de la tabla (vueltas,
 divisiones, enumeraciones de datos) y SHALL NOT producir opciones: la rama heurística sin cabecera que nombre
 opciones SHALL exigir etiquetas **alfabéticas**.
+
+Una pregunta cerrada de sí/no SHALL reconocerse **solo** cuando cierre el turno: la última línea con contenido
+SHALL terminar en `?`, y SHALL NOT llevar ningún interrogativo abierto (`qué`, `cuál`, `quién`, `cómo`,
+`cuándo`, `dónde`, `cuánto`, `por qué`, y sus formas plurales o femeninas acentuadas `cuáles`, `quiénes`,
+`cuántos`, `cuántas`, `cuánta`, `adónde`) ni coordinar dos alternativas **nombradas** con `o` —ni con sus
+variantes `ó` y `u`—, salvo `o no` y `o sí`, que son precisamente la forma binaria—. Una pregunta que no cierre
+el turno, una pregunta abierta, una pregunta con alternativas nombradas («¿Lo hago ahora o mañana?», «¿Son 7 ó
+8?») y una pregunta dentro de un bloque de código SHALL NOT reconocerse.
+
+La elección binaria SHALL emitirse con las dos opciones fijas `Sí` y `No` y SHALL NOT proyectarse si el turno
+ya produjo un widget de **opciones**: SHALL proyectarse **una sola** cuando ambas formas compitan. La
+**pregunta SHALL ser la etiqueta del grupo de opciones** (`label`) y el widget SHALL NOT llevar `title`: el
+`span` sustituye el texto que ocupa, de modo que sin la pregunta dentro del widget esta desaparecería de la
+pantalla. El `span` SHALL delimitar exactamente la línea de la pregunta, y la etiqueta SHALL llevar el texto de
+esa línea sin los marcadores de énfasis Markdown.
 
 El **texto de cada opción de una tabla SHALL ser el de su fila completa**: todas las celdas con contenido de la
 fila, en el orden de la tabla, unidas por ` — `, con la etiqueta incluida cuando la haya. La proyección SHALL
@@ -947,6 +964,53 @@ SHALL omitirse: el widget del modelo gana, porque su payload es más rico.
 **Given** una tabla Markdown de opciones en la que una fila no tiene ninguna celda con texto
 **When** el turno cierra
 **Then** esa fila SHALL NOT aportar ninguna opción al widget
+
+#### Scenario: Una pregunta de sí/no que cierra el turno acaba en widget de elección
+
+**Given** un turno cuyo texto final termina en una pregunta cerrada de sí/no (por ejemplo «¿Hacemos esto o no?» o «¿Te parece bien?») y que **no** llamó a `render_widget`
+**When** el turno cierra
+**Then** `widgets` SHALL contener un widget de elección con las opciones `Sí` y `No`
+**And** la pregunta SHALL ser la etiqueta del grupo de opciones
+**And** el widget SHALL NOT llevar `title`
+**And** el `span` SHALL delimitar la línea de la pregunta
+
+#### Scenario: Una pregunta abierta no es una elección binaria
+
+**Given** un turno cuyo texto final termina en una pregunta con un interrogativo abierto (por ejemplo «¿Qué prefieres?» o «¿Cuándo lo hacemos?»)
+**When** el turno cierra
+**Then** NO SHALL proyectarse ningún widget de elección binaria
+
+#### Scenario: Una pregunta con alternativas nombradas no es una elección binaria
+
+**Given** un turno cuyo texto final termina en una pregunta que coordina dos alternativas nombradas con `o` (por ejemplo «¿Lo hago ahora o mañana?»)
+**When** el turno cierra
+**Then** NO SHALL proyectarse ningún widget de elección binaria
+
+#### Scenario: Una pregunta que no cierra el turno no proyecta elección binaria
+
+**Given** un turno cuyo texto final lleva una pregunta de sí/no en medio del texto y **no** termina en una pregunta
+**When** el turno cierra
+**Then** NO SHALL proyectarse ningún widget de elección binaria
+
+#### Scenario: Una pregunta dentro de un bloque de código no se proyecta
+
+**Given** un turno cuyo texto final contiene una pregunta de sí/no dentro de un bloque de código delimitado por vallas
+**When** el turno cierra
+**Then** NO SHALL proyectarse ningún widget de elección binaria para esa pregunta
+
+#### Scenario: El turno ya proyectó opciones y no se añade la elección binaria
+
+**Given** un turno cuyo texto final presenta una lista de alternativas cerrada por una interrogativa y además una pregunta de sí/no al final
+**When** el turno cierra
+**Then** SHALL proyectarse un solo widget de opciones
+**And** SHALL NOT proyectarse ningún widget de elección binaria
+
+#### Scenario: Un procedimiento seguido de una pregunta de sí/no no se degrada a opciones
+
+**Given** un turno cuyo texto final presenta una lista numerada de pasos y termina en una pregunta cerrada de sí/no (por ejemplo «1. Abre el fichero\n2. Edita la línea\n¿Quieres que continúe?»)
+**When** el turno cierra
+**Then** SHALL proyectarse un widget de elección con las opciones `Sí` y `No`
+**And** SHALL NOT proyectarse un widget de opciones para el procedimiento
 
 ### Requirement: El contenido del mensaje del asistente SHALL persistirse íntegro y el widget SHALL declarar el tramo que ocupa
 
