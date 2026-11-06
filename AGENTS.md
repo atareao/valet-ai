@@ -250,6 +250,12 @@ Lo que no se reabre sin orden explícita:
 - **Bundle inicial al límite:** 69.99 kB / 70.00 kB (~1,7 % de margen); `vendor-react` creció con React 19. **No se sube el límite** del control de bundle.
 - **`frontend/src/test/dependency-stack.test.ts` solo cubre la etapa A** (su comentario anticipa la etapa B): candidato a endurecer, **sin tarea asignada** — no se amplió el alcance en este change.
 
+**20. `llm_requests.tool_calls` se puebla en cada llamada de chat; el panel Tool Usage deja de salir vacío.** Decidido y ejecutado el 2026-11-06 al cerrar el change `tool-usage-stats` (PRs #323/#324; **v0.31.1** desplegada en `co1`). El panel **Stats → Sistema → Tool Usage** salía siempre «No data yet»: en la v0.31.0, `llm_requests` tenía 1166 filas `kind='chat'` y **0** con `tool_calls` poblado. Era un **contrato roto escritor/lector**: `StatsRepo::tools_summary()` (lector, `db/repos`) leía correctamente `llm_requests.tool_calls` filtrando `kind='chat'` y es el único origen del gráfico, pero la ruta de chat (`process_message_stream`, `orchestrator/agent`) llamaba a `record_request(..., tool_calls: None, ...)` aunque el evento `Done` ya traía los `tool_calls` en scope. El arreglo persiste `[{"name":"<tool>"}, …]` con la misma precedencia que rige la ejecución (**`Done` > stream**) y graba `tool_calls = NULL` cuando no hay herramientas. Lo que no se reabre sin orden explícita:
+
+- **Sin backfill del histórico** (decisión del usuario): los turnos previos al despliegue quedan sin datos de herramientas y el gráfico se puebla a partir de la v0.31.1. Se descartó reconstruirlo desde `messages.tools_used` porque ese campo es un **agregado por turno** en formato `nombre, (2) nombre`, **no por llamada al LLM**: rellenar desde él **distorsionaría el recuento** (un turno con varias llamadas quedaría contado una sola vez y las llamadas sin herramientas también aparecerían).
+- **Verificación E2E en producción (2026-11-06):** `SELECT COUNT(*) FROM llm_requests WHERE kind='chat' AND tool_calls IS NOT NULL` → **1**; fila `created_at=2026-11-06 20:36:43`, `tool_calls=[{"name":"email_list_unread"}]`; agregación equivalente a `tools_summary` → `email_list_unread: 1`.
+- **Observación fuera de alcance (pendiente, sin tarea):** la ruta de **reflexión** graba `kind='chat'` con `model="default"` y ensucia las estadísticas de chat con llamadas que no son conversación del usuario.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
@@ -295,6 +301,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-017-COMPLETED.md` | La pregunta cerrada de sí/no ofrece un widget de elección: la cuarta forma reconocible de la proyección (change `binary-choice-widget`; PR #312/#313, v0.28.0) | ✅ Completado |
 | `plans/PLAN-018-COMPLETED.md` | La elección de cierre reconoce cómo escribe el modelo de verdad: el disparador no encajaba con la prosa real (emoji tras el `?` y preguntas «¿X o Y?») (change `prose-choice-widget`; PR #315/#316, v0.29.0) | ✅ Completado |
 | `plans/PLAN-019-COMPLETED.md` | Actualización del frontend a React 19 con react-leaflet 5 y chart.js 4.6.1, etapa B (change `frontend-react19-antd6`) | ✅ Completado |
+| `plans/PLAN-020-COMPLETED.md` | El panel `Stats → Sistema → Tool Usage` deja de salir vacío: el orquestador persiste `llm_requests.tool_calls` (change `tool-usage-stats`; PRs #323/#324, v0.31.1) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
