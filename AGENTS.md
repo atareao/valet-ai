@@ -286,6 +286,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-016-COMPLETED.md` | Desbloquear el CI: el test de la ventana temporal de `background_summary` deja de depender del reloj, y la cola de Dependabot (change `stats-test-clock-independence`; PRs #304/#305, v0.27.2) | ✅ Completado |
 | `plans/PLAN-017-COMPLETED.md` | La pregunta cerrada de sí/no ofrece un widget de elección: la cuarta forma reconocible de la proyección (change `binary-choice-widget`; PR #312/#313, v0.28.0) | ✅ Completado |
 | `plans/PLAN-018-COMPLETED.md` | La elección de cierre reconoce cómo escribe el modelo de verdad: el disparador no encajaba con la prosa real (emoji tras el `?` y preguntas «¿X o Y?») (change `prose-choice-widget`; PR #315/#316, v0.29.0) | ✅ Completado |
+| `plans/PLAN-019-COMPLETED.md` | Actualización del frontend a React 19 con react-leaflet 5 y chart.js 4.6.1, etapa B (change `frontend-react19-antd6`) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

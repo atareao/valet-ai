@@ -110,6 +110,6 @@ describe("AppLayout — avisos", () => {
       expect(screen.getByText("🔔 Avisos")).toBeInTheDocument();
     });
 
-    expect(screen.getByTestId("notifications-view")).toBeInTheDocument();
+    expect(await screen.findByTestId("notifications-view")).toBeInTheDocument();
   });
 });

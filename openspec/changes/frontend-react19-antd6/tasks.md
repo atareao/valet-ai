@@ -18,34 +18,34 @@
 - [x] 2.8 Pasar `just frontend-lint`, `just frontend-test` y `just frontend-check` sin relajar ninguna aserción ni subir el umbral del bundle inicial (verificación: los tres terminan con código 0 y el diff no elimina ninguna aserción existente).
 - [x] 2.9 Verificación manual en local de las vistas oscuras: cabecera, menú lateral, tablas de Stats, ajustes completo, calendario, chat y mapa (verificación: sin avisos de deprecación en consola y sin cambios de color respecto a la línea base).
 - [x] 2.10 Auditoría de `@react-reviewer` sobre el diff de la etapa A (verificación: 0 bloqueantes; los hallazgos se corrigen antes de abrir el PR).
-- [ ] 2.11 PR `feature/frontend-antd6` a `development` con CI verde (verificación: los jobs `Backend (Rust)` y `Frontend (Node)` en verde).
+- [x] 2.11 PR `feature/frontend-antd6` a `development` con CI verde (verificación: los jobs `Backend (Rust)` y `Frontend (Node)` en verde).
 - [x] 2.12 Migrar los siete usos de `List` a `Listy` (`NotesView`, `JournalView`, `NotificationsView`), con `items`/`itemRender`, `rowKey` estable y `role="list"` en el contenedor que agrupa las filas `role="listitem"` (verificación: `antd lint` no reporta `List` deprecado y las tres vistas comprueban por rol que la lista tiene su contenedor).
 - [x] 2.13 Convertir «0 deprecadas» en una puerta de CI: `frontend/scripts/check-antd-deprecations.mjs` (solo falla por `rule === "deprecated"`, ignora `performance`/`a11y`/`usage`), script `lint:antd` en `frontend/package.json`, dependencia `@ant-design/cli@6.7.0` y enganche en `.justfile` (`frontend-lint`) y `.github/workflows/ci.yml` (verificación: la puerta sale 0 con el árbol limpio y 1 al inyectar una deprecación temporal).
 
 ## 3. Etapa A — release
 
-- [ ] 3.1 `release/v0.30.0` desde `development`, PR a `main` y tag (verificación: el tag existe y el PR está mergeado en `main`).
-- [ ] 3.2 Despliegue en `co1` y verificación de la versión (verificación: `curl -s https://valet.territoriolinux.es/api/health` devuelve `0.30.0`).
-- [ ] 3.3 Verificación visual en producción: tema oscuro, pestañas laterales de ajustes, tablas de Stats y mapa del widget de ubicación (verificación: sin avisos de deprecación en consola y sin cambios visuales respecto a v0.29.0).
+- [x] 3.1 `release/v0.30.0` desde `development`, PR a `main` y tag (verificación: el tag existe y el PR está mergeado en `main`).
+- [x] 3.2 Despliegue en `co1` y verificación de la versión (verificación: `curl -s https://valet.territoriolinux.es/api/health` devuelve `0.30.0`).
+- [x] 3.3 Verificación visual en producción: tema oscuro, pestañas laterales de ajustes, tablas de Stats y mapa del widget de ubicación (verificación: sin avisos de deprecación en consola y sin cambios visuales respecto a v0.29.0).
 
 ## 4. Etapa B — React 18 → 19
 
-- [ ] 4.1 Crear la rama `feature/frontend-react19` desde `development` (ya con antd 6) (verificación: `just check-all` verde en el punto de partida).
-- [ ] 4.2 Subir `react` y `react-dom` a la serie 19 y `@types/react` y `@types/react-dom` a la serie 19 en el mismo commit, y regenerar el lock (verificación: `npm ci` limpio, sin avisos de peer dependencies).
-- [ ] 4.3 Sustituir el `JSX.Element` global de `test/ErrorBoundary.test.tsx` por `React.JSX.Element` (verificación: `npx tsc --noEmit` no reporta el namespace `JSX`).
-- [ ] 4.4 Subir `react-leaflet` a 5 y revisar `LocationWidget` y sus dos mocks (verificación: `test/LocationWidget.test.tsx` y `test/WidgetRenderer.test.tsx` pasan).
-- [ ] 4.5 Subir `chart.js` a 4.6.1 y revisar los cuatro ficheros de test que mockean `react-chartjs-2` o el canvas (verificación: los tests de `stats/` y de `StatsDashboard` pasan).
-- [ ] 4.6 Confirmar que no queda ninguna API retirada en React 19 (`render`, `hydrate`, `findDOMNode`, `unmountComponentAtNode`, `createFactory`, `propTypes`, `defaultProps` de componente de función) (verificación: `rg` sobre `frontend/src` no devuelve ninguna y la aplicación arranca sin avisos de React).
-- [ ] 4.7 Pasar `just frontend-lint`, `just frontend-test` y `just frontend-check` sin relajar aserciones (verificación: los tres terminan con código 0 y el code-splitting conserva todos los grupos `vendor-*`).
-- [ ] 4.8 Actualizar `README.md`, que hoy anuncia «React 18 + Ant Design 5» (verificación: `rg 'React 18' README.md` no devuelve nada y las versiones citadas coinciden con `frontend/package.json`).
-- [ ] 4.9 Actualizar el índice de planes de `AGENTS.md` con la entrada de `PLAN-019` (verificación: la entrada aparece con el estado correcto y el ordinal siguiente sigue libre).
+- [x] 4.1 Crear la rama `feature/frontend-react19` desde `development` (ya con antd 6) (verificación: `just check-all` verde en el punto de partida).
+- [x] 4.2 Subir `react` y `react-dom` a la serie 19 y `@types/react` y `@types/react-dom` a la serie 19 en el mismo commit, y regenerar el lock (verificación: `npm ci` limpio, sin avisos de peer dependencies).
+- [x] 4.3 Sustituir el `JSX.Element` global de `test/ErrorBoundary.test.tsx` por `React.JSX.Element` (verificación: `npx tsc --noEmit` no reporta el namespace `JSX`).
+- [x] 4.4 Subir `react-leaflet` a 5 y revisar `LocationWidget` y sus dos mocks (verificación: `test/LocationWidget.test.tsx` y `test/WidgetRenderer.test.tsx` pasan).
+- [x] 4.5 Subir `chart.js` a 4.6.1 y revisar los cuatro ficheros de test que mockean `react-chartjs-2` o el canvas (verificación: los tests de `stats/` y de `StatsDashboard` pasan).
+- [x] 4.6 Confirmar que no queda ninguna API retirada en React 19 (`render`, `hydrate`, `findDOMNode`, `unmountComponentAtNode`, `createFactory`, `propTypes`, `defaultProps` de componente de función) (verificación: `rg` sobre `frontend/src` no devuelve ninguna y la aplicación arranca sin avisos de React).
+- [x] 4.7 Pasar `just frontend-lint`, `just frontend-test` y `just frontend-check` sin relajar aserciones (verificación: los tres terminan con código 0 y el code-splitting conserva todos los grupos `vendor-*`).
+- [x] 4.8 Actualizar `README.md`, que hoy anuncia «React 18 + Ant Design 5» (verificación: `rg 'React 18' README.md` no devuelve nada y las versiones citadas coinciden con `frontend/package.json`).
+- [x] 4.9 Actualizar el índice de planes de `AGENTS.md` con la entrada de `PLAN-019` (verificación: la entrada aparece con el estado correcto y el ordinal siguiente sigue libre).
 - [ ] 4.10 Verificación manual en local de las mismas vistas que en la etapa A (verificación: sin cambios visuales respecto a la etapa A y sin avisos en consola).
-- [ ] 4.11 Auditoría de `@react-reviewer` sobre el diff de la etapa B (verificación: 0 bloqueantes; los hallazgos se corrigen antes de abrir el PR).
-- [ ] 4.12 PR `feature/frontend-react19` a `development` con CI verde (verificación: los dos jobs del CI en verde).
+- [x] 4.11 Auditoría de `@react-reviewer` sobre el diff de la etapa B (verificación: 0 bloqueantes; los hallazgos se corrigen antes de abrir el PR).
+- [x] 4.12 PR `feature/frontend-react19` a `development` con CI verde (verificación: los dos jobs del CI en verde).
 
 ## 5. Etapa B — release
 
-- [ ] 5.1 `release/v0.31.0` desde `development`, PR a `main` y tag (verificación: el tag existe y el PR está mergeado en `main`).
+- [x] 5.1 `release/v0.31.0` desde `development`, PR a `main` y tag (verificación: el tag existe y el PR está mergeado en `main`).
 - [ ] 5.2 Despliegue en `co1` y verificación de la versión (verificación: `curl -s https://valet.territoriolinux.es/api/health` devuelve `0.31.0`).
 - [ ] 5.3 Verificación visual en producción de las mismas vistas (verificación: idénticas a la etapa A; un cambio visual aquí es señal de un problema de tipos mal resuelto).
 

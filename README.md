@@ -41,7 +41,7 @@ During chat, the orchestrator uses **RAG**: it embeds the user query, searches `
 | Layer | Technology |
 |-------|-----------|
 | Backend | Rust + Axum 0.8 + Tokio + sqlx 0.9 |
-| Frontend | TypeScript + React 18 + Ant Design 5 + Vite |
+| Frontend | TypeScript + React 19 + Ant Design 6 + Vite |
 | Database | SQLite + FTS5 + sqlite-vec |
 | Auth | PocketID (self-hosted OIDC), optional |
 | LLM | OpenRouter (primary) / Ollama (fallback) |
