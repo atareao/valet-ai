@@ -15,7 +15,7 @@ export interface WidgetProps<T = unknown> {
  * estricta de `React.ComponentType`.
  */
 export type WidgetComponent = {
-  bivarianceHack(props: WidgetProps): ReactNode;
+  bivarianceHack(props: WidgetProps): ReactNode | Promise<ReactNode>;
 }["bivarianceHack"];
 
 export interface WidgetInstance {
