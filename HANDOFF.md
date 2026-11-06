@@ -4,7 +4,7 @@
 
 ## Estado
 
-Etapa B del change `frontend-react19-antd6` (React 18 → 19) **mergeada en `development`** (PR #321, commit `84f38aa`). La rama `feature/frontend-react19` lleva la subida a React `^19.3.1`, `react-leaflet` 5, `chart.js` 4.6.1 y los ajustes derivados; el PR #321 se mergeó a `development` con CI verde. **Release `v0.31.0`** preparada en `release/v0.31.0` con PR hacia `main`, **CI pendiente**. La etapa A (antd 6, v0.30.0) sigue desplegada y verde.
+Etapa B del change `frontend-react19-antd6` (React 18 → 19) **mergeada y publicada**: PR #321 a `development` (`84f38aa`, CI verde) y release `v0.31.0` ya en `main` (PR #322, merge `803d52d`, tag `v0.31.0`). El workflow `image.yml` está **in_progress** publicando `ghcr.io/atareao/valet-ai:v0.31.0` (run [42271432937](https://github.com/atareao/valet-ai/actions/runs/42271432937)). La rama `feature/frontend-react19` lleva React `^19.3.1`, `react-leaflet` 5, `chart.js` 4.6.1 y los ajustes derivados. Queda desplegar en `co1`. La etapa A (antd 6, v0.30.0) sigue desplegada y verde.
 
 ## Tareas completadas (etapa B)
 
@@ -12,11 +12,15 @@ Etapa B del change `frontend-react19-antd6` (React 18 → 19) **mergeada en `dev
 - **4.11** ✅ — auditoría `@react-reviewer`: **0 bloqueantes**.
 - **4.12** ✅ — PR #321 mergeado a `development` (`84f38aa`) con CI verde.
 
+## Tareas completadas (release etapa B)
+
+- **5.1** ✅ — release `v0.31.0`: PR #322 mergeado a `main` (`803d52d`), tag `v0.31.0` publicado; workflow `image.yml` en marcha.
+
 ## Tareas pendientes
 
 - **4.10** — verificación manual en local de las vistas de la etapa A (sin cambios visuales, sin avisos en consola). **A cargo del usuario.**
-- **5.1** — confirmar CI verde del PR de release `v0.31.0` hacia `main` y crear el tag.
-- **5.2–5.3** — despliegue en `co1` y verificación visual en producción.
+- **5.2** — desplegar `v0.31.0` en `co1` y verificar la versión (`curl -s https://valet.territoriolinux.es/api/health` → `0.31.0`).
+- **5.3** — verificación visual en producción de las mismas vistas (idénticas a la etapa A).
 - **6.1–6.3** — `just check-all` + `openspec validate --all --strict`; cerrar los PRs de Dependabot absorbidos.
 - **7.1–7.3** — archive del change, renombrado a `plans/PLAN-019-COMPLETED.md` y entrada de decisión cerrada en `AGENTS.md`.
 
