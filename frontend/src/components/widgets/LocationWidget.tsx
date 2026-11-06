@@ -36,7 +36,7 @@ export const LocationWidget: FC<WidgetProps<LocationData>> = ({ data, disabled }
       <Alert
         type="warning"
         showIcon
-        message="Ubicación sin coordenadas válidas"
+        title="Ubicación sin coordenadas válidas"
         description="No es posible mostrar el mapa."
       />
     );

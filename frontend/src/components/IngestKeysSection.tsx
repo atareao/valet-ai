@@ -164,7 +164,7 @@ export function IngestKeysSection() {
         muestra una vez, al crearlo.
       </Text>
 
-      <Space direction="vertical" size="middle" style={{ width: "100%", marginTop: 16 }}>
+      <Space orientation="vertical" size="middle" style={{ width: "100%", marginTop: 16 }}>
         <Space.Compact style={{ width: "100%" }}>
           <Input
             aria-label="Nombre de la aplicación"
@@ -188,9 +188,9 @@ export function IngestKeysSection() {
           <Alert
             type="warning"
             showIcon
-            message="Guarda este token ahora: no se volverá a mostrar"
+            title="Guarda este token ahora: no se volverá a mostrar"
             description={
-              <Space direction="vertical" size={4}>
+              <Space orientation="vertical" size={4}>
                 <Text copyable={{ text: created.token }} code>
                   {created.token}
                 </Text>

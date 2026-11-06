@@ -124,7 +124,7 @@ export const EventModal: React.FC<EventModalProps> = ({
       onOk={handleSubmit}
       onCancel={onClose}
       confirmLoading={creating || updating}
-      destroyOnClose
+      destroyOnHidden
       width={isMobile ? "calc(100vw - 32px)" : 520}
     >
       <Form

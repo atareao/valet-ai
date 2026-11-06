@@ -104,11 +104,11 @@ function ZennotesSectionView({ state }: { state: UseZennotesReturn }) {
       </Text>
 
       <Space
-        direction="vertical"
+        orientation="vertical"
         size="middle"
         style={{ width: "100%", marginTop: 16 }}
       >
-        <Space direction="vertical" size={4} style={{ width: "100%" }}>
+        <Space orientation="vertical" size={4} style={{ width: "100%" }}>
           <Text>Estado</Text>
           <div aria-live="polite">{renderStatus()}</div>
         </Space>

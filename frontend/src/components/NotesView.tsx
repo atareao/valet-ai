@@ -2,8 +2,9 @@ import React, { useState } from "react";
 import {
   Alert,
   Button,
+  Flex,
   Input,
-  List,
+  Listy,
   Popconfirm,
   Select,
   Space,
@@ -86,7 +87,7 @@ const errorMessage = (err: unknown): string =>
 const NoteSummary: React.FC<{ note: Note }> = ({ note }) => {
   const tags = parseTags(note.tags ?? "");
   return (
-    <Space direction="vertical" size={4} style={{ width: "100%" }}>
+    <Space orientation="vertical" size={4} style={{ width: "100%" }}>
       <Space align="center" wrap>
         <Tag color={categoryColor(note.category)}>
           {categoryLabel(note.category)}
@@ -143,7 +144,7 @@ const NoteEditor: React.FC<NoteEditorProps> = ({
   const canSave = content.trim().length > 0 && category !== null;
 
   return (
-    <Space direction="vertical" size="small" style={{ width: "100%" }}>
+    <Space orientation="vertical" size="small" style={{ width: "100%" }}>
       <Text type="secondary">
         <time dateTime={note.created_at}>
           {formatDate(note.created_at)}
@@ -296,17 +297,17 @@ export const NotesView: React.FC = () => {
       <Alert
         type="error"
         showIcon
-        message="No se pudieron cargar las notas"
+        title="No se pudieron cargar las notas"
         description={error}
       />
     );
   }
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      {actionError && <Alert type="error" showIcon message={actionError} />}
+    <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
+      {actionError && <Alert type="error" showIcon title={actionError} />}
 
-      <Space direction="vertical" size="small" style={{ width: "100%" }}>
+      <Space orientation="vertical" size="small" style={{ width: "100%" }}>
         <div>
           <label htmlFor="notes-new-content">
             <Text type="secondary">Contenido</Text>
@@ -369,57 +370,62 @@ export const NotesView: React.FC = () => {
           Todavía no hay notas. Crea una desde el formulario de arriba.
         </div>
       ) : (
-        <List
-          dataSource={notes}
-          rowKey={(note) => note.id}
-          renderItem={(note) => (
-            <List.Item
-              actions={
-                editingId === note.id
-                  ? []
-                  : [
-                      <Button
-                        key="edit"
-                        size="small"
-                        onClick={() => {
-                          setActionError(null);
-                          setEditingId(note.id);
-                        }}
-                      >
-                        Editar
-                      </Button>,
-                      <Popconfirm
-                        key="delete"
-                        title="¿Borrar esta nota?"
-                        description="Esta acción no se puede deshacer."
-                        okText="Sí"
-                        cancelText="No"
-                        onConfirm={() => {
-                          void handleDelete(note);
-                        }}
-                      >
-                        <Button size="small" danger>
-                          Borrar
-                        </Button>
-                      </Popconfirm>,
-                    ]
-              }
-            >
-              {editingId === note.id ? (
-                <NoteEditor
-                  note={note}
-                  saving={saving}
-                  onSave={(body) => {
-                    void handleSave(note, body);
-                  }}
-                  onCancel={() => setEditingId(null)}
-                />
-              ) : (
-                <NoteSummary note={note} />
-              )}
-            </List.Item>
-          )}
-        />
+        <div role="list">
+          <Listy
+            items={notes}
+            rowKey={(note) => note.id}
+            rowHoverable={false}
+            itemRender={(note) => (
+              <Flex
+                role="listitem"
+                justify="space-between"
+                align="flex-start"
+                gap="middle"
+              >
+                <div style={{ flex: "auto", minWidth: 0 }}>
+                  {editingId === note.id ? (
+                    <NoteEditor
+                      note={note}
+                      saving={saving}
+                      onSave={(body) => {
+                        void handleSave(note, body);
+                      }}
+                      onCancel={() => setEditingId(null)}
+                    />
+                  ) : (
+                    <NoteSummary note={note} />
+                  )}
+                </div>
+                {editingId !== note.id && (
+                  <Space size="small" style={{ flex: "none" }}>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        setActionError(null);
+                        setEditingId(note.id);
+                      }}
+                    >
+                      Editar
+                    </Button>
+                    <Popconfirm
+                      title="¿Borrar esta nota?"
+                      description="Esta acción no se puede deshacer."
+                      okText="Sí"
+                      cancelText="No"
+                      onConfirm={() => {
+                        void handleDelete(note);
+                      }}
+                    >
+                      <Button size="small" danger>
+                        Borrar
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                )}
+              </Flex>
+            )}
+          />
+        </div>
       )}
     </Space>
   );

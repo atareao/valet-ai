@@ -30,7 +30,7 @@ export const WidgetRenderer: FC<WidgetRendererProps> = ({
       <Alert
         type="warning"
         showIcon
-        message={`Widget desconocido: ${name}`}
+        title={`Widget desconocido: ${name}`}
         style={{ marginTop: 8 }}
       />
     );

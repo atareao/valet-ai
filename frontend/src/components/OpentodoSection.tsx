@@ -169,16 +169,16 @@ function OpentodoSectionView({
       </Text>
 
       <Space
-        direction="vertical"
+        orientation="vertical"
         size="middle"
         style={{ width: "100%", marginTop: 16 }}
       >
-        <Space direction="vertical" size={4} style={{ width: "100%" }}>
+        <Space orientation="vertical" size={4} style={{ width: "100%" }}>
           <Text>Estado</Text>
           {/* La misma región viva reúne el estado de configuración y el
               resultado del sondeo: ambos son información de estado. */}
           <div aria-live="polite">
-            <Space direction="vertical" size={2} style={{ width: "100%" }}>
+            <Space orientation="vertical" size={2} style={{ width: "100%" }}>
               {renderStatus()}
               {checkResult && (
                 <Text type={checkResult.ok ? "success" : "warning"}>

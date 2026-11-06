@@ -146,7 +146,7 @@ export function NotificationsTab() {
       <Title level={5} style={{ marginTop: 0 }}>
         Notificaciones
       </Title>
-      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
         <Space align="center">
           <Switch
             aria-label="Activar o desactivar las notificaciones"
