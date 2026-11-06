@@ -17,7 +17,7 @@
   "dependencies": {
     "@ant-design/icons": "^6.0.0",
     "antd": "^6.7.0",
-    "chart.js": "^4.5.1",
+    "chart.js": "^4.6.1",
     "leaflet": "^1.9.4",
     "react": "^18.3.1",
     "react-chartjs-2": "^5.3.1",
