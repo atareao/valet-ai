@@ -37,8 +37,8 @@
 - [x] 4.5 Subir `chart.js` a 4.6.1 y revisar los cuatro ficheros de test que mockean `react-chartjs-2` o el canvas (verificación: los tests de `stats/` y de `StatsDashboard` pasan).
 - [x] 4.6 Confirmar que no queda ninguna API retirada en React 19 (`render`, `hydrate`, `findDOMNode`, `unmountComponentAtNode`, `createFactory`, `propTypes`, `defaultProps` de componente de función) (verificación: `rg` sobre `frontend/src` no devuelve ninguna y la aplicación arranca sin avisos de React).
 - [x] 4.7 Pasar `just frontend-lint`, `just frontend-test` y `just frontend-check` sin relajar aserciones (verificación: los tres terminan con código 0 y el code-splitting conserva todos los grupos `vendor-*`).
-- [ ] 4.8 Actualizar `README.md`, que hoy anuncia «React 18 + Ant Design 5» (verificación: `rg 'React 18' README.md` no devuelve nada y las versiones citadas coinciden con `frontend/package.json`).
-- [ ] 4.9 Actualizar el índice de planes de `AGENTS.md` con la entrada de `PLAN-019` (verificación: la entrada aparece con el estado correcto y el ordinal siguiente sigue libre).
+- [x] 4.8 Actualizar `README.md`, que hoy anuncia «React 18 + Ant Design 5» (verificación: `rg 'React 18' README.md` no devuelve nada y las versiones citadas coinciden con `frontend/package.json`).
+- [x] 4.9 Actualizar el índice de planes de `AGENTS.md` con la entrada de `PLAN-019` (verificación: la entrada aparece con el estado correcto y el ordinal siguiente sigue libre).
 - [ ] 4.10 Verificación manual en local de las mismas vistas que en la etapa A (verificación: sin cambios visuales respecto a la etapa A y sin avisos en consola).
 - [ ] 4.11 Auditoría de `@react-reviewer` sobre el diff de la etapa B (verificación: 0 bloqueantes; los hallazgos se corrigen antes de abrir el PR).
 - [ ] 4.12 PR `feature/frontend-react19` a `development` con CI verde (verificación: los dos jobs del CI en verde).
