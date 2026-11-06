@@ -40,7 +40,7 @@
 - [x] 4.8 Actualizar `README.md`, que hoy anuncia «React 18 + Ant Design 5» (verificación: `rg 'React 18' README.md` no devuelve nada y las versiones citadas coinciden con `frontend/package.json`).
 - [x] 4.9 Actualizar el índice de planes de `AGENTS.md` con la entrada de `PLAN-019` (verificación: la entrada aparece con el estado correcto y el ordinal siguiente sigue libre).
 - [ ] 4.10 Verificación manual en local de las mismas vistas que en la etapa A (verificación: sin cambios visuales respecto a la etapa A y sin avisos en consola).
-- [ ] 4.11 Auditoría de `@react-reviewer` sobre el diff de la etapa B (verificación: 0 bloqueantes; los hallazgos se corrigen antes de abrir el PR).
+- [x] 4.11 Auditoría de `@react-reviewer` sobre el diff de la etapa B (verificación: 0 bloqueantes; los hallazgos se corrigen antes de abrir el PR).
 - [ ] 4.12 PR `feature/frontend-react19` a `development` con CI verde (verificación: los dos jobs del CI en verde).
 
 ## 5. Etapa B — release
