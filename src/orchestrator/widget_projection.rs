@@ -32,8 +32,13 @@ pub enum Presentation {
         longitude: f64,
         span: Span,
     },
-    /// A closed yes/no question that closes the turn.
-    BinaryChoice { question: String, span: Span },
+    /// A turn-closing question with its answer options: the fixed `Sí`/`No` pair, or the
+    /// two named paths of an «¿X o Y?» question.
+    ClosingChoice {
+        question: String,
+        options: Vec<String>,
+        span: Span,
+    },
 }
 
 /// A widget ready to be persisted and pushed to the client.
@@ -212,7 +217,7 @@ fn presentation_span(presentation: &Presentation) -> Span {
         Presentation::Options { span, .. }
         | Presentation::Checklist { span, .. }
         | Presentation::Location { span, .. }
-        | Presentation::BinaryChoice { span, .. } => *span,
+        | Presentation::ClosingChoice { span, .. } => *span,
     }
 }
 
@@ -270,7 +275,7 @@ pub fn detect(text: &str) -> Vec<Presentation> {
     let has_options = presentations
         .iter()
         .any(|presentation| matches!(presentation, Presentation::Options { .. }));
-    let choice = binary_choice_block(&lines)
+    let choice = closing_choice_block(&lines)
         .filter(|_| !has_options)
         .filter(|choice| {
             !presentations.iter().any(|existing| {
@@ -729,7 +734,7 @@ fn contains_word(haystack: &str, needle: &str) -> bool {
 ///
 /// Only that family counts **here**: a plain yes/no question does not close a list of
 /// alternatives — it leaves a procedure as a procedure. The turn-closing yes/no question is
-/// a different form, handled by `binary_choice_block`, which only acts when no options were
+/// a different form, handled by `closing_choice_block`, which only acts when no options were
 /// projected.
 fn is_interrogative(line: &str) -> bool {
     let trimmed = line.trim();
@@ -781,41 +786,69 @@ fn question_options_block(lines: &[Line<'_>], index: usize) -> Option<(Presentat
     ))
 }
 
-/// Recognises a closed yes/no question that closes the turn.
+/// Recognises a turn-closing question and projects it as a closing choice.
 ///
-/// Only the **last line with content** counts: a question in the middle of the text is
-/// usually rhetorical or a quotation of the user's own question. Open interrogatives
-/// (`qué`, `cuál`, …) and questions that coordinate two **named** alternatives with `o`
-/// are rejected, so a `Sí`/`No` pair never answers a question that was not binary.
-fn binary_choice_block(lines: &[Line<'_>]) -> Option<Presentation> {
-    let last = last_content_line_outside_fences(lines)?;
-    let question = closed_yes_no_question(lines[last].text)?;
-    Some(Presentation::BinaryChoice {
+/// Only the **final paragraph** counts: the scan walks backwards over the last content
+/// lines that lie **outside** any fenced code block, stops at the first blank line (the
+/// paragraph boundary) and takes the last line carrying a `?`. A question in an earlier
+/// paragraph is usually rhetorical or a quotation of the user's own question. Open
+/// interrogatives (`qué`, `cuál`, …) are rejected, so a `Sí`/`No` pair never answers a
+/// question that was not binary. A question coordinating two **named** alternatives with
+/// `o` becomes a two-path choice (`¿X o Y?`); the bare `o no`/`o sí` form stays `Sí`/`No`.
+fn closing_choice_block(lines: &[Line<'_>]) -> Option<Presentation> {
+    let outside = content_lines_outside_fences(lines);
+
+    // Step 1: drop the trailing blank lines. `lines_of` always pushes a final empty line
+    // when the text ends in `\n`, and `content_buffer` arrives untrimmed, so a turn that
+    // ends in a newline must not lose its closing question to that empty line.
+    let mut end = lines.len();
+    while let Some(candidate) = end.checked_sub(1) {
+        if outside[candidate] && lines[candidate].text.trim().is_empty() {
+            end = candidate;
+        } else {
+            break;
+        }
+    }
+
+    // Step 2: walk back to the start of the final paragraph — the previous blank line
+    // (the real paragraph boundary) or the beginning of the text.
+    let mut start = end;
+    while let Some(candidate) = start.checked_sub(1) {
+        if outside[candidate] && lines[candidate].text.trim().is_empty() {
+            break;
+        }
+        start = candidate;
+    }
+
+    // Step 3: within that paragraph, take the last content line carrying a `?`.
+    let line_index = (start..end)
+        .rev()
+        .find(|&candidate| outside[candidate] && lines[candidate].text.contains('?'))?;
+
+    let line = &lines[line_index];
+    let (question, span) = closing_question(line.text)?;
+    let options = closing_options(&question)?;
+    Some(Presentation::ClosingChoice {
         question,
-        span: [
-            lines[last].start + first_non_blank(lines[last].text),
-            lines[last].end,
-        ],
+        options,
+        span: [line.start + span[0], line.start + span[1]],
     })
 }
 
-/// Index of the last line with content that lies **outside** any fenced code block, or
-/// `None` when there is no such line.
-///
-/// The fence automaton lives here, in a single forward pass: `binary_choice_block` no longer
-/// re-scans the text to find the last line and then its fence state (the old `rposition` plus
-/// toggle loop).
-fn last_content_line_outside_fences(lines: &[Line<'_>]) -> Option<usize> {
+/// Per-line flag: `true` when the line lies **outside** any fenced code block and is not a
+/// fence delimiter itself. A single forward pass over the fence automaton, shared by the
+/// closing-choice scan so it can walk backwards without re-toggling the fence state.
+fn content_lines_outside_fences(lines: &[Line<'_>]) -> Vec<bool> {
+    let mut outside = vec![false; lines.len()];
     let mut in_fence = false;
-    let mut last = None;
     for (index, line) in lines.iter().enumerate() {
         if is_fence(line.text) {
             in_fence = !in_fence;
-        } else if !in_fence && !line.text.trim().is_empty() {
-            last = Some(index);
+        } else {
+            outside[index] = !in_fence;
         }
     }
-    last
+    outside
 }
 
 /// Removes a leading Markdown quote marker (`>`) or list bullet (`- `, `* `, `• `) from a
@@ -838,10 +871,14 @@ fn strip_line_prefix(line: &str) -> &str {
     text.trim_end()
 }
 
-/// Returns the question text when the line is a closed yes/no question, `None` otherwise.
+/// Extracts the question of a closing line: its text (emphasis already stripped) and the
+/// semi-open byte range it occupies in the original `line`.
 ///
-/// The emphasis is stripped **before** the `?` gate, so «**¿Hacemos esto o no?**» is
-/// recognised and its label carries no Markdown markers.
+/// The question starts at the **last** `¿` (or the first non-blank character when there is
+/// none) and ends at the **first** `?` after it, so an emoji or a heading marker before the
+/// `¿` stays out of the label. The span is computed over the original text: it reaches the
+/// end of the line when only non-alphanumeric characters follow the closing `?`, and stops
+/// just after the `?` when prose follows, so it never swallows trailing sentences.
 ///
 /// Accents are load-bearing and are kept on purpose: `qué`/`cuál`/… are interrogatives while
 /// their unaccented twins are relatives or conjunctions, so folding them would drop
@@ -850,11 +887,29 @@ fn strip_line_prefix(line: &str) -> &str {
 /// prefieres?`) and does not harm binary questions. The other unaccented twins (`que`,
 /// `cuantos`, `quienes`, …) are deliberately **not** included: they are frequent relatives
 /// or conjunctions and would kill legitimate binary questions. Do not "normalise" this list.
-fn closed_yes_no_question(line: &str) -> Option<String> {
-    let question = strip_markdown_emphasis(strip_line_prefix(line));
-    if !question.ends_with('?') {
-        return None;
-    }
+fn closing_question(line: &str) -> Option<(String, Span)> {
+    let normalized = strip_markdown_emphasis(strip_line_prefix(line));
+    // With a `¿` the question runs from the **last** `¿` to the **first** `?` after it.
+    // Without one, the first `?` only counts as a closing question mark when nothing
+    // alphanumeric follows it: otherwise it belongs to a URL query string (`…/x?from=…`)
+    // or another token, and the line is not a question at all.
+    let question = match normalized.rfind('¿') {
+        Some(start) => {
+            let end = normalized[start..].find('?').map(|offset| start + offset)?;
+            normalized[start..=end].to_string()
+        }
+        None => {
+            let end = normalized.find('?')?;
+            if normalized[end + 1..]
+                .chars()
+                .any(|character| character.is_alphanumeric())
+            {
+                return None;
+            }
+            normalized[..=end].to_string()
+        }
+    };
+
     let lower = question.to_lowercase();
     const OPEN_INTERROGATIVES: [&str; 14] = [
         "qué", "cuál", "cual", "quién", "cómo", "cuándo", "dónde", "cuánto", "cuáles", "quiénes",
@@ -866,9 +921,6 @@ fn closed_yes_no_question(line: &str) -> Option<String> {
     {
         return None;
     }
-    if coordinates_named_alternatives(&lower) {
-        return None;
-    }
     // A bare `?` (or `¿?`) leaves no alphanumeric content, so it never grows a choice.
     if question
         .trim_matches(|character: char| !character.is_alphanumeric())
@@ -876,31 +928,126 @@ fn closed_yes_no_question(line: &str) -> Option<String> {
     {
         return None;
     }
-    Some(question)
+
+    // The span is taken over the original line: the `?` position is stable (emphasis
+    // stripping never drops it), and the label's own offsets are not needed here.
+    let span_start = line.rfind('¿').unwrap_or_else(|| first_non_blank(line));
+    let closing = line[span_start..].find('?')?;
+    let question_end = span_start + closing + 1;
+    let span_end = if line[question_end..]
+        .chars()
+        .all(|character| !character.is_alphanumeric())
+    {
+        line.len()
+    } else {
+        question_end
+    };
+    Some((question, [span_start, span_end]))
 }
 
-/// Whether the question coordinates two **named** alternatives with `o`, `ó` or `u`.
+/// Answer options for a closing question: the fixed `Sí`/`No` pair, or the two named paths
+/// of an «¿X o Y?» question.
 ///
-/// «o no» and «o sí» are the binary form itself, not alternatives, so they are allowed;
-/// any other conjunction pair («¿Lo hago ahora o mañana?», «¿Son 7 ó 8?», «¿Son 7 u 8?»)
-/// means a `Sí`/`No` answer would be wrong.
-fn coordinates_named_alternatives(lower: &str) -> bool {
-    let mut words = lower.split_whitespace();
-    while let Some(word) = words.next() {
-        let conjunction = trim_word(word);
-        if conjunction == "o" || conjunction == "ó" || conjunction == "u" {
-            match words.next().map(trim_word) {
-                Some("no") | Some("sí") => {}
-                _ => return true,
-            }
+/// A conjunction `o`/`ó`/`u` that coordinates two **named** alternatives makes a `Sí`/`No`
+/// answer wrong, so the question splits into its two paths; «o no»/«o sí»/«o si» are the
+/// binary form itself, not alternatives. More than one conjunction means three or more
+/// paths, which is not a two-way choice. A path with fewer than 3 alphanumeric characters
+/// or more than 160 characters is not a usable option either.
+fn closing_options(question: &str) -> Option<Vec<String>> {
+    let body = question.trim_start_matches('¿').trim_end_matches('?');
+    let words = words_with_offsets(body);
+
+    let conjunctions: Vec<usize> = words
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, word))| is_conjunction(word))
+        .map(|(position, _)| position)
+        .collect();
+
+    if conjunctions.len() > 1 {
+        return None;
+    }
+    let Some(&position) = conjunctions.first() else {
+        return Some(vec!["Sí".to_string(), "No".to_string()]);
+    };
+    if let Some((_, next)) = words.get(position + 1) {
+        if matches!(trim_word(next).to_lowercase().as_str(), "no" | "sí" | "si") {
+            return Some(vec!["Sí".to_string(), "No".to_string()]);
         }
     }
-    false
+
+    let (conjunction_start, conjunction) = words[position];
+    let left = clean_path(&body[..conjunction_start]);
+    let right = clean_path(&body[conjunction_start + conjunction.len()..]);
+    if !is_usable_path(&left) || !is_usable_path(&right) {
+        return None;
+    }
+    Some(vec![left, right])
+}
+
+/// The whitespace-separated words of `text` together with their byte offsets.
+fn words_with_offsets(text: &str) -> Vec<(usize, &str)> {
+    let mut words = Vec::new();
+    let mut start = None;
+    for (index, character) in text.char_indices() {
+        if character.is_whitespace() {
+            if let Some(begin) = start.take() {
+                words.push((begin, &text[begin..index]));
+            }
+        } else if start.is_none() {
+            start = Some(index);
+        }
+    }
+    if let Some(begin) = start {
+        words.push((begin, &text[begin..]));
+    }
+    words
+}
+
+/// Cleans one path of a two-path question: trims it, drops trailing dashes, commas and
+/// colons, strips the `¿`/`?` markers and capitalises the first letter. Internal dashes
+/// (`el parte — tiempo — o …`) are preserved; only trailing ones go.
+fn clean_path(segment: &str) -> String {
+    let mut text = segment.trim();
+    loop {
+        let trimmed = text.trim_end_matches(['—', '-', ',', ';', ':']).trim_end();
+        if trimmed.len() == text.len() {
+            break;
+        }
+        text = trimmed;
+    }
+    let text = text.trim_start_matches('¿').trim_end_matches('?').trim();
+    capitalize_first(text)
+}
+
+/// Uppercases the first character of `text`, leaving the rest untouched.
+fn capitalize_first(text: &str) -> String {
+    let mut characters = text.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Whether a cleaned path is a usable option: at least 3 alphanumeric characters and no
+/// more than 160 characters.
+fn is_usable_path(text: &str) -> bool {
+    let alphanumeric = text
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .count();
+    alphanumeric >= 3 && text.chars().count() <= 160
 }
 
 /// Strips the punctuation around a token so `no?` compares as `no`.
 fn trim_word(word: &str) -> &str {
     word.trim_matches(|character: char| !character.is_alphanumeric())
+}
+
+/// Whether a token is a coordinating conjunction (`o`/`ó`/`u`), case-insensitively: an
+/// uppercase `O`/`U` coordinates alternatives just as well as the lowercase form.
+fn is_conjunction(word: &str) -> bool {
+    matches!(trim_word(word).to_lowercase().as_str(), "o" | "ó" | "u")
 }
 
 /// Number of digits after the decimal point, or `None` when the token is not a decimal number.
@@ -1100,9 +1247,11 @@ fn widget_for(presentation: &Presentation, tool_results: &[(String, Value)]) -> 
             data.insert("longitude".to_string(), json!(*longitude));
             widget("LocationWidget", Value::Object(data), *span)
         }
-        Presentation::BinaryChoice { question, span } => {
-            quick_form(question, json!(["Sí", "No"]), "", *span)
-        }
+        Presentation::ClosingChoice {
+            question,
+            options,
+            span,
+        } => quick_form(question, json!(options), "", *span),
     }
 }
 
@@ -1175,7 +1324,7 @@ mod tests {
             Presentation::Options { span, .. }
             | Presentation::Checklist { span, .. }
             | Presentation::Location { span, .. }
-            | Presentation::BinaryChoice { span, .. } => *span,
+            | Presentation::ClosingChoice { span, .. } => *span,
         }
     }
 
@@ -1582,7 +1731,7 @@ mod tests {
         assert_eq!(presentations.len(), 1);
         assert!(matches!(
             presentations[0],
-            Presentation::BinaryChoice { .. }
+            Presentation::ClosingChoice { .. }
         ));
         // The procedure itself SHALL NOT degrade into an options widget.
         assert!(!presentations
@@ -2537,8 +2686,12 @@ mod tests {
     }
 
     #[test]
-    fn binary_choice_named_alternatives_are_not_binary() {
-        assert!(detect("¿Lo hago ahora o mañana?").is_empty());
+    fn closing_choice_named_alternatives_become_two_paths() {
+        let widget = only_widget("¿Lo hago ahora o mañana?");
+        assert_eq!(
+            widget.data["fields"][0]["options"],
+            json!(["Lo hago ahora", "Mañana"])
+        );
     }
 
     #[test]
@@ -2562,7 +2715,7 @@ mod tests {
         assert_eq!(presentations.len(), 1);
         assert!(matches!(
             presentations[0],
-            Presentation::BinaryChoice { .. }
+            Presentation::ClosingChoice { .. }
         ));
         assert_eq!(span_of(&presentations[0]), [0, "¿Hacemos esto o no?".len()]);
     }
@@ -2582,10 +2735,10 @@ mod tests {
         assert_eq!(presentations.len(), 1);
         assert!(matches!(
             presentations[0],
-            Presentation::BinaryChoice { .. }
+            Presentation::ClosingChoice { .. }
         ));
         match &presentations[0] {
-            Presentation::BinaryChoice { question, .. } => {
+            Presentation::ClosingChoice { question, .. } => {
                 assert_eq!(question, "¿Hacemos esto o no?");
             }
             other => panic!("expected a binary choice, got {other:?}"),
@@ -2635,8 +2788,77 @@ mod tests {
     }
 
     #[test]
-    fn binary_choice_por_correo_o_por_nota_is_not_binary() {
-        assert!(detect("¿Por correo o por nota?").is_empty());
+    fn closing_choice_survives_trailing_newline() {
+        // `lines_of` always pushes a final empty line when the text ends in `\n`, and the
+        // orchestrator hands `content_buffer` over untrimmed: the trailing empty line must
+        // not be mistaken for the paragraph boundary that hides the question.
+        let widget = only_widget("Vale.\n¿Hacemos esto o no?\n");
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+    }
+
+    #[test]
+    fn closing_choice_survives_trailing_blank_lines() {
+        let widget = only_widget("Vale.\n¿Hacemos esto o no?\n\n\n");
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+    }
+
+    #[test]
+    fn closing_choice_url_with_query_string_is_not_a_question() {
+        // Without a `¿`, a `?` in the middle of the line (a URL query string) is not a
+        // closing question mark: alphanumeric characters follow it.
+        assert!(detect("> Más info en https://ejemplo.com/x?from=2026-11-01").is_empty());
+    }
+
+    #[test]
+    fn closing_choice_bare_question_without_inverted_mark_at_end() {
+        // A `?` that closes the line (only non-alphanumeric characters follow) is a valid
+        // question even without the opening `¿`.
+        let widget = only_widget("Son las 5?");
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+    }
+
+    #[test]
+    fn closing_choice_uppercase_conjunction_splits() {
+        let widget = only_widget("¿Lo hago ahora O mañana?");
+        assert_eq!(
+            widget.data["fields"][0]["options"],
+            json!(["Lo hago ahora", "Mañana"])
+        );
+    }
+
+    #[test]
+    fn closing_choice_more_than_one_conjunction_is_rejected() {
+        // Two conjunctions mean three or more paths: not a two-way choice. (The existing
+        // `¿Prefieres A, B o C?` case is rejected by the minimum-length guard, not by the
+        // conjunction counter, so it does not cover this branch.)
+        assert!(detect("¿Vamos en coche o en tren o nos quedamos?").is_empty());
+    }
+
+    #[test]
+    fn closing_choice_overlong_path_is_rejected() {
+        let text = format!("¿{} o salimos?", "x".repeat(161));
+        assert!(detect(&text).is_empty());
+    }
+
+    #[test]
+    fn closing_choice_unaccented_si_stays_binary() {
+        // `si` without the accent is still the binary form after a conjunction.
+        let widget = only_widget("¿Hacemos esto o si?");
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+    }
+
+    #[test]
+    fn closing_choice_path_under_three_alphanumerics_is_rejected() {
+        assert!(detect("¿Prefieres A o B?").is_empty());
+    }
+
+    #[test]
+    fn closing_choice_por_correo_o_por_nota_becomes_two_paths() {
+        let widget = only_widget("¿Por correo o por nota?");
+        assert_eq!(
+            widget.data["fields"][0]["options"],
+            json!(["Por correo", "Por nota"])
+        );
     }
 
     #[test]
@@ -2668,7 +2890,7 @@ mod tests {
         assert!(matches!(presentations[0], Presentation::Location { .. }));
         assert!(!presentations
             .iter()
-            .any(|presentation| matches!(presentation, Presentation::BinaryChoice { .. })));
+            .any(|presentation| matches!(presentation, Presentation::ClosingChoice { .. })));
         let spans: Vec<Span> = presentations.iter().map(span_of).collect();
         for left in 0..spans.len() {
             for right in left + 1..spans.len() {
@@ -2679,5 +2901,155 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Corpus de producción (prose-choice-widget)
+    //
+    // Cadenas literales extraídas de la BD de producción; los tests sintéticos
+    // del change anterior pasaron en verde sin cubrir ninguna respuesta real
+    // del modelo.
+    // ---------------------------------------------------------------------
+
+    /// Byte offset of the first `¿` in `text`.
+    fn question_start(text: &str) -> usize {
+        text.find('¿').expect("the corpus text has a question mark")
+    }
+
+    #[test]
+    fn production_corpus_two_path_with_emoji() {
+        let text = "> ¿Le doy el parte del día — tiempo, agenda y entrenamiento — o va directo a algo concreto? ☕️";
+        let widget = only_widget(text);
+        assert_eq!(widget.name, "QuickForm");
+        assert_eq!(
+            widget.data["fields"][0]["options"],
+            json!([
+                "Le doy el parte del día — tiempo, agenda y entrenamiento",
+                "Va directo a algo concreto"
+            ])
+        );
+        assert_eq!(
+            widget.data["fields"][0]["label"],
+            "¿Le doy el parte del día — tiempo, agenda y entrenamiento — o va directo a algo concreto?"
+        );
+        assert!(widget.data.get("title").is_none());
+        assert_eq!(widget.span, Some([question_start(text), text.len()]));
+    }
+
+    #[test]
+    fn production_corpus_two_path_short() {
+        let text = "> ¿Le pongo un recordatorio un rato antes, o lo dejo así? ☕️";
+        let widget = only_widget(text);
+        assert_eq!(
+            widget.data["fields"][0]["options"],
+            json!(["Le pongo un recordatorio un rato antes", "Lo dejo así"])
+        );
+    }
+
+    #[test]
+    fn production_corpus_two_path_with_commas() {
+        let text = "> ¿Le busco el repositorio y las instrucciones de instalación, o lo dejamos para mañana con luz? ☕️";
+        let widget = only_widget(text);
+        assert_eq!(
+            widget.data["fields"][0]["options"],
+            json!([
+                "Le busco el repositorio y las instrucciones de instalación",
+                "Lo dejamos para mañana con luz"
+            ])
+        );
+    }
+
+    #[test]
+    fn production_corpus_question_followed_by_prose() {
+        let text = "> ¿Quiere que le suba el tono de guasa o se lo deje más sobrio? Confirme y sale disparado. 🎩";
+        let widget = only_widget(text);
+        assert_eq!(
+            widget.data["fields"][0]["options"],
+            json!([
+                "Quiere que le suba el tono de guasa",
+                "Se lo deje más sobrio"
+            ])
+        );
+        assert_eq!(
+            widget.data["fields"][0]["label"],
+            "¿Quiere que le suba el tono de guasa o se lo deje más sobrio?"
+        );
+        let start = question_start(text);
+        let end = text.find('?').expect("the corpus text closes the question") + 1;
+        assert_eq!(
+            widget.span,
+            Some([start, end]),
+            "el span no puede tragarse la prosa que sigue al cierre de la pregunta"
+        );
+    }
+
+    #[test]
+    fn production_corpus_yes_no_with_emoji() {
+        let text = "> ¿Seguimos? ☕️";
+        let widget = only_widget(text);
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+        assert_eq!(widget.data["fields"][0]["label"], "¿Seguimos?");
+        assert_eq!(widget.span, Some([question_start(text), text.len()]));
+    }
+
+    #[test]
+    fn production_corpus_heading_question() {
+        let text = "### 📋 ¿Seguimos?";
+        let widget = only_widget(text);
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
+        assert_eq!(widget.data["fields"][0]["label"], "¿Seguimos?");
+        assert_eq!(widget.span, Some([question_start(text), text.len()]));
+    }
+
+    #[test]
+    fn production_corpus_open_questions_are_not_choices() {
+        for text in [
+            "> ¿Qué necesita? 😒",
+            "> ¿Cuál, Lorenzo?",
+            "> ¿Por dónde empezamos, Lorenzo?",
+        ] {
+            assert!(
+                synthesize(&detect(text), &[]).is_empty(),
+                "una pregunta abierta no SHALL producir widget: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn production_corpus_three_paths_are_not_choices() {
+        let text = "> ¿Prefieres A, B o C?";
+        assert!(
+            synthesize(&detect(text), &[]).is_empty(),
+            "tres tramos no SHALL producir widget: {text:?}"
+        );
+    }
+
+    #[test]
+    fn production_corpus_closing_without_question() {
+        for text in [
+            "> Dígame. ☕️",
+            "> Todo cerrado, Lorenzo. **Ahora sí, a la calle** — el progresivo no se corre desde el sofá. 😒☕️",
+        ] {
+            assert!(
+                synthesize(&detect(text), &[]).is_empty(),
+                "un cierre sin pregunta no SHALL producir widget: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn production_corpus_question_in_earlier_paragraph() {
+        let text = "> ¿Seguimos?\n\nTodo cerrado, Lorenzo. **Ahora sí, a la calle** — el progresivo no se corre desde el sofá. 😒☕️";
+        assert!(
+            synthesize(&detect(text), &[]).is_empty(),
+            "una pregunta en un párrafo anterior no SHALL producir widget: {text:?}"
+        );
+    }
+
+    #[test]
+    fn production_corpus_o_no_stays_binary() {
+        let text = "> ¿Hacemos esto o no?";
+        let widget = only_widget(text);
+        assert_eq!(widget.data["fields"][0]["options"], json!(["Sí", "No"]));
     }
 }
