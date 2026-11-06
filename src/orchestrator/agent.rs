@@ -1468,6 +1468,17 @@ impl Orchestrator {
                             .unwrap_or(0);
                         let total_tokens = prompt_tokens + completion_tokens;
 
+                        // Persist the requested tool names (Done wins over stream,
+                        // same precedence as execution) as `[{"name":"<tool>"}, …]`.
+                        let tool_calls_json = tool_calls.as_ref().map(|tcs| {
+                            serde_json::Value::Array(
+                                tcs.iter()
+                                    .map(|tc| serde_json::json!({ "name": tc.name }))
+                                    .collect(),
+                            )
+                            .to_string()
+                        });
+
                         let _ = StatsRepo::record_request(
                             &self.db,
                             CallKind::Chat,
@@ -1491,7 +1502,7 @@ impl Orchestrator {
                             Some(stream_start.elapsed().as_millis() as i64),
                             "success",
                             None,
-                            None,
+                            tool_calls_json.as_deref(),
                             None,
                         )
                         .await;
