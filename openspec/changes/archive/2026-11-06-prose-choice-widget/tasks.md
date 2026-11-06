@@ -49,7 +49,7 @@
 
 ## 7. Release
 
-- [ ] 7.1 PR a `development` con CI verde.
-- [ ] 7.2 `release/vX.Y.Z` desde `development`, PR a `main` y tag.
-- [ ] 7.3 Despliegue en `co1` y verificación de la versión en `/api/health`.
-- [ ] 7.4 Medición post-despliegue: contar widgets de elección en turnos reales y confirmar que ya no son 0.
+- [x] 7.1 PR a `development` con CI verde.
+- [x] 7.2 `release/vX.Y.Z` desde `development`, PR a `main` y tag.
+- [x] 7.3 Despliegue en `co1` y verificación de la versión en `/api/health`.
+- [x] 7.4 Medición post-despliegue: contar widgets de elección en turnos reales y confirmar que ya no son 0.

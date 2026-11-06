@@ -95,11 +95,11 @@ export function RouterControl() {
           type="info"
           showIcon
           style={{ marginBottom: 12 }}
-          message="El enrutador está apagado: no se filtran las herramientas ni se inyectan los fragmentos de prompt. El guardado sigue disponible."
+          title="El enrutador está apagado: no se filtran las herramientas ni se inyectan los fragmentos de prompt. El guardado sigue disponible."
         />
       )}
 
-      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
         <div>
           <Switch
             id="router-enabled"

@@ -76,6 +76,10 @@ describe("NotificationsView", () => {
     expect(screen.getByText(/strava/i)).toBeInTheDocument();
     expect(screen.getByText(/valet/i)).toBeInTheDocument();
     expect(screen.getByText(/25 avisos pendientes/i)).toBeInTheDocument();
+    // Las filas son `listitem`: el contenedor que las agrupa debe ser `list`.
+    expect(
+      screen.getByRole("list"),
+    ).toContainElement(screen.getAllByRole("listitem")[0]);
   });
 
   it("renders created_at as UTC", async () => {
@@ -109,6 +113,28 @@ describe("NotificationsView", () => {
     expect(await screen.findByText("—")).toBeInTheDocument();
     expect(screen.queryByText("Invalid Date")).not.toBeInTheDocument();
     expect(screen.queryByText("no-es-fecha")).not.toBeInTheDocument();
+  });
+
+  it("renderiza todos los avisos en el orden recibido", async () => {
+    mockApi.listUnreadNotifications.mockResolvedValue(
+      paginated(
+        [
+          notification("n1", { message: "Primer aviso" }),
+          notification("n2", { message: "Segundo aviso" }),
+          notification("n3", { message: "Tercer aviso" }),
+        ],
+        null,
+        3,
+      ),
+    );
+
+    render(<NotificationsView />);
+
+    await screen.findByText("Primer aviso");
+    const messages = screen
+      .getAllByText(/^(Primer|Segundo|Tercer) aviso$/)
+      .map((node) => node.textContent);
+    expect(messages).toEqual(["Primer aviso", "Segundo aviso", "Tercer aviso"]);
   });
 
   it("marks a single notification as read", async () => {
@@ -192,5 +218,10 @@ describe("NotificationsView", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /siguiente/i })).toBeDisabled();
     });
+
+    // La segunda página se pinta de verdad: la fila nueva aparece y la vieja
+    // desaparece. Sin esto, un fallo de renderizado pasaría inadvertido.
+    expect(screen.getByText("Aviso n11")).toBeInTheDocument();
+    expect(screen.queryByText("Aviso n1")).not.toBeInTheDocument();
   });
 });

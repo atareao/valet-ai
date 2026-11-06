@@ -2,8 +2,9 @@ import React, { useState } from "react";
 import {
   Alert,
   Button,
+  Flex,
   Input,
-  List,
+  Listy,
   Popconfirm,
   Radio,
   Space,
@@ -85,7 +86,7 @@ const MoodTag: React.FC<{ mood: Mood | null }> = ({ mood }) => {
 };
 
 const EntrySummary: React.FC<{ entry: JournalEntry }> = ({ entry }) => (
-  <Space direction="vertical" size={4} style={{ width: "100%" }}>
+  <Space orientation="vertical" size={4} style={{ width: "100%" }}>
     <Space align="center" wrap>
       <Text strong>
         <time dateTime={entry.date}>{formatDate(entry.date)}</time>
@@ -150,7 +151,7 @@ const EntryEditor: React.FC<EntryEditorProps> = ({
   const tagsId = `journal-tags-${entry.date}`;
 
   return (
-    <Space direction="vertical" size="small" style={{ width: "100%" }}>
+    <Space orientation="vertical" size="small" style={{ width: "100%" }}>
       <Text strong>
         <time dateTime={entry.date}>{formatDate(entry.date)}</time>
       </Text>
@@ -278,15 +279,15 @@ export const JournalView: React.FC = () => {
       <Alert
         type="error"
         showIcon
-        message="No se pudo cargar la bitácora"
+        title="No se pudo cargar la bitácora"
         description={error}
       />
     );
   }
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      {actionError && <Alert type="error" showIcon message={actionError} />}
+    <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
+      {actionError && <Alert type="error" showIcon title={actionError} />}
 
       {entries.length === 0 ? (
         <div
@@ -301,57 +302,62 @@ export const JournalView: React.FC = () => {
           apuntando tus días.
         </div>
       ) : (
-        <List
-          dataSource={entries}
-          rowKey={(entry) => entry.id}
-          renderItem={(entry) => (
-            <List.Item
-              actions={
-                editingDate === entry.date
-                  ? []
-                  : [
-                      <Button
-                        key="edit"
-                        size="small"
-                        onClick={() => {
-                          setActionError(null);
-                          setEditingDate(entry.date);
-                        }}
-                      >
-                        Editar
-                      </Button>,
-                      <Popconfirm
-                        key="delete"
-                        title={`¿Borrar la entrada del ${formatDate(entry.date)}?`}
-                        description="Esta acción no se puede deshacer."
-                        okText="Sí"
-                        cancelText="No"
-                        onConfirm={() => {
-                          void handleDelete(entry);
-                        }}
-                      >
-                        <Button size="small" danger>
-                          Borrar
-                        </Button>
-                      </Popconfirm>,
-                    ]
-              }
-            >
-              {editingDate === entry.date ? (
-                <EntryEditor
-                  entry={entry}
-                  saving={saving}
-                  onSave={(body) => {
-                    void handleSave(entry, body);
-                  }}
-                  onCancel={() => setEditingDate(null)}
-                />
-              ) : (
-                <EntrySummary entry={entry} />
-              )}
-            </List.Item>
-          )}
-        />
+        <div role="list">
+          <Listy
+            items={entries}
+            rowKey={(entry) => entry.id}
+            rowHoverable={false}
+            itemRender={(entry) => (
+              <Flex
+                role="listitem"
+                justify="space-between"
+                align="flex-start"
+                gap="middle"
+              >
+                <div style={{ flex: "auto", minWidth: 0 }}>
+                  {editingDate === entry.date ? (
+                    <EntryEditor
+                      entry={entry}
+                      saving={saving}
+                      onSave={(body) => {
+                        void handleSave(entry, body);
+                      }}
+                      onCancel={() => setEditingDate(null)}
+                    />
+                  ) : (
+                    <EntrySummary entry={entry} />
+                  )}
+                </div>
+                {editingDate !== entry.date && (
+                  <Space size="small" style={{ flex: "none" }}>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        setActionError(null);
+                        setEditingDate(entry.date);
+                      }}
+                    >
+                      Editar
+                    </Button>
+                    <Popconfirm
+                      title={`¿Borrar la entrada del ${formatDate(entry.date)}?`}
+                      description="Esta acción no se puede deshacer."
+                      okText="Sí"
+                      cancelText="No"
+                      onConfirm={() => {
+                        void handleDelete(entry);
+                      }}
+                    >
+                      <Button size="small" danger>
+                        Borrar
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                )}
+              </Flex>
+            )}
+          />
+        </div>
       )}
     </Space>
   );

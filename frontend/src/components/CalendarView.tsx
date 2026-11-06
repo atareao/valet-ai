@@ -168,13 +168,13 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
 
   if (error) {
     return (
-      <Alert type="error" message={error} showIcon style={{ margin: 16 }} />
+      <Alert type="error" title={error} showIcon style={{ margin: 16 }} />
     );
   }
 
   return (
     <div style={{ padding: 16, minHeight: 400 }}>
-      <Space direction="vertical" style={{ width: "100%" }} size="middle">
+      <Space orientation="vertical" style={{ width: "100%" }} size="middle">
         <div
           style={{
             display: "flex",
@@ -191,7 +191,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({
             Calendar
           </Title>
           <Space
-            direction={isMobile ? "vertical" : "horizontal"}
+            orientation={isMobile ? "vertical" : "horizontal"}
             style={{ width: isMobile ? "100%" : undefined }}
           >
             <Select

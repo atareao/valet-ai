@@ -1,5 +1,5 @@
 import React from "react";
-import { Button, Card, List, Space, Tag, Typography } from "antd";
+import { Button, Card, Flex, Listy, Space, Tag, Typography } from "antd";
 import { useNotifications } from "../hooks/useNotifications";
 import { parseSqliteTimestamp } from "../utils/sqliteTimestamp";
 import type { Notification } from "../types";
@@ -60,7 +60,7 @@ export const NotificationsView: React.FC = () => {
 
   return (
     <Card>
-      <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+      <Space orientation="vertical" size="middle" style={{ width: "100%" }}>
         <Space
           style={{ width: "100%", justifyContent: "space-between" }}
           align="center"
@@ -88,43 +88,45 @@ export const NotificationsView: React.FC = () => {
             No hay avisos pendientes
           </div>
         ) : (
-          <List
-            dataSource={notifications}
-            rowKey={(n) => n.id}
-            renderItem={(n) => (
-              <List.Item
-                actions={[
-                  <Button
-                    key="read"
-                    size="small"
-                    onClick={() => {
-                      void markRead(n.id);
-                    }}
-                  >
-                    Marcar como leído
-                  </Button>,
-                ]}
-              >
-                <List.Item.Meta
-                  title={
+          <div role="list">
+            <Listy
+              items={notifications}
+              rowKey={(n) => n.id}
+              rowHoverable={false}
+              itemRender={(n) => (
+                <Flex
+                  role="listitem"
+                  justify="space-between"
+                  align="flex-start"
+                  gap="middle"
+                >
+                  <Flex vertical gap={4} style={{ flex: "auto", minWidth: 0 }}>
                     <Space>
                       <Tag color={LEVEL_COLORS[n.level]}>{n.level}</Tag>
                       <Text strong>{n.origin}</Text>
                       <Text type="secondary">{n.author}</Text>
                     </Space>
-                  }
-                  description={
-                    <Space direction="vertical" size={0}>
+                    <Space orientation="vertical" size={0}>
                       <Text>{n.message}</Text>
                       <Text type="secondary">
                         {formatCreatedAt(n.created_at)}
                       </Text>
                     </Space>
-                  }
-                />
-              </List.Item>
-            )}
-          />
+                  </Flex>
+                  <Space size="small" style={{ flex: "none" }}>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        void markRead(n.id);
+                      }}
+                    >
+                      Marcar como leído
+                    </Button>
+                  </Space>
+                </Flex>
+              )}
+            />
+          </div>
         )}
 
         <Space>

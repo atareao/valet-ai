@@ -250,7 +250,7 @@ export const ChatView: React.FC<ChatViewProps> = (props) => {
         open={!!pendingApproval}
         onCancel={() => onResolveApproval?.(false)}
         closable={false}
-        maskClosable={false}
+        mask={{ closable: false }}
         footer={[
           <Button
             key="deny"

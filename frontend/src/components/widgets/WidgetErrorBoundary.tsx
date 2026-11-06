@@ -40,7 +40,7 @@ export class WidgetErrorBoundary extends Component<
         <Alert
           type="error"
           showIcon
-          message={`No se pudo renderizar el widget «${this.props.name}»`}
+          title={`No se pudo renderizar el widget «${this.props.name}»`}
           style={{ marginTop: 8 }}
         />
       );

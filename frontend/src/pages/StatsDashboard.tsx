@@ -102,7 +102,7 @@ export const StatsDashboard: React.FC = () => {
     return (
       <div style={{ padding: 24 }}>
         <Alert
-          message="Error loading stats"
+          title="Error loading stats"
           description={error}
           type="error"
           showIcon
@@ -126,7 +126,7 @@ export const StatsDashboard: React.FC = () => {
           minHeight: "60vh",
         }}
       >
-        <Spin size="large" tip="Loading stats..." />
+        <Spin size="large" description="Loading stats..." />
       </div>
     );
   }

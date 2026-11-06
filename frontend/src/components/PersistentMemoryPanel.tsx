@@ -106,10 +106,10 @@ export function PersistentMemoryPanel({
 
   return (
     <div>
-      <Space direction="vertical" style={{ width: "100%" }} size="middle">
-        {error && <Alert type="error" message={error} showIcon />}
-        {warning && <Alert type="warning" message={warning} showIcon />}
-        {conflict && <Alert type="info" message={conflict} showIcon />}
+      <Space orientation="vertical" style={{ width: "100%" }} size="middle">
+        {error && <Alert type="error" title={error} showIcon />}
+        {warning && <Alert type="warning" title={warning} showIcon />}
+        {conflict && <Alert type="info" title={conflict} showIcon />}
 
         {state?.is_empty && (
           <Text type="secondary">No hay estado persistente guardado.</Text>

@@ -87,7 +87,7 @@ function SkillPane({
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message={
+          title={
             threshold === 0
               ? "Un umbral de 0 desactiva el filtrado de esta skill. El guardado sigue disponible."
               : "Un umbral de 1 vuelve inalcanzable cualquier selección de esta skill. El guardado sigue disponible."
@@ -226,7 +226,7 @@ export function SkillsTab({
       <Alert
         type="warning"
         showIcon
-        message="No se pudieron cargar las skills"
+        title="No se pudieron cargar las skills"
         description="La configuración por skill no está disponible. El resto de los ajustes sigue funcionando."
       />
     );
@@ -236,7 +236,7 @@ export function SkillsTab({
     <section role="region" aria-label="Skills">
       <Form form={form} layout="vertical" onFinish={handleSubmit}>
         <Tabs
-          tabPosition="left"
+          tabPlacement="start"
           aria-label="Configuración por skill"
           items={skills.map((skill) => ({
             key: skill.id,
