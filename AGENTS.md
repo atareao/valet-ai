@@ -232,6 +232,16 @@ Lo que no se reabre sin orden explícita:
 - **El histórico no se migra** (decisión del usuario): los widgets ya persistidos siguen con sus opciones viejas y `type: select`.
 - Queda **sin medir** el disparador del modelo (fase 2 de `plans/PLAN-015-COMPLETED.md` §6): `render_widget` del modelo sumó 0 llamadas en los 39 turnos medidos, y el arreglo no depende de que el modelo cambie de costumbres.
 
+**18. La elección de cierre se proyecta por la prosa real del modelo, y su disparador ya está medido.** Decidido y ejecutado el 2026-11-06 al cerrar el change `prose-choice-widget` (PR #315 para el código, #316 para el release; **v0.29.0** desplegada en `co1`). El change anterior (`binary-choice-widget`) exigía que la última línea del turno acabase exactamente en `?` y que la pregunta binaria fuese «¿X o no?»: medido sobre 200 turnos reales, disparaba **0 veces**, porque el modelo firma con emoji tras el `?` y pregunta «¿X o Y?». Lo que no se reabre sin orden explícita:
+
+- **F1 — la pregunta se extrae entre el último `¿` y el `?` de cierre**, así que la firma con emoji deja de impedir la detección.
+- **F2 — una sola conjunción `o`/`ó`/`u`** cuyo segundo tramo no es `no`/`sí` emite los dos caminos como opciones; «o no» sigue dando `Sí`/`No`. Más de una conjunción, tramos de menos de 3 alfanuméricos o de más de 160 caracteres quedan fuera.
+- **F3 — solo el párrafo final**, y la última línea con pregunta dentro de él; el `span` corta en el `?` cuando detrás hay prosa.
+- **`Presentation::BinaryChoice` pasa a `ClosingChoice { question, options, span }`.** La pregunta aparece **una sola vez** en pantalla, como etiqueta del grupo de opciones.
+- **Precedencia sin cambios:** las opciones de tabla ganan a la elección de cierre cuando coinciden en el mismo turno.
+- **Medición post-despliegue (200 turnos reales):** de **0 a 41 (20,5 %)** — 9 binarios y 32 de dos caminos. Ningún turno produjo más de un `QuickForm`. La nota del punto 17 sigue vigente y es otro asunto: allí lo «sin medir» es el `render_widget` que decide el **modelo**; aquí la proyección es determinista del **servidor** y su disparador está medido.
+- **Observaciones aceptadas, no defectos:** en los turnos 67 y 156 el texto ofrece tres alternativas y el widget emite dos (fusiona las dos últimas), y en el turno 46 una tabla de opciones eclipsa una pregunta binaria del mismo turno.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
@@ -275,7 +285,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-015-COMPLETED.md` | El formulario de opciones deja de ser un jeroglífico: la opción lleva el texto de su fila y solo se proyectan tablas declaradas (change `widget-options-contract`; PR #295, v0.27.1) | ✅ Completado |
 | `plans/PLAN-016-COMPLETED.md` | Desbloquear el CI: el test de la ventana temporal de `background_summary` deja de depender del reloj, y la cola de Dependabot (change `stats-test-clock-independence`; PRs #304/#305, v0.27.2) | ✅ Completado |
 | `plans/PLAN-017-COMPLETED.md` | La pregunta cerrada de sí/no ofrece un widget de elección: la cuarta forma reconocible de la proyección (change `binary-choice-widget`; PR #312/#313, v0.28.0) | ✅ Completado |
-| `plans/PLAN-018.md` | La elección de cierre reconoce cómo escribe el modelo de verdad: el disparador no encajaba con la prosa real (emoji tras el `?` y preguntas «¿X o Y?») (change `prose-choice-widget`) | 🚧 En curso |
+| `plans/PLAN-018-COMPLETED.md` | La elección de cierre reconoce cómo escribe el modelo de verdad: el disparador no encajaba con la prosa real (emoji tras el `?` y preguntas «¿X o Y?») (change `prose-choice-widget`; PR #315/#316, v0.29.0) | ✅ Completado |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
