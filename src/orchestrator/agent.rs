@@ -1468,6 +1468,17 @@ impl Orchestrator {
                             .unwrap_or(0);
                         let total_tokens = prompt_tokens + completion_tokens;
 
+                        // Persist the requested tool names (Done wins over stream,
+                        // same precedence as execution) as `[{"name":"<tool>"}, …]`.
+                        let tool_calls_json = tool_calls.as_ref().map(|tcs| {
+                            serde_json::Value::Array(
+                                tcs.iter()
+                                    .map(|tc| serde_json::json!({ "name": tc.name }))
+                                    .collect(),
+                            )
+                            .to_string()
+                        });
+
                         let _ = StatsRepo::record_request(
                             &self.db,
                             CallKind::Chat,
@@ -1491,7 +1502,7 @@ impl Orchestrator {
                             Some(stream_start.elapsed().as_millis() as i64),
                             "success",
                             None,
-                            None,
+                            tool_calls_json.as_deref(),
                             None,
                         )
                         .await;
@@ -6164,6 +6175,316 @@ mod tests {
         assert_eq!(
             count, 1,
             "Expected 1 row with status='error' in llm_requests after a failed streamed LLM call."
+        );
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool usage stats (RED — the chat row must persist `tool_calls`)
+    //
+    // `StatsRepo::tools_summary()` reads `llm_requests.tool_calls` filtering
+    // `kind='chat'`, but the chat path of `process_message_stream` records the
+    // row with `tool_calls = NULL`. These tests pin the contract of the
+    // `tool-usage-stats` change: the names of the requested tools must be
+    // persisted as `[{"name":"<tool>"}, …]`, with `Done` winning over the
+    // stream and `NULL` when the response requests no tools.
+    // -----------------------------------------------------------------------
+
+    /// A plain assistant response with usage but no tool calls.
+    fn plain_response(content: &str) -> ChatResponse {
+        ChatResponse {
+            message: ChatMessage {
+                role: "assistant".into(),
+                content: content.into(),
+                tool_calls: None,
+                tool_result: None,
+                tool_call_id: None,
+            },
+            usage: Some(TokenUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                cached_tokens: 0,
+                reasoning_tokens: 0,
+                cost: 0.0,
+            }),
+            finish_reason: None,
+        }
+    }
+
+    /// Registered dummy tool with a configurable name, so the guardrails allow
+    /// the tool calls the mock LLMs request instead of failing the turn.
+    struct NamedTool {
+        name: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for NamedTool {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn description(&self) -> &'static str {
+            "test tool"
+        }
+
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        fn permission(&self, _args: &serde_json::Value) -> Permission {
+            Permission::NoConfirm
+        }
+
+        async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult, ToolError> {
+            Ok(ToolResult {
+                success: true,
+                data: serde_json::json!({}),
+                message: None,
+            })
+        }
+    }
+
+    /// Build an orchestrator whose registry holds one [`NamedTool`] per name,
+    /// so the mock tool calls are executable.
+    fn orchestrator_with_tools(
+        pool: SqlitePool,
+        llm: Arc<dyn LLMProvider>,
+        tool_names: &[&'static str],
+    ) -> Orchestrator {
+        let mut registry = ToolRegistry::new();
+        for &name in tool_names {
+            registry.register(Box::new(NamedTool { name }));
+        }
+        let registry = Arc::new(registry);
+        let guardrails = Arc::new(Guardrails::new(registry.clone()));
+        let context_builder = Arc::new(ContextBuilder::new());
+        Orchestrator::new(
+            llm,
+            registry,
+            guardrails,
+            context_builder,
+            OrchestratorConfig::default(),
+            pool,
+            None,
+            None,
+            Arc::new(RwLock::new(None)),
+        )
+    }
+
+    /// Mock LLM whose **first** streamed response carries `tool_calls` in the
+    /// `Done` event (never as `StreamEvent::ToolCall`), then answers plainly.
+    /// Exercises the `Done`-carried persistence path.
+    struct DoneToolCallsLLM {
+        stream_calls: Arc<Mutex<usize>>,
+        tool_names: Vec<&'static str>,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for DoneToolCallsLLM {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            Ok(plain_response("plain"))
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let mut count = self.stream_calls.lock().unwrap();
+            *count += 1;
+            let first = *count == 1;
+            drop(count);
+
+            let events = if first {
+                let tool_calls: Vec<ToolCall> = self
+                    .tool_names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| ToolCall {
+                        id: format!("call-{i}"),
+                        name: (*name).into(),
+                        arguments: serde_json::json!({}),
+                    })
+                    .collect();
+                let response = ChatResponse {
+                    message: ChatMessage {
+                        role: "assistant".into(),
+                        content: "checking".into(),
+                        tool_calls: Some(tool_calls),
+                        tool_result: None,
+                        tool_call_id: None,
+                    },
+                    usage: Some(TokenUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                        cached_tokens: 0,
+                        reasoning_tokens: 0,
+                        cost: 0.0,
+                    }),
+                    finish_reason: None,
+                };
+                vec![Ok(StreamEvent::Done(response))]
+            } else {
+                vec![Ok(StreamEvent::Done(plain_response("done")))]
+            };
+
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    /// Mock LLM whose **first** streamed response emits `StreamEvent::ToolCall`
+    /// events and a `Done` **without** `tool_calls`, then answers plainly.
+    /// Exercises the stream-fallback path.
+    struct StreamToolCallsLLM {
+        stream_calls: Arc<Mutex<usize>>,
+        tool_name: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for StreamToolCallsLLM {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LLMError> {
+            Ok(plain_response("plain"))
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, LLMError>> + Send>>, LLMError>
+        {
+            let mut count = self.stream_calls.lock().unwrap();
+            *count += 1;
+            let first = *count == 1;
+            drop(count);
+
+            let events = if first {
+                let tc = ToolCall {
+                    id: "call-1".into(),
+                    name: self.tool_name.into(),
+                    arguments: serde_json::json!({}),
+                };
+                vec![
+                    Ok(StreamEvent::ToolCall(tc)),
+                    // `Done` deliberately omits tool_calls: the stream wins.
+                    Ok(StreamEvent::Done(plain_response("done"))),
+                ]
+            } else {
+                vec![Ok(StreamEvent::Done(plain_response("done")))]
+            };
+
+            Ok(Box::pin(futures::stream::iter(events)))
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_turn_persists_done_tool_calls_in_llm_requests(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let llm: Arc<dyn LLMProvider> = Arc::new(DoneToolCallsLLM {
+            stream_calls: Arc::new(Mutex::new(0)),
+            tool_names: vec!["get_weather", "search_web"],
+        });
+        let orchestrator =
+            orchestrator_with_tools(pool.clone(), llm, &["get_weather", "search_web"]);
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "hello", None, None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let raw: String = sqlx::query_scalar(
+            "SELECT tool_calls FROM llm_requests \
+             WHERE kind = 'chat' AND tool_calls IS NOT NULL LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            raw, r#"[{"name":"get_weather"},{"name":"search_web"}]"#,
+            "the chat row must persist the Done tool_calls as [{{\"name\":...}}]"
+        );
+
+        let summary = StatsRepo::tools_summary(&pool).await?;
+        assert_eq!(
+            summary
+                .iter()
+                .find(|t| t.tool == "get_weather")
+                .map(|t| t.count),
+            Some(1),
+            "tools_summary must count get_weather once"
+        );
+        assert_eq!(
+            summary
+                .iter()
+                .find(|t| t.tool == "search_web")
+                .map(|t| t.count),
+            Some(1),
+            "tools_summary must count search_web once"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn chat_turn_without_tools_persists_null_tool_calls(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let llm: Arc<dyn LLMProvider> = Arc::new(SimpleTextLLM);
+        let orchestrator = orchestrator_with_llm(pool.clone(), llm);
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "hello", None, None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let rows: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT tool_calls FROM llm_requests WHERE kind = 'chat'")
+                .fetch_all(&pool)
+                .await?;
+        assert!(
+            !rows.is_empty(),
+            "expected at least one chat row in llm_requests"
+        );
+        assert!(
+            rows.iter().all(|r| r.is_none()),
+            "a response without tools must persist tool_calls = NULL"
+        );
+
+        let summary = StatsRepo::tools_summary(&pool).await?;
+        assert!(
+            summary.is_empty(),
+            "tools_summary must not count a chat row with no tool calls"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn chat_turn_stream_tool_calls_persisted_when_done_omits_them(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pool = setup_test_db().await;
+        let llm: Arc<dyn LLMProvider> = Arc::new(StreamToolCallsLLM {
+            stream_calls: Arc::new(Mutex::new(0)),
+            tool_name: "rss_list_unread",
+        });
+        let orchestrator = orchestrator_with_tools(pool.clone(), llm, &["rss_list_unread"]);
+
+        let (tx, mut rx) = mpsc::channel(100);
+        orchestrator
+            .process_message_stream("profile-1", "hello", None, None, tx)
+            .await?;
+        while rx.recv().await.is_some() {}
+
+        let raw: String = sqlx::query_scalar(
+            "SELECT tool_calls FROM llm_requests \
+             WHERE kind = 'chat' AND tool_calls IS NOT NULL LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            raw, r#"[{"name":"rss_list_unread"}]"#,
+            "when Done omits tool_calls the stream-accumulated ones must be persisted"
         );
 
         Ok(())
