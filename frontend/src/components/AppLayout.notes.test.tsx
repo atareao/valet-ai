@@ -120,7 +120,7 @@ describe("AppLayout — notas", () => {
     await waitFor(() => {
       expect(screen.getByText("📝 Notas")).toBeInTheDocument();
     });
-    expect(screen.getByTestId("notes-view")).toBeInTheDocument();
+    expect(await screen.findByTestId("notes-view")).toBeInTheDocument();
   });
 
   it("la vista no se monta hasta que se abre su modal", async () => {
