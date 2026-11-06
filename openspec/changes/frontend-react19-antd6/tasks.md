@@ -46,7 +46,7 @@
 ## 5. Etapa B — release
 
 - [x] 5.1 `release/v0.31.0` desde `development`, PR a `main` y tag (verificación: el tag existe y el PR está mergeado en `main`).
-- [ ] 5.2 Despliegue en `co1` y verificación de la versión (verificación: `curl -s https://valet.territoriolinux.es/api/health` devuelve `0.31.0`).
+- [x] 5.2 Despliegue en `co1` y verificación de la versión (verificación: `curl -s https://valet.territoriolinux.es/api/health` devuelve `0.31.0`) — desplegado en co1, /api/health → version 0.31.0.
 - [ ] 5.3 Verificación visual en producción de las mismas vistas (verificación: idénticas a la etapa A; un cambio visual aquí es señal de un problema de tipos mal resuelto).
 
 ## 6. Verificación de integración
