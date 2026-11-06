@@ -9,6 +9,7 @@ import {
 } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type * as React from "react";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 
 /**
@@ -47,7 +48,7 @@ function stubLocation() {
 }
 
 /** Hijo que revienta al renderizar, para forzar la captura del error. */
-function Boom(): JSX.Element {
+function Boom(): React.JSX.Element {
   throw new Error("boom");
 }
 
