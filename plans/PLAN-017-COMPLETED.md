@@ -1,7 +1,7 @@
 # PLAN-017 — La pregunta cerrada de sí/no ofrece un widget de elección
 
 **Change OpenSpec asociado:** `binary-choice-widget`.
-**Estado:** 🚧 En curso (abierto el 2026-11-05).
+**Estado:** ✅ Completado (2026-11-06, v0.28.0).
 
 ---
 
@@ -65,13 +65,13 @@ y `No`, con la pregunta dentro del widget y sin tocar el frontend.
 
 ## 6. Criterios de aceptación
 
-- [ ] Una pregunta de sí/no que cierra el turno produce un widget de elección con `Sí` y `No`.
-- [ ] La pregunta aparece **una sola vez** en pantalla: como etiqueta del grupo de opciones.
-- [ ] Una pregunta abierta, con alternativas nombradas, en medio del texto, dentro de un bloque de código o en
+- [x] Una pregunta de sí/no que cierra el turno produce un widget de elección con `Sí` y `No`.
+- [x] La pregunta aparece **una sola vez** en pantalla: como etiqueta del grupo de opciones.
+- [x] Una pregunta abierta, con alternativas nombradas, en medio del texto, dentro de un bloque de código o en
   un turno que ya proyectó opciones **no** produce elección binaria.
-- [ ] Ninguna forma reconocida antes cambia de comportamiento.
-- [ ] Sin cambios en el frontend.
-- [ ] `just check-all` y `openspec validate --all --strict` en verde.
+- [x] Ninguna forma reconocida antes cambia de comportamiento.
+- [x] Sin cambios en el frontend.
+- [x] `just check-all` y `openspec validate --all --strict` en verde.
 
 ## 7. Riesgos
 

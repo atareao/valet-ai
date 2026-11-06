@@ -38,9 +38,9 @@
 
 ## 6. Release
 
-- [ ] 6.1 PR a `development` con CI verde.
-- [ ] 6.2 `release/vX.Y.Z` desde `development`, PR a `main` y tag.
-- [ ] 6.3 Despliegue en `co1` y verificación de la versión en `/api/health`.
+- [x] 6.1 PR a `development` con CI verde. (PR #312)
+- [x] 6.2 `release/vX.Y.Z` desde `development`, PR a `main` y tag. (PR #313, tag v0.28.0)
+- [x] 6.3 Despliegue en `co1` y verificación de la versión en `/api/health`. (desplegado en co1, /api/health → version 0.28.0, verificado 2026-11-06)
 
 ## 7. Correcciones tras la auditoría de @rust-reviewer
 
