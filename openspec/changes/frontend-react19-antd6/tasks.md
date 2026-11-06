@@ -41,11 +41,11 @@
 - [x] 4.9 Actualizar el índice de planes de `AGENTS.md` con la entrada de `PLAN-019` (verificación: la entrada aparece con el estado correcto y el ordinal siguiente sigue libre).
 - [ ] 4.10 Verificación manual en local de las mismas vistas que en la etapa A (verificación: sin cambios visuales respecto a la etapa A y sin avisos en consola).
 - [x] 4.11 Auditoría de `@react-reviewer` sobre el diff de la etapa B (verificación: 0 bloqueantes; los hallazgos se corrigen antes de abrir el PR).
-- [ ] 4.12 PR `feature/frontend-react19` a `development` con CI verde (verificación: los dos jobs del CI en verde).
+- [x] 4.12 PR `feature/frontend-react19` a `development` con CI verde (verificación: los dos jobs del CI en verde).
 
 ## 5. Etapa B — release
 
-- [ ] 5.1 `release/v0.31.0` desde `development`, PR a `main` y tag (verificación: el tag existe y el PR está mergeado en `main`).
+- [x] 5.1 `release/v0.31.0` desde `development`, PR a `main` y tag (verificación: el tag existe y el PR está mergeado en `main`).
 - [ ] 5.2 Despliegue en `co1` y verificación de la versión (verificación: `curl -s https://valet.territoriolinux.es/api/health` devuelve `0.31.0`).
 - [ ] 5.3 Verificación visual en producción de las mismas vistas (verificación: idénticas a la etapa A; un cambio visual aquí es señal de un problema de tipos mal resuelto).
 
