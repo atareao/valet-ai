@@ -33,6 +33,8 @@ pub struct StatusResponse {
     pub issuer_url: String,
     /// `true` cuando hay `client_id` resuelto (aunque falte el secreto).
     pub has_client_id: bool,
+    /// `resource` (RFC 8707) resuelto; nunca es un secreto.
+    pub resource: String,
 }
 
 /// Cuerpo de `GET /api/oximeal/check`: veredicto del sondeo, sin credenciales.
@@ -62,18 +64,20 @@ impl std::fmt::Debug for SecretBody {
 ///
 /// `configured` es `true` cuando [`Oximeal::resolve_config`] ve credenciales
 /// completas; `has_client_id` distingue «falta el `client_id`» de «solo falta el
-/// secreto». `base_url` e `issuer_url` son las resueltas.
+/// secreto». `base_url`, `issuer_url` y `resource` son los resueltos.
 pub async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     let configured = Oximeal::resolve_config(&state.db).await.is_ok();
     let base_url = Oximeal::resolve_base_url(&state.db).await;
     let issuer_url = Oximeal::resolve_issuer_url(&state.db).await;
     let has_client_id = !Oximeal::resolve_client_id(&state.db).await.is_empty();
+    let resource = Oximeal::resolve_resource(&state.db).await;
 
     Json(StatusResponse {
         configured,
         base_url,
         issuer_url,
         has_client_id,
+        resource,
     })
 }
 
@@ -92,12 +96,12 @@ pub async fn check(State(state): State<AppState>) -> Json<CheckResponse> {
             },
             Err(error) => CheckResponse {
                 ok: false,
-                detail: check_detail(&error).to_string(),
+                detail: check_detail(&error),
             },
         },
         Err(error) => CheckResponse {
             ok: false,
-            detail: check_detail(&error).to_string(),
+            detail: check_detail(&error),
         },
     };
 
@@ -108,18 +112,26 @@ pub async fn check(State(state): State<AppState>) -> Json<CheckResponse> {
 ///
 /// Distingue las cuatro averías que el usuario tiene que poder separar: falta
 /// configuración, el IdP no entregó token, el token fue rechazado y OxiMeal no
-/// responde.
+/// responde. Los detalles de [`OximealError::TokenEndpoint`] y
+/// [`OximealError::Upstream`] exponen el mensaje del IdP o de OxiMeal **ya
+/// redactado** por el servicio (nunca contienen el secreto).
 ///
 /// La separación es **estructural** (por variante), no por el texto del error:
 /// un `5xx` de OxiMeal que mencione «token» es un fallo suyo, no del IdP.
-fn check_detail(error: &OximealError) -> &'static str {
+fn check_detail(error: &OximealError) -> String {
     match error {
-        OximealError::NotConfigured => "configuración incompleta",
-        OximealError::Unauthorized => "el token fue rechazado",
+        OximealError::NotConfigured => "configuración incompleta".to_string(),
+        OximealError::Unauthorized => "el token fue rechazado".to_string(),
         // El servicio etiqueta con `TokenEndpoint` los fallos del descubrimiento
-        // OIDC y de la petición `client_credentials`.
-        OximealError::TokenEndpoint(_) => "el IdP no entregó token",
-        _ => "OxiMeal no responde",
+        // OIDC y de la petición `client_credentials`; el `detail` ya viene
+        // redactado por `Oximeal::token_endpoint_error`.
+        OximealError::TokenEndpoint(detail) => {
+            format!("el IdP no entregó un token M2M: {detail}")
+        }
+        // `Upstream` (y cualquier otra caída) se informa como OxiMeal sin
+        // responder; el `detail` ya viene redactado por el servicio.
+        OximealError::Upstream(detail) => format!("OxiMeal no responde: {detail}"),
+        _ => "OxiMeal no responde".to_string(),
     }
 }
 
@@ -182,6 +194,7 @@ mod tests {
     fn clear_env() {
         for key in [
             "OXIMEAL_BASE_URL",
+            "OXIMEAL_RESOURCE",
             "OXIMEAL_ISSUER_URL",
             "OXIMEAL_CLIENT_ID",
             "OXIMEAL_CLIENT_SECRET",
@@ -323,6 +336,65 @@ mod tests {
         );
     }
 
+    /// Scenario: el estado expone el `resource` resuelto (nunca un secreto).
+    #[tokio::test]
+    #[serial]
+    async fn status_exposes_the_resolved_resource() {
+        clear_env();
+        let state = AppState::new_in_memory_empty().await;
+        SettingsRepo::set(&state.db, "oximeal_base_url", "")
+            .await
+            .unwrap();
+        SettingsRepo::set(&state.db, "oximeal_resource", "")
+            .await
+            .unwrap();
+
+        let Json(body) = status(State(state)).await;
+
+        assert_eq!(body.resource, "https://oximeal.territoriolinux.es/api");
+        let json = serde_json::to_string(&body).expect("serialize status");
+        assert!(
+            !json.contains(SECRET),
+            "el estado filtra el secreto: {json}"
+        );
+    }
+
+    /// La ruta `GET /api/oximeal/status` serializa el `resource` resuelto.
+    #[tokio::test]
+    #[serial]
+    async fn status_route_serializes_the_resource() {
+        clear_env();
+        let state = AppState::new_in_memory_empty().await;
+        SettingsRepo::set(&state.db, "oximeal_base_url", "")
+            .await
+            .unwrap();
+        SettingsRepo::set(&state.db, "oximeal_resource", "")
+            .await
+            .unwrap();
+
+        let app = crate::app_with_state(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/oximeal/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("router");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json del estado");
+        assert_eq!(
+            json.get("resource").and_then(|value| value.as_str()),
+            Some("https://oximeal.territoriolinux.es/api"),
+            "el estado debe serializar el resource resuelto: {json}"
+        );
+    }
+
     /// Scenario: sonda correcta con credenciales válidas → `ok: true`.
     #[tokio::test]
     #[serial]
@@ -402,7 +474,16 @@ mod tests {
 
         let Json(body) = check(State(state)).await;
 
-        assert_eq!(body.detail, "el IdP no entregó token");
+        assert!(
+            body.detail.contains("el IdP no entregó un token M2M"),
+            "detail: {}",
+            body.detail
+        );
+        assert!(
+            body.detail.contains("invalid_client"),
+            "el detalle debe incluir la causa del IdP: {}",
+            body.detail
+        );
     }
 
     /// Scenario: un token rechazado (`401`) se distingue de una caída.
@@ -448,9 +529,15 @@ mod tests {
 
         let Json(body) = check(State(state)).await;
 
-        assert_eq!(
-            body.detail, "OxiMeal no responde",
-            "un 5xx de OxiMeal es un fallo suyo, no del IdP"
+        assert!(
+            body.detail.contains("OxiMeal no responde"),
+            "un 5xx de OxiMeal es un fallo suyo, no del IdP: {}",
+            body.detail
+        );
+        assert!(
+            body.detail.contains("token bucket saturated"),
+            "el detalle debe incluir el mensaje de OxiMeal: {}",
+            body.detail
         );
     }
 
@@ -472,7 +559,50 @@ mod tests {
 
         let Json(body) = check(State(state)).await;
 
-        assert_eq!(body.detail, "OxiMeal no responde");
+        assert!(
+            body.detail.contains("OxiMeal no responde"),
+            "detail: {}",
+            body.detail
+        );
+    }
+
+    /// Scenario: la sonda expone el error del IdP sin filtrar el secreto.
+    #[tokio::test]
+    #[serial]
+    async fn check_exposes_the_idp_error_without_leaking_the_secret() {
+        clear_env();
+        let server = MockServer::start().await;
+        let state = AppState::new_in_memory_empty().await;
+        let segment = unique_segment();
+        seed_config(&state, &server, &segment, "client-id", SECRET).await;
+        Mock::given(method("GET"))
+            .and(path(discovery_path(&segment)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "token_endpoint": format!("{}/token", server.uri()),
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": format!("scope inválido {SECRET}"),
+            })))
+            .mount(&server)
+            .await;
+
+        let Json(body) = check(State(state)).await;
+
+        assert!(!body.ok, "detail: {}", body.detail);
+        assert!(
+            body.detail.contains("scope inválido"),
+            "el detalle debe incluir el mensaje del IdP: {}",
+            body.detail
+        );
+        assert!(
+            !body.detail.contains(SECRET),
+            "el detalle filtra el secreto: {}",
+            body.detail
+        );
     }
 
     /// Scenario: la sonda no filtra ni el secreto ni el token.
@@ -650,6 +780,33 @@ mod tests {
             2,
             "cambiar el client_id debe forzar un token nuevo"
         );
+    }
+
+    /// `check_detail` expone el mensaje ya redactado del IdP en lugar de un texto
+    /// opaco.
+    #[test]
+    fn check_detail_exposes_the_redacted_idp_message() {
+        let detail = check_detail(&OximealError::TokenEndpoint(
+            "el IdP rechazó la petición de token (400): invalid_scope".to_string(),
+        ));
+
+        assert!(
+            detail.contains("el IdP no entregó un token M2M"),
+            "detail: {detail}"
+        );
+        assert!(
+            detail.contains("invalid_scope"),
+            "el detalle debe incluir la causa del IdP: {detail}"
+        );
+    }
+
+    /// `check_detail` con un `Upstream` expone el detalle redactado de OxiMeal.
+    #[test]
+    fn check_detail_exposes_the_upstream_detail() {
+        let detail = check_detail(&OximealError::Upstream("502 bad gateway".to_string()));
+
+        assert!(detail.contains("OxiMeal no responde"), "detail: {detail}");
+        assert!(detail.contains("502 bad gateway"), "detail: {detail}");
     }
 
     /// `oximeal_client_secret` es una clave sensible.

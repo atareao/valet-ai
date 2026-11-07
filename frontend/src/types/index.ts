@@ -440,11 +440,12 @@ export interface OpentodoCheckResult {
  * Estado de la configuración de OxiMeal (`GET /api/oximeal/status`). Espejo del
  * contrato del backend: **nunca** incluye el `client_secret`, solo si hay
  * credenciales resueltas (`configured`), los valores efectivos de
- * `base_url`/`issuer_url` y si hay un `client_id` (`has_client_id`).
+ * `base_url`/`issuer_url`/`resource` y si hay un `client_id` (`has_client_id`).
  */
 export interface OximealStatus {
   configured: boolean;
   base_url: string;
+  resource: string;
   issuer_url: string;
   has_client_id: boolean;
 }

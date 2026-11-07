@@ -605,6 +605,7 @@ mod tests {
     fn config_for(server: &MockServer) -> OximealConfig {
         OximealConfig {
             base_url: server.uri(),
+            resource: format!("{}/api", server.uri()),
             issuer_url: server.uri(),
             client_id: "client-id".to_string(),
             client_secret: "SECRET".to_string(),

@@ -110,6 +110,7 @@ export interface SettingsFormValues {
   miniflux_api_key: string;
   opentodo_base_url: string;
   oximeal_base_url: string;
+  oximeal_resource: string;
   oximeal_issuer_url: string;
   oximeal_client_id: string;
   MEMORY_HALF_LIFE_DAYS: number;
@@ -194,6 +195,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         miniflux_api_key: settings.miniflux_api_key || "",
         opentodo_base_url: settings.opentodo_base_url || "",
         oximeal_base_url: settings.oximeal_base_url || "",
+        oximeal_resource: settings.oximeal_resource || "",
         oximeal_issuer_url: settings.oximeal_issuer_url || "",
         oximeal_client_id: settings.oximeal_client_id || "",
         MEMORY_HALF_LIFE_DAYS: parseFloat(
@@ -325,6 +327,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           values.opentodo_base_url ?? settings?.opentodo_base_url ?? "",
         oximeal_base_url:
           values.oximeal_base_url ?? settings?.oximeal_base_url ?? "",
+        oximeal_resource:
+          values.oximeal_resource ?? settings?.oximeal_resource ?? "",
         oximeal_issuer_url:
           values.oximeal_issuer_url ?? settings?.oximeal_issuer_url ?? "",
         oximeal_client_id:
@@ -447,6 +451,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         miniflux_api_key: "",
         opentodo_base_url: "",
         oximeal_base_url: "",
+        oximeal_resource: "",
         oximeal_issuer_url: "",
         oximeal_client_id: "",
       });

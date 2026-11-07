@@ -37,8 +37,9 @@ export interface OximealSectionProps {
  *
  * Combina dos vías de persistencia bien separadas:
  *
- * - La **URL base**, la **URL del emisor** y el **client id** son ajustes
- *   normales (`oximeal_base_url`, `oximeal_issuer_url`, `oximeal_client_id`):
+ * - La **URL base**, el **resource**, la **URL del emisor** y el **client id**
+ *   son ajustes normales (`oximeal_base_url`, `oximeal_resource`,
+ *   `oximeal_issuer_url`, `oximeal_client_id`):
  *   se declaran con `Form.Item` sobre el formulario de ajustes del padre y se
  *   guardan con el `PUT /api/settings` de su botón «Guardar» (submit del
  *   formulario).
@@ -150,9 +151,14 @@ function OximealSectionView({
     }
     if (status) {
       return (
-        <Text type="secondary">
-          {status.configured ? "Configurado" : "Sin configurar"}
-        </Text>
+        <>
+          <Text type="secondary">
+            {status.configured ? "Configurado" : "Sin configurar"}
+          </Text>
+          {status.resource && (
+            <Text type="secondary">{`Resource: ${status.resource}`}</Text>
+          )}
+        </>
       );
     }
     if (error) {
@@ -167,8 +173,8 @@ function OximealSectionView({
         OxiMeal
       </Title>
       <Text type="secondary">
-        URL base, emisor, client id y client secret del cliente M2M de OxiMeal.
-        Por seguridad, el client secret guardado nunca se muestra: para
+        URL base, resource, emisor, client id y client secret del cliente M2M de
+        OxiMeal. Por seguridad, el client secret guardado nunca se muestra: para
         cambiarlo, escribe uno nuevo y guarda.
       </Text>
 
@@ -197,6 +203,10 @@ function OximealSectionView({
             el `PUT /api/settings` del botón «Guardar». */}
         <Form.Item label="OxiMeal · URL base" name="oximeal_base_url">
           <Input placeholder="https://oximeal.territoriolinux.es" />
+        </Form.Item>
+
+        <Form.Item label="OxiMeal · Resource" name="oximeal_resource">
+          <Input placeholder="https://oximeal.territoriolinux.es/api" />
         </Form.Item>
 
         <Form.Item label="OxiMeal · URL del emisor" name="oximeal_issuer_url">

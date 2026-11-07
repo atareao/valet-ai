@@ -22,9 +22,12 @@ const mockGetOximealStatus = vi.mocked(mockApi.getOximealStatus);
 const mockCheckOximeal = vi.mocked(mockApi.checkOximeal);
 const mockSetOximealSecret = vi.mocked(mockApi.setOximealSecret);
 
+const RESOURCE = "https://oximeal.territoriolinux.es/api";
+
 const notConfigured: OximealStatus = {
   configured: false,
   base_url: "https://oximeal.territoriolinux.es",
+  resource: RESOURCE,
   issuer_url: "https://auth.territoriolinux.es",
   has_client_id: false,
 };
@@ -32,6 +35,7 @@ const notConfigured: OximealStatus = {
 const configured: OximealStatus = {
   configured: true,
   base_url: "https://oximeal.territoriolinux.es",
+  resource: RESOURCE,
   issuer_url: "https://auth.territoriolinux.es",
   has_client_id: true,
 };
@@ -46,6 +50,22 @@ const Wrapper = ({ children }: { children: ReactNode }) => (
 
 const renderSection = (): void => {
   render(<OximealSection />, { wrapper: Wrapper });
+};
+
+// Réplica del contrato del diálogo de ajustes: la sección cuelga del `Form`
+// compartido y su botón «Guardar» (submit) entrega todos los valores no
+// sensibles —incluido `oximeal_resource`— al `onFinish`, que es el cuerpo que
+// viaja por `PUT /api/settings`.
+const renderSectionWithSubmit = (
+  onFinish: (values: Record<string, string>) => void,
+): void => {
+  render(
+    <AntdApp>
+      <Form onFinish={onFinish}>
+        <OximealSection />
+      </Form>
+    </AntdApp>,
+  );
 };
 
 describe("OximealSection", () => {
@@ -95,6 +115,65 @@ describe("OximealSection", () => {
       "placeholder",
       "valet-agent",
     );
+  });
+
+  it("muestra el campo «OxiMeal · Resource» con su placeholder junto a los no sensibles", async () => {
+    mockGetOximealStatus.mockResolvedValue(configured);
+
+    renderSection();
+
+    await screen.findByText("Configurado");
+
+    expect(screen.getByLabelText("OxiMeal · Resource")).toHaveAttribute(
+      "placeholder",
+      "https://oximeal.territoriolinux.es/api",
+    );
+  });
+
+  it("la línea de estado refleja el resource resuelto del status sin exponer el secreto", async () => {
+    const user = userEvent.setup();
+    mockGetOximealStatus.mockResolvedValue({
+      ...configured,
+      resource: "https://oximeal.territoriolinux.es/api",
+    });
+
+    renderSection();
+
+    expect(
+      await screen.findByText(
+        "Resource: https://oximeal.territoriolinux.es/api",
+      ),
+    ).toBeInTheDocument();
+    // El secreto no se pinta nunca como texto: ni el guardado (el status jamás
+    // lo trae) ni el que se teclea en su campo `type=password`.
+    await user.type(
+      screen.getByLabelText("OxiMeal · client secret"),
+      "SECRETO-DE-PRUEBA",
+    );
+    expect(screen.queryByText(/SECRETO-DE-PRUEBA/)).toBeNull();
+  });
+
+  it("el campo «OxiMeal · Resource» viaja en el guardado de los ajustes no sensibles", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn();
+
+    renderSectionWithSubmit(onSave);
+    await screen.findByText("Sin configurar");
+
+    const resource = screen.getByLabelText("OxiMeal · Resource");
+    await user.type(resource, "https://oximeal.territoriolinux.es/api");
+
+    await user.click(screen.getByRole("button", { name: "Guardar" }));
+
+    // El cuerpo del submit —lo que el diálogo manda por `PUT /api/settings`—
+    // incluye el nuevo ajuste no sensible.
+    await waitFor(() => {
+      expect(onSave).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oximeal_resource: "https://oximeal.territoriolinux.es/api",
+        }),
+      );
+    });
   });
 
   it("el campo del secreto arranca siempre vacío aunque ya haya uno guardado", async () => {
