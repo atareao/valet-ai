@@ -1,7 +1,7 @@
 # PLAN-010 — Sesión duradera en el móvil (TTL configurable + renovación deslizante)
 
 > Estado: **pendiente de aprobación** (documento de decisión). No se escribe código hasta aprobar el change proposal OpenSpec.
-> Convención de repo: si se aprueba y ejecuta, este plan se renombra a `plans/PLAN-010.md`; al completarse, a `plans/PLAN-010-COMPLETED.md`.
+> Convención de repo: si se aprueba y ejecuta, este plan se renombra a `plans/PLAN-010.md`; al completarse, a `plans/PLAN-010-ARCHIVED.md`.
 > Origen: consulta del 2026-10-27 («en el móvil, ¿cómo podría hacer que la sesión durara mucho más?»). El usuario pidió dejarlo escrito y atender otra cosa antes de implementarlo.
 
 ## 0. Objetivo

@@ -1,7 +1,7 @@
 # PLAN-009 — Integración ZenNotes: leer y escribir en el vault
 
 > Estado: **pendiente de aprobación** (fase de planificación). No se escribe código hasta aprobar el change proposal OpenSpec.
-> Convención de repo: al completarse se renombrará a `plans/PLAN-009-COMPLETED.md`. El `PLAN.md` de la raíz es el checkpoint que lee `@qa-plan-verifier`.
+> Convención de repo: al completarse se renombrará a `plans/PLAN-009-ARCHIVED.md`. El `PLAN.md` de la raíz es el checkpoint que lee `@qa-plan-verifier`.
 
 ## 0. Objetivo
 Que el agente **Valet** pueda **leer y escribir notas del vault de ZenNotes** del usuario, usando la API HTTP del servidor propio `https://zennotes.territoriolinux.es`, con una **carpeta dedicada `Valet`** para las notas que Valet cree por su cuenta.
@@ -92,7 +92,7 @@ Que el agente **Valet** pueda **leer y escribir notas del vault de ZenNotes** de
 - [ ] 4.1 `@qa-plan-verifier` contra este `PLAN.md`.
 - [ ] 4.2 E2E con el servidor real: guardar token, pedir a Valet «apunta en mi vault…» y comprobar que **llama** a `zennotes` y crea en `Valet/`.
 - [ ] 4.3 Medir enrutado (skill `zennotes` vs `recuerdos`) con `valet-route-eval`.
-- [ ] 4.4 Archivar el change (`openspec archive`) y cerrar el plan (`plans/PLAN-009-COMPLETED.md`).
+- [ ] 4.4 Archivar el change (`openspec archive`) y cerrar el plan (`plans/PLAN-009-ARCHIVED.md`).
 
 ## 5. Riesgos y dependencias
 - **R1 (alto) Fiabilidad del agente al llamar herramientas.** Contexto reciente: el agente responde/promete y **no** llama a la tool (y llega a alucinar). Esta feature es inservible si eso no se arregla. Dependencia del arreglo del `system_prompt` (pendiente de decisión).

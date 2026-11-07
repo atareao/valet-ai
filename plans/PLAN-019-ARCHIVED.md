@@ -75,7 +75,7 @@ Cada etapa tiene su propio PR a `development` y su propio release, de modo que u
 4. **Verificación por etapa:** `just frontend-lint`, `just frontend-test`, `just frontend-check` y `just check-all` en verde, más verificación visual manual de las vistas oscuras antes de mergear.
 5. **Auditoría por etapa:** `@react-reviewer` sobre el diff de cada PR.
 6. **Release y despliegue por etapa:** `release/vX.Y.Z` desde `development`, PR a `main`, tag, despliegue en `co1` y verificación de la versión en `/api/health`.
-7. **Cierre:** `openspec archive frontend-react19-antd6`, renombrar este plan a `PLAN-019-COMPLETED.md`, actualizar el índice de `AGENTS.md` y cerrar los PRs de Dependabot que la migración deja obsoletos (`#280`, `#281`, `#284`, `#311`), dejando vivo solo `#310` si no se ha absorbido antes.
+7. **Cierre:** `openspec archive frontend-react19-antd6`, renombrar este plan a `PLAN-019-ARCHIVED.md`, actualizar el índice de `AGENTS.md` y cerrar los PRs de Dependabot que la migración deja obsoletos (`#280`, `#281`, `#284`, `#311`), dejando vivo solo `#310` si no se ha absorbido antes.
 
 ## 5. Plan de ejecución
 

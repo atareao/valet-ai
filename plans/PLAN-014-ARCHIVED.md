@@ -66,7 +66,7 @@ delimita el bloque y que la UI muestra el widget en el sitio de la lista.
 
 El estado del trabajo vive en los artefactos de OpenSpec (`proposal.md`, `design.md`, `tasks.md`, el
 delta de spec) y en el historial de git, no en la conversación. El change ya está archivado y este plan
-quedó como `plans/PLAN-014-COMPLETED.md`.
+quedó como `plans/PLAN-014-ARCHIVED.md`.
 
 ## 7. Resultado
 

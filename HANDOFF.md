@@ -4,11 +4,11 @@
 
 ## Estado
 
-Rama **`feature/oximeal-integration`**. La integración de OxiMeal está implementada, auditada (`@rust-reviewer` y `@react-reviewer` aprobaron) y con **todas las puertas en verde** (`cargo test` 1653+, `clippy` limpio, `vitest` 692, `tsc`, `eslint`, bundle 69.99/70.00 kB, `openspec validate` válido). Pendiente únicamente la **E2E real (tarea 4.1)** —OxiMeal no está desplegado en `co1` ni hay cliente M2M— y el cierre: archive + PR a `development`.
+Rama **`chore/plans-archived-naming`**. La integración de OxiMeal está **mergeada a `development`** (PR **#325**), con todas las puertas en verde y el change de openspec **archivado** (`2026-11-07-oximeal-integration`); el plan vive en `plans/PLAN-021-ARCHIVED.md`. Queda **abierto el PR #326** (housekeeping de nomenclatura de planes, CI en curso) y **pendiente la E2E real** de OxiMeal.
 
 ## Qué se ha hecho
 
-- **Tool `oximeal`** con 6 operaciones: `recent_recipes`, `search_recipes`, `set_weekly_plan`, `add_shopping_items`, `delete_completed`, `create_recipe`.
+- **Tool `oximeal`** con 6 operaciones: `recent_recipes`, `search_recipes`, `plan_week`, `add_shopping_items`, `clear_purchased`, `create_recipe`.
 - **Skill `menus`**: catálogo de 12 → **13 skills** y 33 → **34 tools**.
 - **Servicio OxiMeal** (`src/services/oximeal.rs`) con token **M2M single-flight**: descubre `token_endpoint` vía OIDC, cachea el token con margen de 30 s y lo invalida ante `401`/`403`.
 - **Endpoints `/api/oximeal/{status,check,secret}`**: `status` nunca expone el secreto; `check` es la sonda real (siempre `200` con `{ok, detail}`); `secret` guarda (400 vacío / 204 ok).
@@ -16,11 +16,12 @@ Rama **`feature/oximeal-integration`**. La integración de OxiMeal está impleme
 - **Migración** `20261107000001_oximeal.sql`: siembra `oximeal_base_url`, `oximeal_client_id` y `SKILL_MENUS_PROMPT`.
 - **UI** en Ajustes → Integraciones (`useOximeal.ts` + `OximealSection.tsx`): campos de base/issuer/client_id, secreto siempre vacío al abrir y botón «Probar conexión».
 - Documentación en `docs/oximeal-integration.md`.
+- **Cierre fase 1**: merge a `development` (PR #325), `openspec archive oximeal-integration` y `plans/PLAN-021-ARCHIVED.md`. Puertas: `cargo test` 1653+, `clippy` limpio, `fmt`, `vitest` 692, `tsc`, `eslint`, bundle 69.99/70.00 kB.
 
 ## Tarea pendiente / siguiente paso
 
-- **4.1 — Verificación E2E** contra un OxiMeal real con cliente M2M (`check` → `{ok:true}`, `search_recipes`, `plan_week`, `add_shopping_items`, `clear_purchased`, `create_recipe`). **Bloqueada por infraestructura:** OxiMeal no está desplegado en `co1` y no hay cliente M2M. Cuando esté disponible, ejecutarla y cerrar.
-- **Cierre del change:** `openspec archive oximeal-integration` y PR de `feature/oximeal-integration` a `development` (commits gitmoji).
+- **E2E real de OxiMeal**: cuando OxiMeal esté desplegado con un cliente M2M, correr `GET /api/oximeal/check` → `{ok:true}` y las operaciones `search_recipes`, `plan_week`, `add_shopping_items`, `clear_purchased`, `create_recipe`. **Bloqueada por infraestructura:** OxiMeal no está desplegado en `co1` y no hay cliente M2M (documentado en `docs/oximeal-integration.md`).
+- **PR #326** (rama `chore/plans-archived-naming`, base `development`): housekeeping `-COMPLETED` → `-ARCHIVED` (regla global §IX). Mergear cuando su CI pase.
 
 ## Follow-ups conocidos
 

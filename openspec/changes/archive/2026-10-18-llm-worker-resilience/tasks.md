@@ -37,4 +37,4 @@
 - [x] 5.3 `cargo fmt --check` en verde.
 - [x] 5.4 `openspec validate llm-worker-resilience --strict` en verde.
 - [x] 5.5 Revisión con `@rust-reviewer`; hallazgos aplicados.
-- [x] 5.6 `openspec archive llm-worker-resilience` y registrar el cierre en `AGENTS.md` §V. El **Tema 5 de `plans/PLAN-003-COMPLETED.md` NO se toca**: el plan está completado y congelado, y §VI de `AGENTS.md` dice que el cuerpo de un plan completado no se reescribe porque es registro histórico.
+- [x] 5.6 `openspec archive llm-worker-resilience` y registrar el cierre en `AGENTS.md` §V. El **Tema 5 de `plans/PLAN-003-ARCHIVED.md` NO se toca**: el plan está completado y congelado, y §VI de `AGENTS.md` dice que el cuerpo de un plan completado no se reescribe porque es registro histórico.
