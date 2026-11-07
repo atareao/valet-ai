@@ -1,7 +1,14 @@
 # oximeal-service Specification
 
 ## Purpose
-TBD - created by archiving change oximeal-integration. Update Purpose after archive.
+Define el cliente Rust de la Agent API de OxiMeal: la resolución de su
+configuración en cada llamada (URL base, issuer, `client_id`/`client_secret`,
+con respaldo de entorno), la obtención de un token M2M por `client_credentials`
+contra Pocket ID con caché en memoria y renovación anticipada, y las seis
+operaciones contra la Agent API: `recent_recipes`, `search_recipes`,
+`set_weekly_plan`, `add_shopping_items`, `delete_completed` y `create_recipe`.
+El secreto nunca aparece en `Debug` ni en los errores, y sin credenciales se
+devuelve `NotConfigured` sin tocar la red.
 
 ## Requirements
 

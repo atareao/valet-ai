@@ -21,6 +21,7 @@ const mockSetOximealSecret = vi.mocked(setOximealSecret);
 const notConfigured: OximealStatus = {
   configured: false,
   base_url: "https://oximeal.territoriolinux.es",
+  resource: "https://oximeal.territoriolinux.es/api",
   issuer_url: "https://auth.territoriolinux.es",
   has_client_id: false,
 };
@@ -28,6 +29,7 @@ const notConfigured: OximealStatus = {
 const configured: OximealStatus = {
   configured: true,
   base_url: "https://oximeal.territoriolinux.es",
+  resource: "https://oximeal.territoriolinux.es/api",
   issuer_url: "https://auth.territoriolinux.es",
   has_client_id: true,
 };
