@@ -70,4 +70,4 @@ No aplica: la verificación pasó. Se mantiene como referencia: si algo fallara,
 
 - El change `oidc-auth` está archivado: cualquier arreglo posterior es un **delta nuevo**, no una reapertura.
 - La imagen de producción es **un único servicio** (`valet`, `Dockerfile` monolítico); no hay nginx intermedio ni puertos publicados: el único ingress es el Traefik existente por la red externa.
-- Este plan vive en `plans/PLAN-002-COMPLETED.md` y está trackeado en git (renombrado el 2026-10-09).
+- Este plan vive en `plans/PLAN-002-ARCHIVED.md` y está trackeado en git (renombrado el 2026-10-09).

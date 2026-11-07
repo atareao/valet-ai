@@ -3,6 +3,7 @@ pub mod embedding_service;
 pub mod memory_service;
 pub mod miniflux;
 pub mod opentodo;
+pub mod oximeal;
 pub mod push;
 pub mod strava;
 pub mod wordpress;

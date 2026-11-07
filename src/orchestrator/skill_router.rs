@@ -768,7 +768,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// Las treinta y tres herramientas del registry de producción: lo que expone
+    /// Las treinta y cuatro herramientas del registry de producción: lo que expone
     /// el fallo abierto con todas las skills habilitadas.
     const ALL_TOOLS: &[&str] = &[
         "blog_comment_delete",
@@ -784,6 +784,7 @@ mod tests {
         "journal",
         "notes",
         "notifications",
+        "oximeal",
         "reminders",
         "render_widget",
         "reverse_geocode",
@@ -1026,7 +1027,7 @@ mod tests {
     }
 
     /// 6.5 — el fallo abierto con todas las skills habilitadas expone las treinta
-    /// y dos herramientas, incluidas las dos escrituras del blog.
+    /// y cuatro herramientas, incluidas las dos escrituras del blog.
     #[tokio::test]
     async fn fail_open_exposes_the_blog_comment_reply_tool() {
         let provider = FakeDecisions::new(&[]); // sin respuestas → fallo abierto
@@ -1042,7 +1043,7 @@ mod tests {
         assert_eq!(
             sorted(exposed),
             sorted(all_tools()),
-            "el fallo abierto expone las treinta y dos herramientas"
+            "el fallo abierto expone las treinta y cuatro herramientas"
         );
     }
 

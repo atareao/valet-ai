@@ -13,6 +13,6 @@
 - [x] 3.1 `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test` en verde.
 
 ## 4. Cierre
-- [ ] 4.1 Release: bump de versión, PR a `main`, tag y despliegue en `co1`.
-- [ ] 4.2 Verificación: invocar una herramienta desde el chat y comprobar que **Stats → Sistema → Tool Usage** muestra datos.
-- [ ] 4.3 `openspec archive tool-usage-stats`.
+- [x] 4.1 Release: bump de versión, PR a `main`, tag y despliegue en `co1`. Hecho: PR #323 a `development` (`9765256`), release **v0.31.1** (PR #324 a `main`, merge `3d529ac`), imagen publicada por `image.yml` y stack de `co1` recreado. `GET /api/health` → `{"version":"0.31.1"}`.
+- [x] 4.2 Verificación: invocar una herramienta desde el chat y comprobar que **Stats → Sistema → Tool Usage** muestra datos. Hecho (2026-11-06, producción v0.31.1): `SELECT COUNT(*) FROM llm_requests WHERE kind='chat' AND tool_calls IS NOT NULL` → **1**; fila `created_at=2026-11-06 20:36:43`, `tool_calls=[{"name":"email_list_unread"}]`; agregación equivalente a `tools_summary` → `email_list_unread: 1`.
+- [x] 4.3 `openspec archive tool-usage-stats`.

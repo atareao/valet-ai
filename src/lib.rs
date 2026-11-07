@@ -95,7 +95,7 @@ fn build_env_llm_provider() -> Arc<dyn crate::llm::provider::LLMProvider> {
     }
 }
 
-/// Build the production tool registry with all 33 built-in tools.
+/// Build the production tool registry with all 34 built-in tools.
 ///
 /// Exposed so the evaluation harness (`valet-route-eval`) can resolve the same
 /// advertised tool set the running application uses.
@@ -189,6 +189,9 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
         crate::tools::blog_comments::BlogCommentDeleteTool::new(pool.clone()),
     ));
     registry.register(Box::new(crate::tools::zennotes::ZennotesTool::new(
+        pool.clone(),
+    )));
+    registry.register(Box::new(crate::tools::oximeal::OximealTool::new(
         pool.clone(),
     )));
     registry
@@ -592,6 +595,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::zennotes::routes())
         // OpenTodo integration (config status, connection check + token endpoint)
         .merge(routes::opentodo::routes())
+        // OxiMeal integration (config status, connection check + secret endpoint)
+        .merge(routes::oximeal::routes())
         // WebPush (VAPID public key, subscribe, unsubscribe)
         .merge(routes::push::routes())
         // Notifications inbox: ingest (ingest-token authenticated) + session reads

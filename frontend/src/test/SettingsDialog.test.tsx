@@ -56,6 +56,13 @@ const mockSetOpentodoToken = vi.fn();
 // «Probar conexión» debe usarlo —no una relectura del estado— y mostrar su
 // `detail` en la línea de estado.
 const mockCheckOpentodo = vi.fn();
+// Spies sobre los endpoints dedicados de OxiMeal: misma pauta que OpenTodo
+// (change `oximeal-integration`). `useOximeal` es real, así que se enruta al
+// spy para que el indicador de la novena sub-pestaña sea determinista y ningún
+// test abra una petición real.
+const mockGetOximealStatus = vi.fn();
+const mockSetOximealSecret = vi.fn();
+const mockCheckOximeal = vi.fn();
 
 // Fixture de settings devuelta por el hook mockeado (equivale a lo que
 // responde `GET /settings`). Es mutable para que cada test pueda simular
@@ -79,6 +86,9 @@ const defaultSettings: Record<string, string> = {
   miniflux_base_url: "",
   miniflux_api_key: "",
   opentodo_base_url: "",
+  oximeal_base_url: "",
+  oximeal_issuer_url: "",
+  oximeal_client_id: "",
   MEMORY_HALF_LIFE_DAYS: "30",
   SIMILARITY_THRESHOLD: "0.4",
   RAG_BUDGET_TOKENS: "400",
@@ -313,6 +323,16 @@ vi.mock("../api/client", async () => {
   };
 });
 
+// Los tres endpoints de OxiMeal viven en su propio módulo (`api/oximeal.ts`),
+// importado solo por `useOximeal` (chunk diferido de ajustes). Mismo patrón que
+// `api/ingestKeys.ts`. El factory se hoisted; solo toca los spies cuando el hook
+// los invoca.
+vi.mock("../api/oximeal", () => ({
+  getOximealStatus: (...args: unknown[]) => mockGetOximealStatus(...args),
+  setOximealSecret: (...args: unknown[]) => mockSetOximealSecret(...args),
+  checkOximeal: (...args: unknown[]) => mockCheckOximeal(...args),
+}));
+
 import { SettingsDialog } from "../components/SettingsDialog";
 import { RouterControl } from "../components/RouterControl";
 import { ProfileProvider } from "../contexts/ProfileProvider";
@@ -380,6 +400,19 @@ describe("SettingsDialog", () => {
     // Sondeo activo por defecto: «conexión correcta». Los tests de fallo lo
     // sobrescriben con `mockResolvedValue`/`mockRejectedValue`.
     mockCheckOpentodo.mockResolvedValue({
+      ok: true,
+      detail: "conexión correcta",
+    });
+    // Por defecto OxiMeal no está configurado; los tests que lo necesiten
+    // fijan `configured: true` con `mockResolvedValueOnce`/`mockResolvedValue`.
+    mockGetOximealStatus.mockResolvedValue({
+      configured: false,
+      base_url: "https://oximeal.territoriolinux.es",
+      issuer_url: "https://auth.territoriolinux.es",
+      has_client_id: false,
+    });
+    mockSetOximealSecret.mockResolvedValue(undefined);
+    mockCheckOximeal.mockResolvedValue({
       ok: true,
       detail: "conexión correcta",
     });
@@ -2656,7 +2689,7 @@ describe("SettingsDialog", () => {
   // ════════════════════════════════════════════════════════════════
 
   // Orden cerrado de las sub-pestañas de «Integraciones» (spec aprobada). La
-  // octava, «OpenTodo», la añade el change `opentodo-integration`.
+  // novena, «OxiMeal», la añade el change `oximeal-integration`.
   const INTEGRATION_SUBTABS = [
     "Strava",
     "OpenWeatherMap",
@@ -2666,6 +2699,7 @@ describe("SettingsDialog", () => {
     "Miniflux",
     "ZenNotes",
     "OpenTodo",
+    "OxiMeal",
   ] as const;
 
   // Etiquetas de los campos de credencial que, tras el change, viven SOLO en
@@ -2693,15 +2727,15 @@ describe("SettingsDialog", () => {
   };
 
   // change `settings-tabs-vertical`: pestañas verticales
-  it("organiza «Integraciones» en ocho sub-pestañas verticales en el orden acordado", async () => {
+  it("organiza «Integraciones» en nueve sub-pestañas verticales en el orden acordado", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
-    // Ocho sub-pestañas, con «OpenTodo» como octava al final del orden cerrado.
-    expect(INTEGRATION_SUBTABS).toHaveLength(8);
-    expect(INTEGRATION_SUBTABS[7]).toBe("OpenTodo");
+    // Nueve sub-pestañas, con «OxiMeal» como novena al final del orden cerrado.
+    expect(INTEGRATION_SUBTABS).toHaveLength(9);
+    expect(INTEGRATION_SUBTABS[8]).toBe("OxiMeal");
 
     const subTabs = INTEGRATION_SUBTABS.map((name) =>
       screen.getByRole("tab", {
@@ -2709,7 +2743,7 @@ describe("SettingsDialog", () => {
       }),
     );
 
-    // Las ocho cuelgan del mismo `tablist` anidado, distinto del de nivel
+    // Las nueve cuelgan del mismo `tablist` anidado, distinto del de nivel
     // superior (que ya aloja Perfil, Interfaz, …).
     const nested = subTabs[0].closest('[role="tablist"]') as HTMLElement | null;
     if (!nested) throw new Error("Las sub-pestañas no cuelgan de un tablist");
@@ -3111,7 +3145,7 @@ describe("SettingsDialog", () => {
   });
 
   // El nombre accesible del `Tabs` anidado evita que un lector de pantalla
-  // anuncie siete pestañas sin decir de qué son (mismo patrón que el
+  // anuncie nueve pestañas sin decir de qué son (mismo patrón que el
   // `aria-label="Rol de generación"` del `Tabs` de «Generación»).
   //
   // antd propaga el `aria-label` al `div` raíz del `Tabs`, mientras el
@@ -3125,7 +3159,7 @@ describe("SettingsDialog", () => {
     await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
     const group = screen.getByRole("group", { name: "Integraciones" });
-    // Las siete sub-pestañas viven dentro del grupo nombrado (no en el «Tabs»
+    // Las nueve sub-pestañas viven dentro del grupo nombrado (no en el «Tabs»
     // de nivel superior).
     for (const name of INTEGRATION_SUBTABS) {
       expect(
@@ -3651,6 +3685,28 @@ describe("SettingsDialog", () => {
     await waitFor(() => expect(mockCheckOpentodo).toHaveBeenCalledTimes(1));
     // El sondeo no toca `GET /api/opentodo/status`.
     expect(mockGetOpentodoStatus.mock.calls.length).toBe(statusReadsBeforeCheck);
+  });
+
+  it("«Probar conexión» de OxiMeal usa GET /api/oximeal/check y no relee el estado", async () => {
+    const user = userEvent.setup();
+    mockCheckOximeal.mockResolvedValue({
+      ok: true,
+      detail: "conexión correcta",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OxiMeal");
+
+    const region = await screen.findByRole("region", { name: "OxiMeal" });
+    await waitFor(() => expect(mockGetOximealStatus).toHaveBeenCalledTimes(1));
+    const statusReadsBeforeCheck = mockGetOximealStatus.mock.calls.length;
+
+    await user.click(within(region).getByRole("button", { name: "Probar conexión" }));
+
+    await waitFor(() => expect(mockCheckOximeal).toHaveBeenCalledTimes(1));
+    // El sondeo no toca `GET /api/oximeal/status`.
+    expect(mockGetOximealStatus.mock.calls.length).toBe(statusReadsBeforeCheck);
   });
 
   // El botón refleja el sondeo **en curso**, no solo su resultado: con la
