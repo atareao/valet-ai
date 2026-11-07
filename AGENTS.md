@@ -219,7 +219,7 @@ La **E2E contra la instancia real está verificada**: desplegada la v0.23.0 en `
 
 Lo que no se reabre sin orden explícita:
 
-- **Las 8 tareas se migraron antes del release**, no después: `DROP TABLE` es irreversible y el script de una sola ejecución se borró al terminar. La constancia (fecha, recuento, mapeo y resultados) está en `plans/PLAN-011-COMPLETED.md` §9. La migración creó el proyecto `Preemer` y las etiquetas `shared` y `waiting`; las siete «Continuar con …» quedaron como tareas sueltas sin proyecto, por decisión del usuario.
+- **Las 8 tareas se migraron antes del release**, no después: `DROP TABLE` es irreversible y el script de una sola ejecución se borró al terminar. La constancia (fecha, recuento, mapeo y resultados) está en `plans/PLAN-011-ARCHIVED.md` §9. La migración creó el proyecto `Preemer` y las etiquetas `shared` y `waiting`; las siete «Continuar con …» quedaron como tareas sueltas sin proyecto, por decisión del usuario.
 - **El enlace del header es una constante del frontend**, no se deriva de `opentodo_base_url`: si algún día se cambia el ajuste, el enlace no lo sigue. Se prefirió eso a un `GET /api/opentodo/status` en cada arranque solo para pintar un botón.
 - **Sin token, la herramienta falla** en vez de caer a un almacén local. Ya no hay segunda fuente de verdad, y `seed_tasks` (que además estaba roto desde el 2026-09-26: insertaba `status='pending'`, que el CHECK GTD rechaza) desapareció con el resto.
 
@@ -230,7 +230,7 @@ Lo que no se reabre sin orden explícita:
 - **El widget emite `type: "radio"`** y el frontend pinta las alternativas a la vista, con el grupo etiquetado (`role="radiogroup"` + `aria-labelledby`) y `name` único por grupo.
 - **La guía declara la forma**, no la prohíbe: `SKILL_WIDGETS_PROMPT` pasa a pedir `| Opción | … |` y conserva `render_widget` para lo que el servidor no infiere (varios datos, plan, mapa). La migración `20261104000001` lleva **guarda byte a byte** por cada texto conocido y no pisa nada que no reconozca.
 - **El histórico no se migra** (decisión del usuario): los widgets ya persistidos siguen con sus opciones viejas y `type: select`.
-- Queda **sin medir** el disparador del modelo (fase 2 de `plans/PLAN-015-COMPLETED.md` §6): `render_widget` del modelo sumó 0 llamadas en los 39 turnos medidos, y el arreglo no depende de que el modelo cambie de costumbres.
+- Queda **sin medir** el disparador del modelo (fase 2 de `plans/PLAN-015-ARCHIVED.md` §6): `render_widget` del modelo sumó 0 llamadas en los 39 turnos medidos, y el arreglo no depende de que el modelo cambie de costumbres.
 
 **18. La elección de cierre se proyecta por la prosa real del modelo, y su disparador ya está medido.** Decidido y ejecutado el 2026-11-06 al cerrar el change `prose-choice-widget` (PR #315 para el código, #316 para el release; **v0.29.0** desplegada en `co1`). El change anterior (`binary-choice-widget`) exigía que la última línea del turno acabase exactamente en `?` y que la pregunta binaria fuese «¿X o no?»: medido sobre 200 turnos reales, disparaba **0 veces**, porque el modelo firma con emoji tras el `?` y pregunta «¿X o Y?». Lo que no se reabre sin orden explícita:
 
@@ -264,45 +264,48 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 
 ### Nomenclatura
 
+La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se renombra a
+`plans/PLAN-XXX-ARCHIVED.md` y su cuerpo **no se reescribe** (es registro histórico).
+
 - **Plan nuevo:** `plans/PLAN-XXX.md`, con `XXX` de tres dígitos y cero a la izquierda
   (`001`, `002`, …). El número se asigna en orden creciente y **no se reutiliza** mientras
-  el plan siga existiendo.
+  el plan siga existiendo. El siguiente número libre es el menor entero positivo no usado en
+  `plans/`, ignorando los sufijos `-ARCHIVED` y `-PENDING`.
 - **Excepción — reordenación:** un número puede volver a usarse si el plan que lo tenía
-  **nunca llegó a ejecutarse** y pasó a `-PENDING`/`-COMPLETED` dejando libre el ordinal.
+  **nunca llegó a ejecutarse** y pasó a `-PENDING`/`-ARCHIVED` dejando libre el ordinal.
   Precedente: el `003` se reutilizó al reorganizar `plans/` y aparcar el roadmap v2 como
   `PLAN-004-PENDING`.
-- **Plan completado:** se renombra a `plans/PLAN-XXX-COMPLETED.md`. El cuerpo del plan
-  **no se reescribe**: es un registro histórico de lo que se decidió e hizo.
+- **Plan cerrado:** se renombra a `plans/PLAN-XXX-ARCHIVED.md` (regla global).
 - **Plan parado / backlog:** se renombra a `plans/PLAN-XXX-PENDING.md`. No está activo ni se
   trabaja en él ahora: queda aparcado, para retomarlo o cerrarlo más adelante.
-- Un plan completado **no se reabre**. El trabajo nuevo —aunque sea un ajuste sobre algo ya
+- Un plan cerrado **no se reabre**. El trabajo nuevo —aunque sea un ajuste sobre algo ya
   cerrado— genera un `plans/PLAN-XXX.md` nuevo.
 
 ### Índice
 
 | Fichero | Origen | Estado |
 |:---|:---|:---:|
-| `plans/PLAN-001-COMPLETED.md` | Plan maestro original (`PLAN.md`): fases F0–F4 | ✅ Completado |
-| `plans/PLAN-002-COMPLETED.md` | OIDC (PocketID), producción tras Traefik y cierres (`PLAN-PENDIENTE.md`) | ✅ Completado |
-| `plans/PLAN-003-COMPLETED.md` | Selección por skills y otros temas (Temas 1–4 ✅: PR #155, #159, #163, #166/#167; Tema 5 aparcado) | ✅ Completado |
+| `plans/PLAN-001-ARCHIVED.md` | Plan maestro original (`PLAN.md`): fases F0–F4 | ✅ Completado |
+| `plans/PLAN-002-ARCHIVED.md` | OIDC (PocketID), producción tras Traefik y cierres (`PLAN-PENDIENTE.md`) | ✅ Completado |
+| `plans/PLAN-003-ARCHIVED.md` | Selección por skills y otros temas (Temas 1–4 ✅: PR #155, #159, #163, #166/#167; Tema 5 aparcado) | ✅ Completado |
 | `plans/PLAN-004-PENDING.md` | Roadmap v2 (`v2-ROADMAP.md`): atareao.es, bitácora, project log | ⏸️ Pending |
-| `plans/PLAN-005-COMPLETED.md` | Activity Timeline & Life Journal (línea temporal de hechos) (PR #169) | ✅ Completado |
-| `plans/PLAN-006-COMPLETED.md` | `LocationWidget`: de «Guardar» a «Abrir» (change `location-widget-open-action`) | ✅ Completado |
-| `plans/PLAN-007-COMPLETED.md` | Bitácora autónoma: la app escribe el diario por su cuenta (PRs #215 y #218) | ✅ Completado |
-| `plans/PLAN-008-COMPLETED.md` | Sincronización del chat entre dispositivos (change `chat-cross-device-sync`) | ✅ Completado |
-| `plans/PLAN-009-COMPLETED.md` | Integración de ZenNotes: el agente lee y escribe notas del vault vía API (change `zennotes-notes`) | ✅ Completado |
+| `plans/PLAN-005-ARCHIVED.md` | Activity Timeline & Life Journal (línea temporal de hechos) (PR #169) | ✅ Completado |
+| `plans/PLAN-006-ARCHIVED.md` | `LocationWidget`: de «Guardar» a «Abrir» (change `location-widget-open-action`) | ✅ Completado |
+| `plans/PLAN-007-ARCHIVED.md` | Bitácora autónoma: la app escribe el diario por su cuenta (PRs #215 y #218) | ✅ Completado |
+| `plans/PLAN-008-ARCHIVED.md` | Sincronización del chat entre dispositivos (change `chat-cross-device-sync`) | ✅ Completado |
+| `plans/PLAN-009-ARCHIVED.md` | Integración de ZenNotes: el agente lee y escribe notas del vault vía API (change `zennotes-notes`) | ✅ Completado |
 | `plans/PLAN-010-PENDING.md` | Diagnóstico del TTL de sesión (8 h fijo) y opciones A–D | ⏸️ Pending |
-| `plans/PLAN-011-COMPLETED.md` | Integrar OpenTodo y retirar el TODO local: fase 1 (`opentodo-integration`, PR #265) y fase 2 (`remove-local-tasks`, PR #271/#272), desplegadas como v0.23.0 y v0.24.0 | ✅ Completado |
-| `plans/PLAN-012-COMPLETED.md` | Los widgets, siempre presentes: la guía prescriptiva falló (batería 0/3) y el objetivo lo cumplió la proyección determinista (change `widgets-always-on`; PR #285, v0.25.0) | ✅ Completado |
-| `plans/PLAN-013-COMPLETED.md` | Proyección determinista de widgets: el servidor proyecta, el modelo aporta contenido (change `widget-projection`; PR #289/#290) | ✅ Completado |
-| `plans/PLAN-014-COMPLETED.md` | La proyección reconoce los formatos reales del modelo (change `widget-projection-formats`; PR #291/#292, v0.27.0) | ✅ Completado |
-| `plans/PLAN-015-COMPLETED.md` | El formulario de opciones deja de ser un jeroglífico: la opción lleva el texto de su fila y solo se proyectan tablas declaradas (change `widget-options-contract`; PR #295, v0.27.1) | ✅ Completado |
-| `plans/PLAN-016-COMPLETED.md` | Desbloquear el CI: el test de la ventana temporal de `background_summary` deja de depender del reloj, y la cola de Dependabot (change `stats-test-clock-independence`; PRs #304/#305, v0.27.2) | ✅ Completado |
-| `plans/PLAN-017-COMPLETED.md` | La pregunta cerrada de sí/no ofrece un widget de elección: la cuarta forma reconocible de la proyección (change `binary-choice-widget`; PR #312/#313, v0.28.0) | ✅ Completado |
-| `plans/PLAN-018-COMPLETED.md` | La elección de cierre reconoce cómo escribe el modelo de verdad: el disparador no encajaba con la prosa real (emoji tras el `?` y preguntas «¿X o Y?») (change `prose-choice-widget`; PR #315/#316, v0.29.0) | ✅ Completado |
-| `plans/PLAN-019-COMPLETED.md` | Actualización del frontend a React 19 con react-leaflet 5 y chart.js 4.6.1, etapa B (change `frontend-react19-antd6`) | ✅ Completado |
-| `plans/PLAN-020-COMPLETED.md` | El panel `Stats → Sistema → Tool Usage` deja de salir vacío: el orquestador persiste `llm_requests.tool_calls` (change `tool-usage-stats`; PRs #323/#324, v0.31.1) | ✅ Completado |
-| `plans/PLAN-021.md` | Integración de OxiMeal: recetas, planificación de menús y lista de la compra vía Agent API | ⏳ En curso |
+| `plans/PLAN-011-ARCHIVED.md` | Integrar OpenTodo y retirar el TODO local: fase 1 (`opentodo-integration`, PR #265) y fase 2 (`remove-local-tasks`, PR #271/#272), desplegadas como v0.23.0 y v0.24.0 | ✅ Completado |
+| `plans/PLAN-012-ARCHIVED.md` | Los widgets, siempre presentes: la guía prescriptiva falló (batería 0/3) y el objetivo lo cumplió la proyección determinista (change `widgets-always-on`; PR #285, v0.25.0) | ✅ Completado |
+| `plans/PLAN-013-ARCHIVED.md` | Proyección determinista de widgets: el servidor proyecta, el modelo aporta contenido (change `widget-projection`; PR #289/#290) | ✅ Completado |
+| `plans/PLAN-014-ARCHIVED.md` | La proyección reconoce los formatos reales del modelo (change `widget-projection-formats`; PR #291/#292, v0.27.0) | ✅ Completado |
+| `plans/PLAN-015-ARCHIVED.md` | El formulario de opciones deja de ser un jeroglífico: la opción lleva el texto de su fila y solo se proyectan tablas declaradas (change `widget-options-contract`; PR #295, v0.27.1) | ✅ Completado |
+| `plans/PLAN-016-ARCHIVED.md` | Desbloquear el CI: el test de la ventana temporal de `background_summary` deja de depender del reloj, y la cola de Dependabot (change `stats-test-clock-independence`; PRs #304/#305, v0.27.2) | ✅ Completado |
+| `plans/PLAN-017-ARCHIVED.md` | La pregunta cerrada de sí/no ofrece un widget de elección: la cuarta forma reconocible de la proyección (change `binary-choice-widget`; PR #312/#313, v0.28.0) | ✅ Completado |
+| `plans/PLAN-018-ARCHIVED.md` | La elección de cierre reconoce cómo escribe el modelo de verdad: el disparador no encajaba con la prosa real (emoji tras el `?` y preguntas «¿X o Y?») (change `prose-choice-widget`; PR #315/#316, v0.29.0) | ✅ Completado |
+| `plans/PLAN-019-ARCHIVED.md` | Actualización del frontend a React 19 con react-leaflet 5 y chart.js 4.6.1, etapa B (change `frontend-react19-antd6`) | ✅ Completado |
+| `plans/PLAN-020-ARCHIVED.md` | El panel `Stats → Sistema → Tool Usage` deja de salir vacío: el orquestador persiste `llm_requests.tool_calls` (change `tool-usage-stats`; PRs #323/#324, v0.31.1) | ✅ Completado |
+| `plans/PLAN-021-ARCHIVED.md` | Integración de OxiMeal: recetas, planificación de menús y lista de la compra vía Agent API | ✅ Archivado (E2E pendiente) |
 
-> Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
+> Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

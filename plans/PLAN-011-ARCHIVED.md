@@ -1,7 +1,7 @@
-# PLAN-011-COMPLETED — Integrar OpenTodo y retirar el TODO local
+# PLAN-011-ARCHIVED — Integrar OpenTodo y retirar el TODO local
 
 > Estado: **completado**. Las dos fases están cerradas, desplegadas y verificadas en producción. Fase 1 (`opentodo-integration`): v0.23.0, PR #265. Fase 2 (`remove-local-tasks`): v0.24.0, PR #271 (código) y #272 (archive), desplegada en `co1` el 2026-10-28 con `{"status":"ok","db":"connected","version":"0.24.0"}`. Las 8 tareas locales se migraron a OpenTodo antes del release (§9) y la tabla `tasks` ya no existe en producción.
-> Convención de repo: si se aprueba se renombra a `plans/PLAN-011.md`; al completarse, a `plans/PLAN-011-COMPLETED.md`.
+> Convención de repo: si se aprueba se renombra a `plans/PLAN-011.md`; al completarse, a `plans/PLAN-011-ARCHIVED.md`.
 > Origen: petición del 2026-10-27 («quitar el TODO actual e integrar OpenTodo»), con cuatro decisiones tomadas por el usuario y una batería de pruebas contra la instancia real.
 
 ## 0. Objetivo

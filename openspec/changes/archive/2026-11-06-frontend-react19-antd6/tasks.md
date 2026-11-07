@@ -58,5 +58,5 @@
 ## 7. Cierre
 
 - [ ] 7.1 `openspec archive frontend-react19-antd6` (verificación: el delta se fusiona en `openspec/specs/frontend/spec.md` y el change pasa a `changes/archive/`).
-- [ ] 7.2 Renombrar este plan a `plans/PLAN-019-COMPLETED.md` y actualizar el índice de `AGENTS.md` (verificación: el índice apunta al fichero renombrado con estado completado).
+- [ ] 7.2 Renombrar este plan a `plans/PLAN-019-ARCHIVED.md` y actualizar el índice de `AGENTS.md` (verificación: el índice apunta al fichero renombrado con estado completado).
 - [ ] 7.3 Añadir a `AGENTS.md` la decisión cerrada con las versiones finales del stack y lo que no se reabre (verificación: la entrada existe y cita las versiones de `frontend/package.json`).

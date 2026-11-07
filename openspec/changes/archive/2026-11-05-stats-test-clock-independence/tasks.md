@@ -38,4 +38,4 @@
 ## 6. Cierre
 
 - [x] 6.1 `openspec archive stats-test-clock-independence`.
-- [x] 6.2 Renombrar el plan a `plans/PLAN-016-COMPLETED.md` y actualizar la fila del índice en `AGENTS.md` §VI.
+- [x] 6.2 Renombrar el plan a `plans/PLAN-016-ARCHIVED.md` y actualizar la fila del índice en `AGENTS.md` §VI.

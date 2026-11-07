@@ -86,7 +86,7 @@ del repositorio.
    `openspec validate --all --strict`.
 6. **Auditoría**: `@rust-reviewer` sobre el diff del test.
 7. **Desbloqueo de la cola** (ver §7).
-8. **Cierre**: `openspec archive` + este plan a `PLAN-016-COMPLETED.md`.
+8. **Cierre**: `openspec archive` + este plan a `PLAN-016-ARCHIVED.md`.
 
 ## 6. Criterios de aceptación
 
