@@ -26,6 +26,7 @@ pub enum Skill {
     Rss,
     Blog,
     Zennotes,
+    Menus,
 }
 
 /// Especificación cerrada de una skill.
@@ -60,7 +61,7 @@ pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 12] = [
+static CATALOG: [SkillSpec; 13] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
@@ -220,6 +221,17 @@ static CATALOG: [SkillSpec; 12] = [
         prompt_key: "SKILL_ZENNOTES_PROMPT",
         prompt_heading: "# SKILL ACTIVA: ZENNOTES",
     },
+    SkillSpec {
+        skill: Skill::Menus,
+        id: "menus",
+        instructions: "¿La respuesta requiere gestionar las recetas, el menú o plan de la semana o la lista de la compra de OxiMeal?",
+        criteria_true: "El mensaje se refiere al recetario o a la cocina de OxiMeal: qué recetas hay, planificar el menú o plan de la semana, decidir qué se come o se cena, o gestionar la lista de la compra («prepárame el menú de la semana», «qué cenamos», «añade esto a la compra», «guárdame esta receta»).",
+        criteria_false: "El mensaje no se refiere a recetas, a planificar comidas ni a la lista de la compra. En particular, apuntar una idea o una nota suelta sin hablar de cocina no es esta skill (es la store interna de `recuerdos`), ni lo es una tarea pendiente (es `pendientes`).",
+        threshold: 0.10,
+        tools: &["oximeal"],
+        prompt_key: "SKILL_MENUS_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: MENUS",
+    },
 ];
 
 /// Catálogo cerrado de skills, en el orden canónico del sistema.
@@ -261,9 +273,9 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las doce variantes del enum, para exigir que el catálogo las cubra
+    /// Las trece variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 12] = [
+    const ALL_SKILLS: [Skill; 13] = [
         Skill::Agenda,
         Skill::Pendientes,
         Skill::Recuerdos,
@@ -276,6 +288,7 @@ mod tests {
         Skill::Rss,
         Skill::Blog,
         Skill::Zennotes,
+        Skill::Menus,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -490,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_declares_exactly_the_twelve_wide_domain_ids() {
+    fn catalog_declares_exactly_the_thirteen_wide_domain_ids() {
         let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
 
         for id in [
@@ -506,6 +519,7 @@ mod tests {
             "rss",
             "blog",
             "zennotes",
+            "menus",
         ] {
             assert!(
                 ids.contains(&id),
@@ -514,8 +528,8 @@ mod tests {
         }
         assert_eq!(
             ids.len(),
-            12,
-            "el catálogo debe tener exactamente doce skills; tiene {ids:?}"
+            13,
+            "el catálogo debe tener exactamente trece skills; tiene {ids:?}"
         );
     }
 
@@ -687,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_thirty_three_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_thirty_four_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -699,8 +713,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            33,
-            "el core más las doce skills deben cubrir las treinta y tres herramientas: {covered:?}"
+            34,
+            "el core más las trece skills deben cubrir las treinta y cuatro herramientas: {covered:?}"
         );
         assert!(
             covered.iter().any(|t| t == "blog_comment_reply"),
@@ -714,6 +728,10 @@ mod tests {
             covered.iter().any(|t| t == "zennotes"),
             "la cobertura debe incluir `zennotes`: {covered:?}"
         );
+        assert!(
+            covered.iter().any(|t| t == "oximeal"),
+            "la cobertura debe incluir `oximeal`: {covered:?}"
+        );
         for spec in catalog() {
             assert!(
                 !spec.tools.contains(&"get_current_location"),
@@ -724,7 +742,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_keys_are_the_twelve_canonical_keys() {
+    fn prompt_keys_are_the_thirteen_canonical_keys() {
         let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
 
         for key in [
@@ -740,6 +758,7 @@ mod tests {
             "SKILL_RSS_PROMPT",
             "SKILL_BLOG_PROMPT",
             "SKILL_ZENNOTES_PROMPT",
+            "SKILL_MENUS_PROMPT",
         ] {
             assert!(
                 keys.contains(&key),
@@ -748,8 +767,8 @@ mod tests {
         }
         assert_eq!(
             keys.len(),
-            12,
-            "el catálogo debe declarar exactamente doce claves de fragmento; tiene {keys:?}"
+            13,
+            "el catálogo debe declarar exactamente trece claves de fragmento; tiene {keys:?}"
         );
         let mut unique = keys.clone();
         unique.sort_unstable();
@@ -814,6 +833,7 @@ mod tests {
             "timeline",
             "email",
             "zennotes",
+            "menus",
         ] {
             let t = threshold_of(id).unwrap_or(-1.0);
             assert_eq!(
@@ -1131,5 +1151,71 @@ mod tests {
             negative.contains("recuerdos"),
             "las criteria_false deben remitir el apunte suelto a `recuerdos`: {negative:?}"
         );
+    }
+
+    // ─── RED: la skill de Menús (oximeal-integration) ───────────────────────
+    //
+    // El recetario y la cocina de OxiMeal son un dominio propio —`menus`— y no
+    // la store interna de `recuerdos` ni las tareas de `pendientes`. Estas
+    // pruebas describen ese contrato.
+
+    /// Scenario: la skill de Menús cubre su herramienta, y solo ella.
+    #[test]
+    fn menus_skill_covers_only_its_tool() {
+        let spec = spec_of("menus").expect("el catálogo debe declarar la skill `menus`");
+        assert_eq!(
+            spec.tools,
+            &["oximeal"][..],
+            "menus debe cubrir la herramienta `oximeal` y ninguna otra: {:?}",
+            spec.tools
+        );
+        assert_eq!(
+            pct(spec.threshold),
+            10,
+            "menus debe declarar el umbral 0.10 de las skills de dominio"
+        );
+        assert_eq!(spec.prompt_key, "SKILL_MENUS_PROMPT");
+        assert_eq!(spec.prompt_heading, "# SKILL ACTIVA: MENUS");
+        assert!(
+            !CORE_TOOLS.contains(&"oximeal"),
+            "oximeal es enrutable: no pertenece al core"
+        );
+
+        let owners: Vec<&str> = catalog()
+            .iter()
+            .filter(|spec| spec.tools.contains(&"oximeal"))
+            .map(|spec| spec.id)
+            .collect();
+        assert_eq!(
+            owners,
+            vec!["menus"],
+            "`oximeal` no puede repartirse entre skills distintas: {owners:?}"
+        );
+        assert_eq!(skill_of_tool("oximeal"), Some(Skill::Menus));
+    }
+
+    /// Scenario: la skill de Menús distingue el recetario de OxiMeal de la store
+    /// interna y de las tareas.
+    #[test]
+    fn menus_criteria_distinguish_oximeal_from_internal_notes_and_tasks() {
+        let spec = spec_of("menus").expect("el catálogo debe declarar la skill `menus`");
+        let criteria = spec.criteria_true.to_lowercase();
+        for marker in ["receta", "menú", "compra"] {
+            assert!(
+                criteria.contains(marker),
+                "las criteria de `menus` deben incluir «{marker}»: {criteria:?}"
+            );
+        }
+        assert!(
+            spec.instructions.to_lowercase().contains("oximeal"),
+            "la pregunta debe nombrar OxiMeal: {:?}",
+            spec.instructions
+        );
+
+        // El «no» remite el apunte suelto a `recuerdos` y la tarea a `pendientes`.
+        let negative = spec.criteria_false.to_lowercase();
+        assert!(negative.contains("recuerdos"), "{negative:?}");
+        assert!(negative.contains("pendientes"), "{negative:?}");
+        assert!(negative.contains("cocina"), "{negative:?}");
     }
 }

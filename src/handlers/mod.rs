@@ -5,6 +5,7 @@ pub mod memories;
 pub mod messages;
 pub mod notes;
 pub mod opentodo;
+pub mod oximeal;
 pub mod profile;
 pub mod search;
 pub mod skills;

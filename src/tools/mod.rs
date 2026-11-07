@@ -9,6 +9,7 @@ pub mod google_places;
 pub mod journal;
 pub mod notes;
 pub mod notifications;
+pub mod oximeal;
 pub mod permission;
 pub mod registry;
 pub mod reminders;

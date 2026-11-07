@@ -2427,13 +2427,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_registry_has_thirty_three_tools() {
+    async fn production_registry_has_thirty_four_tools() {
         let pool = setup_db().await;
         let registry = crate::build_tool_registry(&pool);
         assert_eq!(
             registry.definitions().len(),
-            33,
-            "el registry de producción debe registrar treinta y tres herramientas"
+            34,
+            "el registry de producción debe registrar treinta y cuatro herramientas"
         );
     }
 }
