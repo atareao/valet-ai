@@ -108,6 +108,7 @@ impl std::error::Error for OximealError {}
 #[derive(Clone, PartialEq)]
 pub struct OximealConfig {
     pub base_url: String,
+    pub resource: String,
     pub issuer_url: String,
     pub client_id: String,
     pub client_secret: String,
@@ -118,6 +119,7 @@ impl std::fmt::Debug for OximealConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OximealConfig")
             .field("base_url", &self.base_url)
+            .field("resource", &self.resource)
             .field("issuer_url", &self.issuer_url)
             .field("client_id", &self.client_id)
             .field("client_secret", &"***")
@@ -293,6 +295,7 @@ impl Oximeal {
             http,
             config: OximealConfig {
                 base_url: config.base_url.trim_end_matches('/').to_string(),
+                resource: config.resource.trim().to_string(),
                 issuer_url: config.issuer_url.trim_end_matches('/').to_string(),
                 client_id: config.client_id.trim().to_string(),
                 client_secret: secret,
@@ -306,6 +309,22 @@ impl Oximeal {
         setting_or_env(pool, "oximeal_base_url", "OXIMEAL_BASE_URL")
             .await
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string())
+    }
+
+    /// `resource` (RFC 8707) resuelto con la precedencia ajuste → entorno →
+    /// **derivado** `<base_url>/api`, con la barra final recortada.
+    ///
+    /// Pocket ID exige `resource` para resolver la API de un `scope`
+    /// personalizado; su ausencia provoca `invalid_scope`. El valor por defecto
+    /// cuelga siempre de la URL base, así que la instalación por defecto funciona
+    /// sin configurarlo y el ajuste/entorno solo hace falta como override.
+    pub async fn resolve_resource(pool: &SqlitePool) -> String {
+        if let Some(value) = setting_or_env(pool, "oximeal_resource", "OXIMEAL_RESOURCE").await {
+            return value;
+        }
+
+        let base_url = Self::resolve_base_url(pool).await;
+        format!("{}/api", base_url.trim_end_matches('/'))
     }
 
     /// Emisor OIDC resuelto: `oximeal_issuer_url` (settings → entorno) y, si
@@ -355,6 +374,7 @@ impl Oximeal {
 
         Ok(OximealConfig {
             base_url,
+            resource: Self::resolve_resource(pool).await,
             issuer_url,
             client_id,
             client_secret,
@@ -675,6 +695,9 @@ impl Oximeal {
             serializer.append_pair("client_id", self.config.client_id.trim());
             serializer.append_pair("client_secret", self.config.client_secret.trim());
             serializer.append_pair("scope", DEFAULT_SCOPES);
+            // `resource` (RFC 8707): sin él, un IdP como Pocket ID no resuelve la
+            // API de un `scope` personalizado y responde `invalid_scope`.
+            serializer.append_pair("resource", self.config.resource.trim());
             serializer.finish()
         };
 
@@ -902,6 +925,7 @@ mod tests {
     fn client_for(server: &MockServer) -> Oximeal {
         Oximeal::new(OximealConfig {
             base_url: server.uri(),
+            resource: format!("{}/api", server.uri()),
             issuer_url: server.uri(),
             client_id: "client-id".to_string(),
             client_secret: SECRET.to_string(),
@@ -910,6 +934,10 @@ mod tests {
     }
 
     /// Monta el descubrimiento OIDC y el endpoint de token en el servidor.
+    ///
+    /// El `POST /token` exige el parámetro `resource` (RFC 8707): `client_for`
+    /// apunta a `<server.uri()>/api`, de modo que cualquier test que obtenga un
+    /// token comprueba de paso que se envía.
     async fn mount_auth(server: &MockServer, token: &str, expires_in: u64) {
         Mock::given(method("GET"))
             .and(path("/.well-known/openid-configuration"))
@@ -919,8 +947,14 @@ mod tests {
             .mount(server)
             .await;
 
+        let encoded_resource = {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            serializer.append_pair("resource", &format!("{}/api", server.uri()));
+            serializer.finish()
+        };
         Mock::given(method("POST"))
             .and(path("/token"))
+            .and(body_string_contains(encoded_resource))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token": token,
                 "expires_in": expires_in,
@@ -949,6 +983,7 @@ mod tests {
     fn config_debug_redacts_the_secret() {
         let config = OximealConfig {
             base_url: "https://example.test".to_string(),
+            resource: "https://example.test/api".to_string(),
             issuer_url: "https://idp.test".to_string(),
             client_id: "cid".to_string(),
             client_secret: SECRET.to_string(),
@@ -1077,6 +1112,91 @@ mod tests {
         assert_eq!(issuer, "https://auth.example.test");
     }
 
+    /// Scenario: `oximeal_resource` sin definir deriva `<base_url>/api`; con la
+    /// base por defecto vale `https://oximeal.territoriolinux.es/api`.
+    #[tokio::test]
+    #[serial]
+    async fn resource_derives_from_base_url_api() {
+        let pool = setup_pool().await;
+        SettingsRepo::set(&pool, "oximeal_base_url", "")
+            .await
+            .unwrap();
+        SettingsRepo::set(&pool, "oximeal_resource", "")
+            .await
+            .unwrap();
+        set_env("OXIMEAL_BASE_URL", None);
+        set_env("OXIMEAL_RESOURCE", None);
+
+        assert_eq!(
+            Oximeal::resolve_resource(&pool).await,
+            "https://oximeal.territoriolinux.es/api"
+        );
+    }
+
+    /// Scenario: una base con barra final no produce `//api`.
+    #[tokio::test]
+    #[serial]
+    async fn resource_derivation_trims_a_trailing_slash() {
+        let pool = setup_pool().await;
+        SettingsRepo::set(
+            &pool,
+            "oximeal_base_url",
+            "https://oximeal.territoriolinux.es/",
+        )
+        .await
+        .unwrap();
+        SettingsRepo::set(&pool, "oximeal_resource", "")
+            .await
+            .unwrap();
+        set_env("OXIMEAL_RESOURCE", None);
+
+        let resource = Oximeal::resolve_resource(&pool).await;
+
+        assert_eq!(resource, "https://oximeal.territoriolinux.es/api");
+        assert!(!resource.ends_with("//api"), "resource: {resource}");
+    }
+
+    /// Scenario: un `oximeal_resource` explícito gana a la derivación; con el
+    /// ajuste vacío, `OXIMEAL_RESOURCE` sirve de respaldo.
+    #[tokio::test]
+    #[serial]
+    async fn explicit_resource_wins_over_derivation_and_env() {
+        let pool = setup_pool().await;
+        SettingsRepo::set(
+            &pool,
+            "oximeal_base_url",
+            "https://oximeal.territoriolinux.es",
+        )
+        .await
+        .unwrap();
+        SettingsRepo::set(&pool, "oximeal_resource", "https://otra.api/api")
+            .await
+            .unwrap();
+        set_env("OXIMEAL_RESOURCE", Some("https://env.api/api"));
+
+        assert_eq!(
+            Oximeal::resolve_resource(&pool).await,
+            "https://otra.api/api",
+            "el ajuste gana al entorno"
+        );
+
+        SettingsRepo::set(&pool, "oximeal_resource", "")
+            .await
+            .unwrap();
+        assert_eq!(
+            Oximeal::resolve_resource(&pool).await,
+            "https://env.api/api",
+            "el entorno sirve de respaldo"
+        );
+
+        set_env("OXIMEAL_RESOURCE", None);
+        assert_eq!(
+            Oximeal::resolve_resource(&pool).await,
+            "https://oximeal.territoriolinux.es/api",
+            "sin ajuste ni entorno se deriva de la base"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Token M2M: descubrimiento, petición, caché y renovación
     // -----------------------------------------------------------------------
@@ -1187,6 +1307,73 @@ mod tests {
             .await;
 
         client_for(&server).recent_recipes(7).await.expect("ok");
+    }
+
+    /// Scenario: la petición `client_credentials` incluye `resource` (RFC 8707)
+    /// además de `grant_type`, `client_id`, `client_secret` y `scope`.
+    #[tokio::test]
+    #[serial]
+    async fn client_credentials_request_includes_resource() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        let encoded_resource = {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            serializer.append_pair("resource", &format!("{}/api", server.uri()));
+            serializer.finish()
+        };
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "token_endpoint": format!("{}/token", server.uri()),
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .and(body_string_contains("grant_type=client_credentials"))
+            .and(body_string_contains("client_id=client-id"))
+            .and(body_string_contains("client_secret=SECRET"))
+            .and(body_string_contains(
+                "scope=agent%3Aread+agent%3Aplan+agent%3Ashopping+agent%3Awrite",
+            ))
+            .and(body_string_contains(encoded_resource))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "tok-1",
+                "expires_in": 3600,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/recent-recipes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "recipes": [],
+            })))
+            .mount(&server)
+            .await;
+
+        client_for(&server).recent_recipes(7).await.expect("ok");
+    }
+
+    /// El embudo de errores del IdP redacta el secreto aunque el mensaje lo
+    /// mencione: es la garantía que necesita la sonda para exponer el detalle.
+    #[tokio::test]
+    #[serial]
+    async fn token_endpoint_error_redacts_the_secret() {
+        let server = MockServer::start().await;
+        let client = client_for(&server);
+
+        match client.token_endpoint_error(&format!("el IdP rechazó la petición: usa {SECRET}")) {
+            OximealError::TokenEndpoint(detail) => {
+                assert!(
+                    !detail.contains(SECRET),
+                    "el detalle filtra el secreto: {detail}"
+                );
+                assert!(detail.contains("***"), "el detalle debe redactar: {detail}");
+            }
+            other => panic!("se esperaba TokenEndpoint: {other:?}"),
+        }
     }
 
     /// Scenario: un token a punto de expirar se renueva antes de usarlo.

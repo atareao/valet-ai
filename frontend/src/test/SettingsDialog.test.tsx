@@ -87,6 +87,7 @@ const defaultSettings: Record<string, string> = {
   miniflux_api_key: "",
   opentodo_base_url: "",
   oximeal_base_url: "",
+  oximeal_resource: "",
   oximeal_issuer_url: "",
   oximeal_client_id: "",
   MEMORY_HALF_LIFE_DAYS: "30",
@@ -408,6 +409,7 @@ describe("SettingsDialog", () => {
     mockGetOximealStatus.mockResolvedValue({
       configured: false,
       base_url: "https://oximeal.territoriolinux.es",
+      resource: "https://oximeal.territoriolinux.es/api",
       issuer_url: "https://auth.territoriolinux.es",
       has_client_id: false,
     });
@@ -3707,6 +3709,29 @@ describe("SettingsDialog", () => {
     await waitFor(() => expect(mockCheckOximeal).toHaveBeenCalledTimes(1));
     // El sondeo no toca `GET /api/oximeal/status`.
     expect(mockGetOximealStatus.mock.calls.length).toBe(statusReadsBeforeCheck);
+  });
+
+  it("guarda el campo OxiMeal · Resource por PUT /api/settings con los no sensibles", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "OxiMeal");
+
+    const region = await screen.findByRole("region", { name: "OxiMeal" });
+    const resource = within(region).getByLabelText("OxiMeal · Resource");
+    await user.type(resource, "https://oximeal.territoriolinux.es/api");
+
+    await user.click(within(region).getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          oximeal_resource: "https://oximeal.territoriolinux.es/api",
+        }),
+      );
+    });
   });
 
   // El botón refleja el sondeo **en curso**, no solo su resultado: con la

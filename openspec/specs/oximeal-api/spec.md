@@ -1,7 +1,12 @@
 # oximeal-api Specification
 
 ## Purpose
-TBD - created by archiving change oximeal-integration. Update Purpose after archive.
+Define los endpoints HTTP de la integración de Valet con OxiMeal: la lectura del
+estado sin secreto (`GET /api/oximeal/status`), la sonda de conexión real
+(`GET /api/oximeal/check`) y el endpoint dedicado para fijar el `client_secret`
+(`PUT /api/oximeal/secret`). El secreto se trata como ajuste sensible — nunca se
+expone ni viaja por `GET`/`PUT /api/settings` — y la sonda informa del resultado
+con `200` y un `detail` en español, sin filtrar jamás el secreto ni el token.
 
 ## Requirements
 
