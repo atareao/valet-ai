@@ -14,7 +14,7 @@ devuelve `NotConfigured` sin tocar la red.
 
 ### Requirement: El servicio `Oximeal` SHALL resolver su configuración en cada llamada y NO exponer nunca el secreto
 
-El servicio `Oximeal` SHALL resolver su configuración en **cada** llamada leyendo los ajustes (`settings`) y, como respaldo, el entorno: `oximeal_base_url` (por defecto `https://oximeal.territoriolinux.es`), `oximeal_issuer_url` (vacío ⇒ SHALL caer a `AUTH_ISSUER_URL` de la configuración de Valet), `oximeal_client_id` y `oximeal_client_secret`. El `Debug` de la configuración SHALL redactar el secreto, y ningún mensaje de error SHALL contenerlo. Sin `client_id` o sin `client_secret`, el servicio SHALL devolver `NotConfigured` **sin tocar la red**.
+El servicio `Oximeal` SHALL resolver en **cada** llamada, desde ajustes y entorno, `oximeal_base_url` (default `https://oximeal.territoriolinux.es`), `oximeal_resource` (default `<base_url>/api`, barra final recortada), `oximeal_issuer_url` (vacío ⇒ `AUTH_ISSUER_URL` de Valet), `oximeal_client_id` y `oximeal_client_secret`. SHALL redactar el secreto en `Debug` y en todo error, y sin credenciales SHALL devolver `NotConfigured` **sin tocar la red**.
 
 #### Scenario: El secreto nunca aparece en el Debug
 - **Given** una configuración con `client_secret = "SECRET"`
@@ -32,9 +32,31 @@ El servicio `Oximeal` SHALL resolver su configuración en **cada** llamada leyen
 - **When** se resuelve la configuración
 - **Then** la URL base vale `https://oximeal.territoriolinux.es`
 
+#### Scenario: El resource por defecto deriva de la URL base
+- **Given** `oximeal_resource` sin definir (ni en ajustes ni en el entorno) y `oximeal_base_url` sin definir
+- **When** se resuelve la configuración
+- **Then** el `resource` vale `https://oximeal.territoriolinux.es/api`
+
+#### Scenario: Un resource sin barra final
+- **Given** `oximeal_base_url` = `https://oximeal.territoriolinux.es/` y `oximeal_resource` sin definir
+- **When** se resuelve la configuración
+- **Then** el `resource` vale `https://oximeal.territoriolinux.es/api`
+- **And** NO termina en `//api`
+
+#### Scenario: El resource explícito gana a la derivación
+- **Given** `oximeal_resource` = `https://otra.api/api` y `oximeal_base_url` = `https://oximeal.territoriolinux.es`
+- **When** se resuelve la configuración
+- **Then** el `resource` vale `https://otra.api/api`
+
 ### Requirement: El servicio SHALL obtener un token M2M por `client_credentials` y cachearlo
 
-Con `client_id` y `client_secret` presentes, el servicio SHALL descubrir el `token_endpoint` desde `<issuer>/.well-known/openid-configuration` (cacheando el descubrimiento) y SHALL solicitar el token con `grant_type=client_credentials`, `client_id`, `client_secret` y `scope=agent:read agent:plan agent:shopping agent:write` (`Content-Type: application/x-www-form-urlencoded`). El token SHALL cachearse en memoria de proceso y SHALL reutilizarse mientras no le falten menos de 30 segundos para expirar; a partir de ahí SHALL solicitarse uno nuevo. Un `401`/`403` de la Agent API SHALL invalidar la caché y traducirse a `Unauthorized`. Un fallo al obtener el token (el IdP no responde o responde con error) SHALL traducirse a `Upstream` sin filtrar credenciales.
+Con `client_id` y `client_secret` presentes, el servicio SHALL descubrir el `token_endpoint` desde `<issuer>/.well-known/openid-configuration` (cacheando el descubrimiento) y SHALL solicitar el token con `grant_type=client_credentials`, `client_id`, `client_secret`, `resource=<resource resuelto>` y `scope=agent:read agent:plan agent:shopping agent:write` (`Content-Type: application/x-www-form-urlencoded`). El token SHALL cachearse en memoria de proceso y SHALL reutilizarse mientras no le falten menos de 30 segundos para expirar; a partir de ahí SHALL solicitarse uno nuevo. Un `401`/`403` de la Agent API SHALL invalidar la caché y traducirse a `Unauthorized`. Un fallo al obtener el token (el IdP no responde o responde con error) SHALL traducirse a `TokenEndpoint` sin filtrar credenciales.
+
+#### Scenario: La petición de token lleva `resource`
+- **Given** un `resource` resuelto de `https://oximeal.territoriolinux.es/api`
+- **When** se solicita un token M2M por `client_credentials`
+- **Then** el cuerpo de la petición incluye el par `resource` con el valor `https://oximeal.territoriolinux.es/api`
+- **And** conserva `grant_type=client_credentials`, `client_id`, `client_secret` y el `scope`
 
 #### Scenario: El token se cachea y se reutiliza
 - **Given** un token obtenido con `expires_in = 3600`
@@ -56,7 +78,7 @@ Con `client_id` y `client_secret` presentes, el servicio SHALL descubrir el `tok
 #### Scenario: El IdP caído se distingue de un token inválido
 - **Given** un `token_endpoint` que no responde
 - **When** se hace una operación
-- **Then** el resultado es `Upstream`
+- **Then** el resultado es `TokenEndpoint`
 
 ### Requirement: El servicio SHALL exponer las seis operaciones de la Agent API
 
