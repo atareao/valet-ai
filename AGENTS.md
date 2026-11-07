@@ -302,6 +302,7 @@ Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la r
 | `plans/PLAN-018-COMPLETED.md` | La elección de cierre reconoce cómo escribe el modelo de verdad: el disparador no encajaba con la prosa real (emoji tras el `?` y preguntas «¿X o Y?») (change `prose-choice-widget`; PR #315/#316, v0.29.0) | ✅ Completado |
 | `plans/PLAN-019-COMPLETED.md` | Actualización del frontend a React 19 con react-leaflet 5 y chart.js 4.6.1, etapa B (change `frontend-react19-antd6`) | ✅ Completado |
 | `plans/PLAN-020-COMPLETED.md` | El panel `Stats → Sistema → Tool Usage` deja de salir vacío: el orquestador persiste `llm_requests.tool_calls` (change `tool-usage-stats`; PRs #323/#324, v0.31.1) | ✅ Completado |
+| `plans/PLAN-021.md` | Integración de OxiMeal: recetas, planificación de menús y lista de la compra vía Agent API | ⏳ En curso |
 
 > Los planes completados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
