@@ -436,6 +436,30 @@ export interface OpentodoCheckResult {
   detail: string;
 }
 
+/**
+ * Estado de la configuración de OxiMeal (`GET /api/oximeal/status`). Espejo del
+ * contrato del backend: **nunca** incluye el `client_secret`, solo si hay
+ * credenciales resueltas (`configured`), los valores efectivos de
+ * `base_url`/`issuer_url` y si hay un `client_id` (`has_client_id`).
+ */
+export interface OximealStatus {
+  configured: boolean;
+  base_url: string;
+  issuer_url: string;
+  has_client_id: boolean;
+}
+
+/**
+ * Resultado del sondeo activo de la conexión (`GET /api/oximeal/check`). La
+ * ruta responde **siempre** `200`: `ok` indica si la instancia de OxiMeal
+ * atendió la petición y `detail` lleva el motivo legible en español. Nunca
+ * incluye el `client_secret`.
+ */
+export interface OximealCheckResult {
+  ok: boolean;
+  detail: string;
+}
+
 /** Respuesta de `GET /api/push/vapid-key`: la clave pública VAPID en base64url. */
 export interface VapidKeyResponse {
   public_key: string;

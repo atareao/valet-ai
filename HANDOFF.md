@@ -1,30 +1,31 @@
 # HANDOFF
 
-**Fecha:** 2026-11-06
+**Fecha:** 2026-11-07
 
 ## Estado
 
-Change `tool-usage-stats` **cerrado y archivado** (`openspec/changes/archive/2026-11-06-tool-usage-stats/`). El arreglo del registro de `tool_calls` en `llm_requests` entró por PR #323 a `development` (`9765256`) y se publicó como release **`v0.31.1`** (PR #324 a `main`, merge `3d529ac`), desplegada en `co1`. El panel **Stats → Sistema → Tool Usage** ya no sale vacío.
+Rama **`feature/oximeal-integration`**. La integración de OxiMeal está implementada, auditada (`@rust-reviewer` y `@react-reviewer` aprobaron) y con **todas las puertas en verde** (`cargo test` 1653+, `clippy` limpio, `vitest` 692, `tsc`, `eslint`, bundle 69.99/70.00 kB, `openspec validate` válido). Pendiente únicamente la **E2E real (tarea 4.1)** —OxiMeal no está desplegado en `co1` ni hay cliente M2M— y el cierre: archive + PR a `development`.
 
-## Release v0.31.1
+## Qué se ha hecho
 
-- **PR #323** ✅ — mergeado a `development` con CI verde. Hash de merge: `9765256f5f8eb06428f54ca36c32358ebfafa566`.
-- **Release branch** `release/v0.31.1`: `vampus upgrade --patch` dejó `0.31.1` en `Cargo.toml`, `.vampus.yml` y `Cargo.lock`; commit `🔧 chore(release): v0.31.1` (`936b20b`).
-- **PR #324** ✅ — CI verde, mergeado a `main`. Hash de merge: `3d529ac049193b2472757243838f2cf019dfe0fe`.
-- **Tag `v0.31.1`** ✅ — publicado; workflow `image.yml` (run `42280704435`) **success**.
-- **Despliegue `co1`** ✅ — health: `{"version":"0.31.1"}`.
-- **Verificación E2E** ✅ — `email_list_unread: 1` en la agregación equivalente a `tools_summary` (fila `created_at=2026-11-06 20:36:43`).
+- **Tool `oximeal`** con 6 operaciones: `recent_recipes`, `search_recipes`, `set_weekly_plan`, `add_shopping_items`, `delete_completed`, `create_recipe`.
+- **Skill `menus`**: catálogo de 12 → **13 skills** y 33 → **34 tools**.
+- **Servicio OxiMeal** (`src/services/oximeal.rs`) con token **M2M single-flight**: descubre `token_endpoint` vía OIDC, cachea el token con margen de 30 s y lo invalida ante `401`/`403`.
+- **Endpoints `/api/oximeal/{status,check,secret}`**: `status` nunca expone el secreto; `check` es la sonda real (siempre `200` con `{ok, detail}`); `secret` guarda (400 vacío / 204 ok).
+- **`oximeal_client_secret`** añadido a `SENSITIVE_KEYS`: `GET /api/settings` lo omite y `PUT /api/settings` lo ignora.
+- **Migración** `20261107000001_oximeal.sql`: siembra `oximeal_base_url`, `oximeal_client_id` y `SKILL_MENUS_PROMPT`.
+- **UI** en Ajustes → Integraciones (`useOximeal.ts` + `OximealSection.tsx`): campos de base/issuer/client_id, secreto siempre vacío al abrir y botón «Probar conexión».
+- Documentación en `docs/oximeal-integration.md`.
 
-## Tareas pendientes
+## Tarea pendiente / siguiente paso
 
-- **4.10 / 5.3** — verificación manual/visual de las vistas de la etapa A del frontend (React 19). **A cargo del usuario.**
-- **Ruta de reflexión** (fuera de alcance del change, sin tarea): graba `kind='chat'` con `model="default"` y ensucia las stats de chat.
+- **4.1 — Verificación E2E** contra un OxiMeal real con cliente M2M (`check` → `{ok:true}`, `search_recipes`, `plan_week`, `add_shopping_items`, `clear_purchased`, `create_recipe`). **Bloqueada por infraestructura:** OxiMeal no está desplegado en `co1` y no hay cliente M2M. Cuando esté disponible, ejecutarla y cerrar.
+- **Cierre del change:** `openspec archive oximeal-integration` y PR de `feature/oximeal-integration` a `development` (commits gitmoji).
 
-## Hallazgos / notas (no bloqueantes)
+## Follow-ups conocidos
 
-- **Sin backfill del histórico** (decisión del usuario): los turnos previos a la v0.31.1 quedan sin `tool_calls`; el gráfico se puebla a partir del despliegue. Descartado rellenarlo desde `messages.tools_used` (agregado por turno, no por llamada al LLM).
-- Bundle inicial del frontend al límite: 69.99 kB / 70.00 kB (headroom ~1.7 %). No se sube el límite.
-- `dependency-stack.test.ts` solo cubre la etapa A del frontend (candidato a endurecer, sin tarea asignada).
+- El **example `curl` del README de OxiMeal está desactualizado**: no coincide con la API real de la Agent API.
+- La **E2E queda pendiente por infraestructura** (OxiMeal sin desplegar en `co1`, sin cliente M2M real).
 
 ## Restricciones
 

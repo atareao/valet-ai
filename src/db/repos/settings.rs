@@ -16,6 +16,7 @@ pub const SENSITIVE_KEYS: &[&str] = &[
     "push_vapid_private_key",
     "zennotes_token",
     "opentodo_token",
+    "oximeal_client_secret",
 ];
 
 /// `true` si `key` es sensible y por tanto debe omitirse en las respuestas y
@@ -147,6 +148,13 @@ mod tests {
         // /api/opentodo/token`, mientras que su URL base es un ajuste normal.
         assert!(is_sensitive_key("opentodo_token"));
         assert!(!is_sensitive_key("opentodo_base_url"));
+        // El client_secret M2M de OxiMeal solo se escribe por `PUT
+        // /api/oximeal/secret`; su URL, su emisor y su client_id son ajustes
+        // normales.
+        assert!(is_sensitive_key("oximeal_client_secret"));
+        assert!(!is_sensitive_key("oximeal_base_url"));
+        assert!(!is_sensitive_key("oximeal_issuer_url"));
+        assert!(!is_sensitive_key("oximeal_client_id"));
         assert!(!is_sensitive_key("max_window_tokens"));
     }
 

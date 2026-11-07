@@ -7,17 +7,17 @@ Enrutado de skills por turno: qué habilidades necesita un turno, con qué herra
 
 ### Requirement: El catálogo de skills SHALL ser cerrado y cubrir todas las herramientas con sus prerrequisitos
 
-El catálogo SHALL declarar, en código, un conjunto **cerrado de doce skills de dominio amplio**: `agenda`, `pendientes`, `recuerdos`, `entorno`, `web`, `widgets`, `running`, `timeline`, `email`, `rss`, `blog` y `zennotes`. Cada skill SHALL declarar un id estable, las instrucciones y las `criteria` por defecto con las que se pregunta por ella, su umbral por defecto, el conjunto de herramientas que cubre —**incluyendo los prerrequisitos**— y la clave y el encabezado de su fragmento de prompt. Las herramientas de un mismo dominio SHALL NOT repartirse entre skills distintas: `pendientes` cubre `tasks`, `reminders` y `notifications`; `recuerdos` cubre `notes`, `unified_search` y `journal`; `entorno` cubre `weather`, `geocode`, `reverse_geocode` y `search_places`; `running` cubre `strava_recent_activities`, `strava_activity_detail`, `strava_activity_streams` y `strava_athlete_stats`; `timeline` cubre `timeline_get_events`, `timeline_add_event` y `timeline_delete_event`; `email` cubre `email_list_unread`, `email_get_body`, `email_mark_read` y `email_send`; `rss` cubre `rss_list_unread`, `rss_get_entry`, `rss_search_entries` y `rss_mark_read`; `blog` cubre `blog_comment_reply` y `blog_comment_delete`; `zennotes` cubre la herramienta `zennotes`, y **solo** ella. Las `criteria` de `recuerdos` SHALL incluir el habla de la bitácora (`bitácora`, `diario`, `cómo fue mi día`); y las de `zennotes` SHALL reconocer el **vault de ZenNotes** —sus notas, sus artículos y sus apuntes («mis notas de ZenNotes», «mi vault», «apunta en mis notas del vault»)—, de modo que el router seleccione `zennotes` para leer o escribir en el vault y no lo confunda con la store interna de `recuerdos`. El conjunto **core** no enrutable SHALL ser `get_current_time` y `get_current_location`. La herramienta `render_widget` SHALL pertenecer a la skill `widgets` y SHALL NOT estar en el core. Una herramienta PUEDE pertenecer a más de una skill. Toda herramienta registrada SHALL pertenecer al core o a al menos una skill.
+El catálogo SHALL declarar, en código, un conjunto **cerrado de trece skills de dominio amplio**: `agenda`, `pendientes`, `recuerdos`, `entorno`, `web`, `widgets`, `running`, `timeline`, `email`, `rss`, `blog`, `zennotes` y `menus`. Cada skill SHALL declarar un id estable, las instrucciones y las `criteria` por defecto con las que se pregunta por ella, su umbral por defecto, el conjunto de herramientas que cubre —**incluyendo los prerrequisitos**— y la clave y el encabezado de su fragmento de prompt. Las herramientas de un mismo dominio SHALL NOT repartirse entre skills distintas: `pendientes` cubre `tasks`, `reminders` y `notifications`; `recuerdos` cubre `notes`, `unified_search` y `journal`; `entorno` cubre `weather`, `geocode`, `reverse_geocode` y `search_places`; `running` cubre `strava_recent_activities`, `strava_activity_detail`, `strava_activity_streams` y `strava_athlete_stats`; `timeline` cubre `timeline_get_events`, `timeline_add_event` y `timeline_delete_event`; `email` cubre `email_list_unread`, `email_get_body`, `email_mark_read` y `email_send`; `rss` cubre `rss_list_unread`, `rss_get_entry`, `rss_search_entries` y `rss_mark_read`; `blog` cubre `blog_comment_reply` y `blog_comment_delete`; `zennotes` cubre la herramienta `zennotes`, y **solo** ella; `menus` cubre la herramienta `oximeal`, y **solo** ella. Las `criteria` de `recuerdos` SHALL incluir el habla de la bitácora (`bitácora`, `diario`, `cómo fue mi día`); las de `zennotes` SHALL reconocer el **vault de ZenNotes** —sus notas, sus artículos y sus apuntes («mis notas de ZenNotes», «mi vault», «apunta en mis notas del vault»)—, de modo que el router seleccione `zennotes` para leer o escribir en el vault y no lo confunda con la store interna de `recuerdos`; y las de `menus` SHALL reconocer el **recetario y la cocina de OxiMeal** —recetas, menú o plan de la semana, comidas, cena, comida y lista de la compra («prepárame el menú de la semana», «qué cenamos», «añade esto a la compra», «guárdame esta receta»)—, de modo que el router seleccione `menus` para leer o escribir recetas, planificar comidas y gestionar la compra, sin confundirlo con `recuerdos` (que es la store interna) ni con `pendientes` (que son tareas). El conjunto **core** no enrutable SHALL ser `get_current_time` y `get_current_location`. La herramienta `render_widget` SHALL pertenecer a la skill `widgets` y SHALL NOT estar en el core. Una herramienta PUEDE pertenecer a más de una skill. Toda herramienta registrada SHALL pertenecer al core o a al menos una skill.
 
 #### Scenario: Toda herramienta registrada está cubierta
-- **Given** el registry de producción con sus treinta y tres herramientas
+- **Given** el registry de producción con sus treinta y cuatro herramientas
 - **When** se contrasta con el catálogo de skills y el conjunto core
 - **Then** cada herramienta pertenece al core o a alguna skill
 - **And** el test de integridad falla si se registra una herramienta y se olvida en el catálogo
 
 #### Scenario: Las herramientas de un mismo dominio no se reparten en skills distintas
 - **Given** el catálogo de skills
-- **When** se inspeccionan las herramientas de `pendientes`, `recuerdos`, `entorno`, `running`, `timeline`, `email`, `rss` y `blog`
+- **When** se inspeccionan las herramientas de `pendientes`, `recuerdos`, `entorno`, `running`, `timeline`, `email`, `rss`, `blog`, `zennotes` y `menus`
 - **Then** `tasks`, `reminders` y `notifications` están todas en `pendientes`
 - **And** `notes`, `unified_search` y `journal` están todas en `recuerdos`
 - **And** `weather`, `geocode`, `reverse_geocode` y `search_places` están todas en `entorno`
@@ -27,6 +27,8 @@ El catálogo SHALL declarar, en código, un conjunto **cerrado de doce skills de
 - **And** las cuatro herramientas `rss_*` están todas en `rss`
 - **And** `blog_comment_reply` y `blog_comment_delete` están en `blog`
 - **And** ni `blog_comment_reply` ni `blog_comment_delete` están en `pendientes`, donde solo se leen los avisos
+- **And** `zennotes` está en `zennotes` y en ninguna otra skill
+- **And** `oximeal` está en `menus` y en ninguna otra skill
 
 #### Scenario: El conjunto core no se enruta
 - **Given** el catálogo de skills
@@ -83,7 +85,7 @@ El catálogo SHALL declarar, en código, un conjunto **cerrado de doce skills de
 - **Given** el catálogo de skills
 - **When** se inspeccionan las herramientas de la skill `blog`
 - **Then** cubre `blog_comment_reply` y `blog_comment_delete`, y ninguna otra herramienta
-- **And** el catálogo sigue declarando once skills: la herramienta nueva no añade una skill
+- **And** la herramienta nueva no añade una skill
 
 #### Scenario: La skill del blog reconoce el borrado del comentario notificado
 - **Given** el catálogo de skills
@@ -110,6 +112,26 @@ El catálogo SHALL declarar, en código, un conjunto **cerrado de doce skills de
 - **When** se inspeccionan las `criteria` de `zennotes` y de `recuerdos`
 - **Then** las de `zennotes` mencionan el vault de ZenNotes, sus artículos y sus notas
 - **And** ninguna otra skill cubre la herramienta `zennotes`
+
+#### Scenario: La skill de Menús cubre su herramienta, y solo ella
+- **Given** el catálogo de skills
+- **When** se inspeccionan las herramientas de la skill `menus`
+- **Then** cubre la herramienta `oximeal` y ninguna otra
+- **And** es una skill enrutable, no parte del conjunto core
+- **And** declara el umbral `0.10` de las skills de dominio
+
+#### Scenario: La skill de Menús distingue el recetario de OxiMeal de la store interna
+- **Given** el catálogo de skills
+- **When** se inspeccionan las `criteria` de `menus`, `recuerdos` y `pendientes`
+- **Then** las de `menus` mencionan las recetas, el menú o plan de la semana, las comidas y la lista de la compra de OxiMeal
+- **And** ninguna otra skill cubre la herramienta `oximeal`
+- **And** `recuerdos` sigue cubriendo la store interna y `pendientes` las tareas
+
+#### Scenario: La skill de Menús se registra en el catálogo
+- **Given** el catálogo cerrado de skills
+- **When** se enumeran sus ids
+- **Then** figura `menus` junto a los otros doce ids
+- **And** su fragmento de prompt usa la clave `SKILL_MENUS_PROMPT` y el encabezado `# SKILL ACTIVA: MENUS`
 
 ### Requirement: El catálogo SHALL poder consultarse por la API
 

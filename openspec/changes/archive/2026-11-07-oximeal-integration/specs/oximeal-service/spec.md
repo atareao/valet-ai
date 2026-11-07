@@ -1,0 +1,82 @@
+# oximeal-service — Delta de especificación (change oximeal-integration)
+
+## ADDED Requirements
+
+### Requirement: El servicio `Oximeal` SHALL resolver su configuración en cada llamada y NO exponer nunca el secreto
+
+El servicio `Oximeal` SHALL resolver su configuración en **cada** llamada leyendo los ajustes (`settings`) y, como respaldo, el entorno: `oximeal_base_url` (por defecto `https://oximeal.territoriolinux.es`), `oximeal_issuer_url` (vacío ⇒ SHALL caer a `AUTH_ISSUER_URL` de la configuración de Valet), `oximeal_client_id` y `oximeal_client_secret`. El `Debug` de la configuración SHALL redactar el secreto, y ningún mensaje de error SHALL contenerlo. Sin `client_id` o sin `client_secret`, el servicio SHALL devolver `NotConfigured` **sin tocar la red**.
+
+#### Scenario: El secreto nunca aparece en el Debug
+- **Given** una configuración con `client_secret = "SECRET"`
+- **When** se formatea la configuración con `Debug`
+- **Then** el resultado NO contiene `SECRET`
+
+#### Scenario: Sin credenciales no se toca la red
+- **Given** ni `oximeal_client_id` ni `oximeal_client_secret` (ni en ajustes ni en el entorno)
+- **When** se construye el cliente con `from_settings`
+- **Then** se devuelve `NotConfigured`
+- **And** no se envía ninguna petición HTTP
+
+#### Scenario: La URL base por defecto
+- **Given** `oximeal_base_url` sin definir
+- **When** se resuelve la configuración
+- **Then** la URL base vale `https://oximeal.territoriolinux.es`
+
+### Requirement: El servicio SHALL obtener un token M2M por `client_credentials` y cachearlo
+
+Con `client_id` y `client_secret` presentes, el servicio SHALL descubrir el `token_endpoint` desde `<issuer>/.well-known/openid-configuration` (cacheando el descubrimiento) y SHALL solicitar el token con `grant_type=client_credentials`, `client_id`, `client_secret` y `scope=agent:read agent:plan agent:shopping agent:write` (`Content-Type: application/x-www-form-urlencoded`). El token SHALL cachearse en memoria de proceso y SHALL reutilizarse mientras no le falten menos de 30 segundos para expirar; a partir de ahí SHALL solicitarse uno nuevo. Un `401`/`403` de la Agent API SHALL invalidar la caché y traducirse a `Unauthorized`. Un fallo al obtener el token (el IdP no responde o responde con error) SHALL traducirse a `Upstream` sin filtrar credenciales.
+
+#### Scenario: El token se cachea y se reutiliza
+- **Given** un token obtenido con `expires_in = 3600`
+- **When** se hacen dos operaciones seguidas
+- **Then** el `token_endpoint` recibe **una sola** petición `client_credentials`
+- **And** ambas operaciones llevan el mismo `Authorization: Bearer`
+
+#### Scenario: El token expirado se renueva
+- **Given** un token cuya expiración está a menos de 30 segundos
+- **When** se hace una operación
+- **Then** se solicita un token nuevo antes de llamar a la Agent API
+
+#### Scenario: Un 401 invalida la caché
+- **Given** un token en caché y la Agent API respondiendo `401`
+- **When** se hace una operación
+- **Then** el resultado es `Unauthorized`
+- **And** la caché queda invalidada
+
+#### Scenario: El IdP caído se distingue de un token inválido
+- **Given** un `token_endpoint` que no responde
+- **When** se hace una operación
+- **Then** el resultado es `Upstream`
+
+### Requirement: El servicio SHALL exponer las seis operaciones de la Agent API
+
+El servicio SHALL implementar exactamente estas operaciones, contra los endpoints de la Agent API de OxiMeal:
+
+| Operación | Endpoint | Forma |
+|---|---|---|
+| `recent_recipes(days)` | `GET /api/agent/recent-recipes?days=<u32>` | `days` por defecto 7, acotado a `1..=365` |
+| `search_recipes(query, category)` | `GET /api/agent/search-recipes?query=&category=` | devuelve como mucho 10 recetas |
+| `set_weekly_plan(entries)` | `POST /api/agent/weekly-plan` | cuerpo `{"entries":[…]}` con `date`, `meal_type`, `recipe_id`, `role`, `servings` |
+| `add_shopping_items(items)` | `POST /api/agent/shopping-items` | cuerpo `{"items":[…]}` con `name`, `amount`, `unit`, `category?` |
+| `delete_completed()` | `DELETE /api/agent/shopping/completed` | — |
+| `create_recipe(input)` | `POST /api/agent/recipes` | cuerpo `RecipeInput` (`name`, `category`, `ingredients` obligatorios) |
+
+Un `400` del servidor SHALL traducirse a `InvalidInput` conservando el mensaje del servidor (que nunca contiene credenciales); un `404` SHALL traducirse a `NotFound`; un `5xx` o un fallo de red SHALL traducirse a `Upstream`.
+
+#### Scenario: La búsqueda de recetas usa query y categoría
+- **Given** una llamada `search_recipes("pasta", "main")`
+- **When** se ejecuta
+- **Then** la petición va a `GET /api/agent/search-recipes` con `query=pasta` y `category=main`
+- **And** la respuesta se devuelve como la lista de recetas recibida
+
+#### Scenario: El plan semanal envía entradas estructuradas
+- **Given** una llamada `set_weekly_plan` con una entrada `{date:"2026-11-09", meal_type:"dinner", recipe_id:"abc", role:"main", servings:4}`
+- **When** se ejecuta
+- **Then** el cuerpo enviado a `POST /api/agent/weekly-plan` es `{"entries":[{"date":"2026-11-09","meal_type":"dinner","recipe_id":"abc","role":"main","servings":4}]}`
+- **And** la respuesta incluye `created` y `shopping_list`
+
+#### Scenario: Un 400 del servidor conserva su mensaje
+- **Given** la Agent API respondiendo `400` con `{"error":"categoría inválida: foo"}`
+- **When** se ejecuta `create_recipe` con esa categoría
+- **Then** el error es `InvalidInput` con el mensaje del servidor
+- **And** el secreto NO aparece en el error

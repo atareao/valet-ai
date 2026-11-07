@@ -109,6 +109,9 @@ export interface SettingsFormValues {
   miniflux_base_url: string;
   miniflux_api_key: string;
   opentodo_base_url: string;
+  oximeal_base_url: string;
+  oximeal_issuer_url: string;
+  oximeal_client_id: string;
   MEMORY_HALF_LIFE_DAYS: number;
   SIMILARITY_THRESHOLD: number;
   RAG_BUDGET_TOKENS: number;
@@ -190,6 +193,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         miniflux_base_url: settings.miniflux_base_url || "",
         miniflux_api_key: settings.miniflux_api_key || "",
         opentodo_base_url: settings.opentodo_base_url || "",
+        oximeal_base_url: settings.oximeal_base_url || "",
+        oximeal_issuer_url: settings.oximeal_issuer_url || "",
+        oximeal_client_id: settings.oximeal_client_id || "",
         MEMORY_HALF_LIFE_DAYS: parseFloat(
           settings.MEMORY_HALF_LIFE_DAYS || "90",
         ),
@@ -317,6 +323,12 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           values.miniflux_api_key ?? settings?.miniflux_api_key ?? "",
         opentodo_base_url:
           values.opentodo_base_url ?? settings?.opentodo_base_url ?? "",
+        oximeal_base_url:
+          values.oximeal_base_url ?? settings?.oximeal_base_url ?? "",
+        oximeal_issuer_url:
+          values.oximeal_issuer_url ?? settings?.oximeal_issuer_url ?? "",
+        oximeal_client_id:
+          values.oximeal_client_id ?? settings?.oximeal_client_id ?? "",
         MEMORY_HALF_LIFE_DAYS: (
           values.MEMORY_HALF_LIFE_DAYS ??
           parseFloat(settings?.MEMORY_HALF_LIFE_DAYS || "90")
@@ -434,6 +446,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         miniflux_base_url: "",
         miniflux_api_key: "",
         opentodo_base_url: "",
+        oximeal_base_url: "",
+        oximeal_issuer_url: "",
+        oximeal_client_id: "",
       });
       messageApi.success("Valores por defecto restaurados");
     } catch {
