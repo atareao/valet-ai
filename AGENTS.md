@@ -256,6 +256,18 @@ Lo que no se reabre sin orden explícita:
 - **Verificación E2E en producción (2026-11-06):** `SELECT COUNT(*) FROM llm_requests WHERE kind='chat' AND tool_calls IS NOT NULL` → **1**; fila `created_at=2026-11-06 20:36:43`, `tool_calls=[{"name":"email_list_unread"}]`; agregación equivalente a `tools_summary` → `email_list_unread: 1`.
 - **Observación fuera de alcance (pendiente, sin tarea):** la ruta de **reflexión** graba `kind='chat'` con `model="default"` y ensucia las estadísticas de chat con llamadas que no son conversación del usuario.
 
+**21. La integración de OxiMeal consume su Agent API con un cliente OIDC M2M; desplegada como v0.32.0.** Decidido y ejecutado el 2026-11-07 al cerrar el change `oximeal-integration` (PRs #325 y #327; **v0.32.0** desplegada en `co1`). Lo que no se reabre sin orden explícita:
+
+- **Una única herramienta `oximeal` multioperación** (`operation`): `recent_recipes`, `search_recipes`, `plan_week`, `add_shopping_items`, `clear_purchased`, `create_recipe`. Molde `zennotes`/`calendar`.
+- **Skill `menus`** (prompt `SKILL_MENUS_PROMPT`, encabezado `# SKILL ACTIVA: MENUS`, umbral `0.10`). Catálogo de **13 skills / 34 tools**.
+- **Autenticación solo OIDC M2M** (`client_credentials`) contra el mismo PocketID; scopes `agent:read agent:plan agent:shopping agent:write`; token cacheado **en proceso** (margen 30 s, *single-flight* por emisor), nunca por instancia.
+- **Ajustes:** `oximeal_base_url` (def. `https://oximeal.territoriolinux.es`), `oximeal_issuer_url` (vacío ⇒ cae a `AUTH_ISSUER_URL`), `oximeal_client_id` (**no** sensible) y `oximeal_client_secret` (**SENSIBLE**: `GET`/`PUT /api/settings` lo omiten; única puerta `PUT /api/oximeal/secret`, `{client_secret}`, 400 vacío / 204 ok). `GET /api/oximeal/check` es la **sonda real** (siempre 200 con `{ok,detail}`, nunca el token).
+- **Permisos por operación:** lecturas sin confirmación; `add_shopping_items`/`create_recipe` avisan; `plan_week`/`clear_purchased` exigen aprobación explícita; operación desconocida falla cerrado (aprobación).
+- **Rol de las entradas del plan: solo `main|salad|side`** (OxiMeal rechaza `dessert` con 400). La **categoría** de receta sí admite `main|salad|side|dessert|breakfast`: no confundir rol con categoría.
+- **Migración aditiva e idempotente** `20261107000001_oximeal.sql` (siembra los ajustes y `SKILL_MENUS_PROMPT`).
+- **Release y despliegue:** PRs **#325** (feature → `development`) y **#327** (`release/v0.32.0` → `main`), tag **v0.32.0**, imagen publicada por `image.yml`; desplegada en **`co1`** (Dockge) y verificada con `GET /api/health` → `{"version":"0.32.0"}`.
+- **Pendiente (sin tarea):** la **E2E real** contra OxiMeal — no está desplegado en `co1`; hará falta desplegarlo y crear el **cliente M2M** en PocketID (scopes arriba), luego `check → {ok:true}` y las 6 operaciones. Documentado en `docs/oximeal-integration.md`.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
