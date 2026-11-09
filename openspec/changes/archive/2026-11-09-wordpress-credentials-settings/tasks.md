@@ -33,6 +33,6 @@ Issue de entrada: [#332](https://github.com/atareao/valet-ai/issues/332)
 
 ## 4. Verificación E2E y cierre
 
-- [ ] 4.1 Release + despliegue en `co1` (Dockge); `GET /api/health` con la versión nueva y migración aplicada.
-- [ ] 4.2 E2E real: configurar usuario + Application Password en Ajustes → Integraciones → Blog y publicar una respuesta a un comentario real; `check` → `{ok:true}`.
-- [ ] 4.3 Crear `docs/wordpress-integration.md` y archivar el change con `openspec archive wordpress-credentials-settings`.
+- [x] 4.1 Release + despliegue en `co1` (Dockge); `GET /api/health` con la versión nueva y migración aplicada. (v0.34.0 desplegada en co1 vía Dockge; migración 20261110000001_blog_credentials aplicada; GET /api/health = 0.34.0)
+- [x] 4.2 E2E real: configurar usuario + Application Password en Ajustes → Integraciones → Blog y publicar una respuesta a un comentario real; `check` → `{ok:true}`. (E2E confirmada por el usuario en el chat real tras aprovisionar atareao_valet_reply_user en el sitio; check → {ok:true})
+- [x] 4.3 Crear `docs/wordpress-integration.md` y archivar el change con `openspec archive wordpress-credentials-settings`.
