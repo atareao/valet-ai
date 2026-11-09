@@ -29,6 +29,8 @@ import type {
   ZennotesStatus,
   OpentodoStatus,
   OpentodoCheckResult,
+  BlogStatus,
+  BlogCheckResult,
 } from "../types";
 import type { AuthUser } from "../contexts/AuthContext";
 
@@ -274,6 +276,28 @@ export const api = {
     request<void>("/opentodo/token", {
       method: "PUT",
       body: JSON.stringify({ token }),
+    }),
+
+  // --- Blog ----------------------------------------------------------------
+  // `blog_app_password` NO viaja en `GET /api/settings` (es sensible) y
+  // `PUT /api/settings` lo ignora, así que la contraseña tiene su propio
+  // endpoint: `status` devuelve el estado sin ella y `setBlogPassword` la
+  // guarda. `blog_base_url`/`blog_service_user` son ajustes normales (viajan por
+  // settings).
+  getBlogStatus: () => request<BlogStatus>("/blog/status"),
+
+  // Sondeo activo del estado real de la conexión. **Siempre** `200`: el
+  // diagnóstico viaja en `ok`/`detail`, por eso no rechaza ante un fallo del
+  // Blog (solo si la propia petición HTTP falla). Es distinto de
+  // `getBlogStatus`: aquel solo lee la configuración local de Valet, este toca
+  // la instancia remota de WordPress.
+  checkBlog: () => request<BlogCheckResult>("/blog/check"),
+
+  // Una contraseña vacía → `400`; una válida guarda y responde `204`.
+  setBlogPassword: (password: string) =>
+    request<void>("/blog/password", {
+      method: "PUT",
+      body: JSON.stringify({ password }),
     }),
 
   // --- Bitácora ------------------------------------------------------------

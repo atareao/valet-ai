@@ -1,3 +1,4 @@
+pub mod blog;
 pub mod chat;
 pub mod events;
 pub mod journal;
