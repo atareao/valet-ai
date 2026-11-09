@@ -768,7 +768,7 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Mutex;
 
-    /// Las treinta y cuatro herramientas del registry de producción: lo que expone
+    /// Las treinta y cinco herramientas del registry de producción: lo que expone
     /// el fallo abierto con todas las skills habilitadas.
     const ALL_TOOLS: &[&str] = &[
         "blog_comment_delete",
@@ -781,6 +781,7 @@ mod tests {
         "geocode",
         "get_current_location",
         "get_current_time",
+        "github",
         "journal",
         "notes",
         "notifications",
@@ -1043,7 +1044,7 @@ mod tests {
         assert_eq!(
             sorted(exposed),
             sorted(all_tools()),
-            "el fallo abierto expone las treinta y cuatro herramientas"
+            "el fallo abierto expone las treinta y cinco herramientas"
         );
     }
 

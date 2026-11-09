@@ -19,6 +19,7 @@ pub const SENSITIVE_KEYS: &[&str] = &[
     "opentodo_token",
     "oximeal_client_secret",
     "blog_app_password",
+    "github_token",
 ];
 
 /// `true` si `key` es sensible y por tanto debe omitirse en las respuestas y
@@ -162,6 +163,12 @@ mod tests {
         assert!(is_sensitive_key("blog_app_password"));
         assert!(!is_sensitive_key("blog_base_url"));
         assert!(!is_sensitive_key("blog_service_user"));
+        // El token de GitHub, igual: solo se escribe por `PUT
+        // /api/github/token`, mientras que el repo y los labels por defecto son
+        // ajustes normales.
+        assert!(is_sensitive_key("github_token"));
+        assert!(!is_sensitive_key("github_default_repo"));
+        assert!(!is_sensitive_key("github_default_labels"));
         assert!(!is_sensitive_key("max_window_tokens"));
     }
 
