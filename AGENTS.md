@@ -41,6 +41,7 @@ Si `just check-spec` falla:
 
 When the user requests a new feature, bug fix, or refactor:
 
+0. **GitHub Issue — punto de entrada obligatorio.** Toda feature nace como un issue en `atareao/valet-ai`. Créalo con `gh issue create` (o referencia el número si el usuario dice que ya existe) ANTES de `openspec new change`. El número del issue debe aparecer en `openspec/changes/<feature-name>/proposal.md` y en el plan correspondiente de `plans/`. Al crearlo, **asígnalo al usuario** con `gh issue create --assignee atareao`.
 1. **Create the Change Proposal:**
    - Execute CLI command: `openspec new change <feature-name>`
 2. **Draft Specifications:**
