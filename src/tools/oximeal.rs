@@ -284,6 +284,11 @@ fn context(index: usize, detail: &str) -> ToolError {
 /// Exige `name` y `category` no vacíos y un array `ingredients` no vacío cuyos
 /// ítems tengan `name` no vacío y, si traen `amount`, no sea negativo. No toca
 /// la red.
+///
+/// El objeto se devuelve **tal cual** (passthrough): los campos opcionales que
+/// admite la Agent API de OxiMeal —entre ellos `instructions` y
+/// `prep_time_minutes`, pero también `servings`, `diet_type`, `source_url` y
+/// `tags`— viajan sin alterar y no se exige ninguno de ellos.
 fn parse_recipe(args: &Value) -> Result<Value, ToolError> {
     let recipe = args
         .get("recipe")
@@ -543,7 +548,57 @@ impl Tool for OximealTool {
                 },
                 "recipe": {
                     "type": "object",
-                    "description": "RecipeInput de OxiMeal (name, category e ingredients no vacíos) para create_recipe"
+                    "description": "RecipeInput de OxiMeal para create_recipe. Obligatorios: name, category e ingredients (no vacíos).",
+                    "properties": {
+                        "name": { "type": "string", "description": "Nombre de la receta" },
+                        "category": {
+                            "type": "string",
+                            "enum": RECIPE_CATEGORIES,
+                            "description": "Categoría de la receta"
+                        },
+                        "ingredients": {
+                            "type": "array",
+                            "description": "Ingredientes de la receta (al menos uno)",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": { "type": "string" },
+                                    "amount": { "type": "number", "minimum": 0 },
+                                    "unit": { "type": "string" },
+                                    "category": { "type": "string" }
+                                },
+                                "required": ["name"]
+                            }
+                        },
+                        "instructions": {
+                            "type": "string",
+                            "description": "Instrucciones de elaboración: texto libre con la preparación de la receta"
+                        },
+                        "prep_time_minutes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Tiempo de preparación en minutos (opcional)"
+                        },
+                        "servings": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Número de raciones (opcional)"
+                        },
+                        "diet_type": {
+                            "type": "string",
+                            "description": "Tipo de dieta de la receta (opcional)"
+                        },
+                        "source_url": {
+                            "type": "string",
+                            "description": "URL de origen de la receta (opcional)"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Etiquetas de la receta (opcional)"
+                        }
+                    },
+                    "required": ["name", "category", "ingredients"]
                 }
             },
             "required": ["operation"]
@@ -680,6 +735,53 @@ mod tests {
         }
     }
 
+    /// Scenario: El esquema de `create_recipe` documenta las instrucciones.
+    ///
+    /// El `recipe` de `create_recipe` debe declarar, además de los obligatorios
+    /// `name`, `category` e `ingredients`, los campos **opcionales** que la Agent
+    /// API de OxiMeal admite en su `RecipeInput`, empezando por `instructions`.
+    #[tokio::test]
+    async fn test_parameters_document_create_recipe_optional_fields() {
+        let db = setup_db().await;
+        let params = OximealTool::new(db).parameters();
+
+        let recipe = &params["properties"]["recipe"];
+        let props = recipe["properties"]
+            .as_object()
+            .expect("recipe debe declarar `properties` con los campos de RecipeInput");
+
+        for field in [
+            "name",
+            "category",
+            "ingredients",
+            "instructions",
+            "prep_time_minutes",
+            "servings",
+            "diet_type",
+            "source_url",
+            "tags",
+        ] {
+            assert!(
+                props.contains_key(field),
+                "el esquema de `recipe` debe documentar `{field}`: {props:?}"
+            );
+        }
+
+        assert_eq!(
+            recipe["required"],
+            json!(["name", "category", "ingredients"]),
+            "`name`, `category` e `ingredients` siguen siendo los obligatorios"
+        );
+
+        let instructions = recipe["properties"]["instructions"]["description"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            instructions.to_lowercase().contains("preparaci"),
+            "la descripción de `instructions` debe aludir a la preparación: {instructions:?}"
+        );
+    }
+
     /// Scenario: la tabla completa de permisos por operación.
     #[tokio::test]
     async fn test_permission_table() {
@@ -778,6 +880,55 @@ mod tests {
         assert!(
             server.received_requests().await.unwrap().is_empty(),
             "un argumento inválido no debe enviar ninguna petición"
+        );
+    }
+
+    /// Scenario: La validación acepta instrucciones sin tocar la red.
+    ///
+    /// `parse_recipe` hace *passthrough* del objeto `recipe`: un `instructions`
+    /// no vacío viaja sin alterar y la validación no abre ninguna conexión (por
+    /// eso el test no levanta siquiera un servidor `wiremock`).
+    #[test]
+    fn test_parse_recipe_accepts_instructions_without_network() {
+        let args = json!({
+            "operation": "create_recipe",
+            "recipe": {
+                "name": "Tortilla",
+                "category": "main",
+                "ingredients": [{ "name": "Huevo", "amount": 3, "unit": "ud" }],
+                "instructions": "Batir los huevos y cuajar en la sartén.",
+                "prep_time_minutes": 15
+            }
+        });
+
+        let parsed = parse_recipe(&args).expect("un `instructions` no vacío debe aceptarse");
+        assert_eq!(
+            parsed.get("instructions").and_then(|v| v.as_str()),
+            Some("Batir los huevos y cuajar en la sartén.")
+        );
+        assert_eq!(
+            parsed.get("prep_time_minutes").and_then(|v| v.as_i64()),
+            Some(15)
+        );
+    }
+
+    /// Scenario: La validación sigue rechazando lo que OxiMeal rechazaría.
+    #[test]
+    fn test_parse_recipe_still_rejects_empty_ingredients() {
+        let args = json!({
+            "operation": "create_recipe",
+            "recipe": {
+                "name": "Tortilla",
+                "category": "main",
+                "ingredients": [],
+                "instructions": "Batir y cuajar."
+            }
+        });
+
+        let err = parse_recipe(&args).unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidArguments(_)),
+            "un `ingredients` vacío debe seguir rechazándose: {err:?}"
         );
     }
 
