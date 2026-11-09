@@ -113,6 +113,8 @@ export interface SettingsFormValues {
   oximeal_resource: string;
   oximeal_issuer_url: string;
   oximeal_client_id: string;
+  blog_base_url: string;
+  blog_service_user: string;
   MEMORY_HALF_LIFE_DAYS: number;
   SIMILARITY_THRESHOLD: number;
   RAG_BUDGET_TOKENS: number;
@@ -198,6 +200,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         oximeal_resource: settings.oximeal_resource || "",
         oximeal_issuer_url: settings.oximeal_issuer_url || "",
         oximeal_client_id: settings.oximeal_client_id || "",
+        blog_base_url: settings.blog_base_url || "",
+        blog_service_user: settings.blog_service_user || "",
         MEMORY_HALF_LIFE_DAYS: parseFloat(
           settings.MEMORY_HALF_LIFE_DAYS || "90",
         ),
@@ -333,6 +337,9 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           values.oximeal_issuer_url ?? settings?.oximeal_issuer_url ?? "",
         oximeal_client_id:
           values.oximeal_client_id ?? settings?.oximeal_client_id ?? "",
+        blog_base_url: values.blog_base_url ?? settings?.blog_base_url ?? "",
+        blog_service_user:
+          values.blog_service_user ?? settings?.blog_service_user ?? "",
         MEMORY_HALF_LIFE_DAYS: (
           values.MEMORY_HALF_LIFE_DAYS ??
           parseFloat(settings?.MEMORY_HALF_LIFE_DAYS || "90")
