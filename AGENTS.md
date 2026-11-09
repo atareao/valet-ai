@@ -289,6 +289,18 @@ Lo que no se reabre sin orden explícita:
 
 ---
 
+**24. La integración con GitHub crea issues por conversación con un PAT clásico; desplegada como v0.35.0.** Decidido y ejecutado el 2026-11-09 al cerrar el change `github-integration` (issue #333; PRs #342/#343; **v0.35.0** desplegada en `co1`). Lo que no se reabre sin orden explícita:
+
+- **Una única herramienta `github`** con una sola operación, `create_issue` (permiso `Notify`: ejecuta y avisa). Molde `zennotes`/`calendar`.
+- **Autenticación con PAT clásico** en cabecera `Authorization: Bearer <token>` (no OAuth App, no GitHub App).
+- **El repo sale del ajuste `github_default_repo`** (por defecto `atareao/valet-ai`) y se puede sobreescribir con el parámetro `repo`; `github_default_labels` (por defecto vacío) siembra las etiquetas.
+- **Ajustes:** `github_token` es **SENSIBLE** (mismo molde que `zennotes_token`/`opentodo_token`): `GET /api/settings` lo omite y `PUT /api/settings` lo ignora; única puerta `PUT /api/github/token` (`{"token"}`; `400` vacío / `204` ok). `github_default_repo` y `github_default_labels` **no** son sensibles. `GET /api/github/status` → `{configured, default_repo}` (nunca el token); `GET /api/github/check` es la **sonda real** (`GET api.github.com/user`, siempre `200` con `{ok, detail}`).
+- **Skill `github`** (umbral `0.10`, `SKILL_GITHUB_PROMPT`, `# SKILL ACTIVA: GITHUB`). Catálogo de **14 skills / 35 tools**.
+- **Migración aditiva e idempotente** `20261111000001_github.sql` (siembra los ajustes y `SKILL_GITHUB_PROMPT`).
+- **Presupuesto de bundle:** los métodos de GitHub NO viven en `api/client.ts` (que está en el grafo inicial) sino en `api/github.ts`, importado solo por el hook lazy `useGithub`; el bundle inicial queda en **69.98/70.00 kB** sin subir el límite.
+- **Mapeo de errores:** `404`→`NotFound`, `401/403`→`Unauthorized`, `422`→`InvalidInput`, `429`→`RateLimited`, `5xx`/red→`Upstream`; éxito solo `201`; sin reintentos.
+- **E2E real (2026-11-09):** con un PAT clásico (usuario `atareao`, scopes `repo, workflow`), el router seleccionó `Github` (0.99) y el turno creó el issue **#344** en `atareao/valet-ai` (`success:true`); `check` → `{ok:true}`; `GET /api/settings` **sin** `github_token`; 0 coincidencias del token en logs.
+
 ## VI. GESTIÓN DE PLANES (`plans/`)
 
 Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la raíz.
@@ -339,7 +351,8 @@ La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se 
 | `plans/PLAN-021-ARCHIVED.md` | Integración de OxiMeal: recetas, planificación de menús y lista de la compra vía Agent API | ✅ Archivado (E2E pendiente) |
 | `plans/PLAN-022-ARCHIVED.md` | Parámetro `resource` (RFC 8707) en el token M2M de Valet hacia OxiMeal (change `oximeal-m2m-resource`; v0.32.1) | ✅ Completado |
 | `plans/PLAN-023-ARCHIVED.md` | OxiMeal: `create_recipe` documenta y envía instrucciones y tiempo de preparación (change `oximeal-recipe-instructions`; issue #334, PRs #335/#336, v0.33.0) | ✅ Completado |
-| `plans/PLAN-025.md` | Integración con GitHub: crear issues desde Valet por conversación (change `github-integration`; issue #333) | 🔄 En curso |
+| `plans/PLAN-024-ARCHIVED.md` | Integración del blog: credenciales de WordPress desde Ajustes (change `wordpress-credentials-settings`; issue #332, PRs #338/#339, v0.34.0) | ✅ Completado |
+| `plans/PLAN-025-ARCHIVED.md` | Integración con GitHub: crear issues desde Valet por conversación (change `github-integration`; issue #333, PRs #342/#343, v0.35.0) | ✅ Completado |
 
 > Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

@@ -125,9 +125,12 @@ Flujo de una llamada del agente:
 
 ## Follow-ups
 
-- **E2E pendiente contra GitHub real.** No se ha verificado el ciclo completo
-  con un PAT clásico real (`check` → `{ok:true}` y `create_issue` contra
-  `atareao/valet-ai` con comprobación del issue creado).
+- **E2E verificado contra GitHub real (2026-11-09).** Con un PAT clásico real
+  (usuario `atareao`, scopes `repo, workflow`): el router seleccionó la skill
+  `Github` (0.99), el turno creó el issue [#344](https://github.com/atareao/valet-ai/issues/344)
+  en `atareao/valet-ai` (`success:true`), `check` → `{ok:true}`, `GET /api/settings`
+  no expone `github_token` y ningún log lo filtra (0 coincidencias). El issue de
+  prueba se cerró después.
 - **Rotación del token.** La actualización del PAT se hace por su endpoint
   dedicado; no hay invalidación de caché que gestionar porque el token no se
   cachea.
