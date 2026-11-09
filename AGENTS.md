@@ -269,6 +269,15 @@ Lo que no se reabre sin orden explícita:
 - **Release y despliegue:** PRs **#325** (feature → `development`) y **#327** (`release/v0.32.0` → `main`), tag **v0.32.0**, imagen publicada por `image.yml`; desplegada en **`co1`** (Dockge) y verificada con `GET /api/health` → `{"version":"0.32.0"}`.
 - **Pendiente (sin tarea):** la **E2E real** contra OxiMeal — no está desplegado en `co1`; hará falta desplegarlo y crear el **cliente M2M** en PocketID (scopes arriba), luego `check → {ok:true}` y las 6 operaciones. Documentado en `docs/oximeal-integration.md`.
 
+**22. `create_recipe` documenta y envía `instructions` y `prep_time_minutes`; una receta deja de ser una ficha de la compra a medias.** Decidido y ejecutado el 2026-11-09 al cerrar el change `oximeal-recipe-instructions` (issue #334; PRs #335/#336; **v0.33.0** desplegada en `co1`, E2E confirmada por el usuario en el chat real). Lo que no se reabre sin orden explícita:
+
+- **El arreglo es de Valet, no de OxiMeal.** La Agent API de OxiMeal ya aceptaba `instructions: Option<String>` y `prep_time_minutes: Option<i64>` en su `RecipeInput`; el hueco era el contrato de la herramienta. **No se toca OxiMeal.**
+- **Causa raíz:** el JSON Schema del parámetro `recipe` de `create_recipe` y el fragmento `SKILL_MENUS_PROMPT` solo nombraban `name`/`category`/`ingredients`; `parse_recipe` ya hacía passthrough (no filtraba nada). El fallo era documental, no de datos.
+- **El esquema de `recipe` documenta** `instructions` y `prep_time_minutes` (y `servings`, `diet_type`, `source_url`, `tags`). Siguen **opcionales**: sin ellos la receta se crea igual (incompleta).
+- **El texto de `SKILL_MENUS_PROMPT` vive solo en migraciones**, no compilado en `skills.rs` (que solo declara `prompt_key`/`prompt_heading`), como el resto de skills. Se actualizó con la migración `20261109000001_oximeal_recipe_instructions.sql`: aditiva, idempotente y con guarda **byte a byte** (no pisa un fragmento editado por el usuario).
+- **`update_recipe` queda fuera de alcance:** la Agent API de OxiMeal **no expone `PUT/PATCH`**, así que no se pueden completar recetas ya creadas desde Valet.
+- **Sin backfill** (decisión del usuario): las 14 recetas creadas el 2026-11-07 siguen sin instrucciones; para recuperarlas, recrearlas por chat o añadir `PUT/PATCH` a OxiMeal en un change futuro.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
@@ -319,6 +328,8 @@ La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se 
 | `plans/PLAN-019-ARCHIVED.md` | Actualización del frontend a React 19 con react-leaflet 5 y chart.js 4.6.1, etapa B (change `frontend-react19-antd6`) | ✅ Completado |
 | `plans/PLAN-020-ARCHIVED.md` | El panel `Stats → Sistema → Tool Usage` deja de salir vacío: el orquestador persiste `llm_requests.tool_calls` (change `tool-usage-stats`; PRs #323/#324, v0.31.1) | ✅ Completado |
 | `plans/PLAN-021-ARCHIVED.md` | Integración de OxiMeal: recetas, planificación de menús y lista de la compra vía Agent API | ✅ Archivado (E2E pendiente) |
+| `plans/PLAN-022-ARCHIVED.md` | Parámetro `resource` (RFC 8707) en el token M2M de Valet hacia OxiMeal (change `oximeal-m2m-resource`; v0.32.1) | ✅ Completado |
+| `plans/PLAN-023-ARCHIVED.md` | OxiMeal: `create_recipe` documenta y envía instrucciones y tiempo de preparación (change `oximeal-recipe-instructions`; issue #334, PRs #335/#336, v0.33.0) | ✅ Completado |
 
 > Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
