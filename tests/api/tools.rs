@@ -4,6 +4,7 @@ use common::TestApp;
 use axum::http::StatusCode;
 use valet::db::repos::settings::SettingsRepo;
 use valet::orchestrator::skills::catalog;
+use valet::tools::permission::Permission;
 
 #[tokio::test]
 async fn test_list_tools() {
@@ -176,7 +177,7 @@ async fn test_list_tools_includes_the_timeline_tools() {
 async fn test_list_skills_returns_the_catalog_and_core_tools() {
     // Given the closed thirteen-domain skills catalog lives in code
     // When GET /api/skills is called
-    // Then it returns the thirteen skills (with their prompt fragment key and
+    // Then it returns the fourteen skills (with their prompt fragment key and
     //      tools) and the non-routable core set, sourced from the catalog.
     let app = TestApp::new().await;
 
@@ -187,7 +188,7 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
     let skills = body["skills"]
         .as_array()
         .expect("GET /api/skills must return a `skills` array");
-    assert_eq!(skills.len(), 13, "the closed catalog has thirteen skills");
+    assert_eq!(skills.len(), 14, "the closed catalog has fourteen skills");
 
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
     for expected in [
@@ -204,6 +205,7 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
         "blog",
         "zennotes",
         "menus",
+        "github",
     ] {
         assert!(
             ids.contains(&expected),
@@ -299,6 +301,56 @@ async fn test_list_skills_catalog_tools_exist_in_the_production_registry() {
             "catalog tool {tool} must exist in the production registry: {registry_names:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn test_github_tool_is_offered_with_notify_permission() {
+    // Given the production registry and the `github` skill enabled
+    // When the definitions of the skill's tool subset are requested
+    // Then the `github` definition is offered and its `create_issue` operation
+    //      declares `Notify` (a write that warns without requiring approval).
+    let app = TestApp::new().await;
+
+    let resp = app.get("/api/skills").await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.json::<serde_json::Value>().await;
+
+    let github = body["skills"]
+        .as_array()
+        .expect("GET /api/skills must return a `skills` array")
+        .iter()
+        .find(|s| s["id"] == "github")
+        .expect("the catalog must declare the `github` skill");
+    let tools: Vec<&str> = github["tools"]
+        .as_array()
+        .expect("the `github` skill must expose a `tools` array")
+        .iter()
+        .filter_map(|t| t.as_str())
+        .collect();
+    assert!(
+        tools.contains(&"github"),
+        "the `github` skill must cover the `github` tool: {tools:?}"
+    );
+
+    let registry = valet::build_tool_registry(&app.db);
+    let offered: Vec<String> = registry
+        .definitions_for(&tools)
+        .iter()
+        .map(|def| def.name.clone())
+        .collect();
+    assert!(
+        offered.contains(&"github".to_string()),
+        "the `github` definition must be offered to the model: {offered:?}"
+    );
+
+    let tool = registry
+        .get("github")
+        .expect("the `github` tool must be in the production registry");
+    assert_eq!(tool.name(), "github");
+    assert_eq!(
+        tool.permission(&serde_json::json!({ "operation": "create_issue" })),
+        Permission::Notify
+    );
 }
 
 #[tokio::test]

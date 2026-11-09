@@ -115,6 +115,8 @@ export interface SettingsFormValues {
   oximeal_client_id: string;
   blog_base_url: string;
   blog_service_user: string;
+  github_default_repo: string;
+  github_default_labels: string;
   MEMORY_HALF_LIFE_DAYS: number;
   SIMILARITY_THRESHOLD: number;
   RAG_BUDGET_TOKENS: number;
@@ -202,6 +204,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         oximeal_client_id: settings.oximeal_client_id || "",
         blog_base_url: settings.blog_base_url || "",
         blog_service_user: settings.blog_service_user || "",
+        github_default_repo: settings.github_default_repo || "",
+        github_default_labels: settings.github_default_labels || "",
         MEMORY_HALF_LIFE_DAYS: parseFloat(
           settings.MEMORY_HALF_LIFE_DAYS || "90",
         ),
@@ -340,6 +344,10 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         blog_base_url: values.blog_base_url ?? settings?.blog_base_url ?? "",
         blog_service_user:
           values.blog_service_user ?? settings?.blog_service_user ?? "",
+        github_default_repo:
+          values.github_default_repo ?? settings?.github_default_repo ?? "",
+        github_default_labels:
+          values.github_default_labels ?? settings?.github_default_labels ?? "",
         MEMORY_HALF_LIFE_DAYS: (
           values.MEMORY_HALF_LIFE_DAYS ??
           parseFloat(settings?.MEMORY_HALF_LIFE_DAYS || "90")

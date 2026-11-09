@@ -278,6 +278,15 @@ Lo que no se reabre sin orden explícita:
 - **`update_recipe` queda fuera de alcance:** la Agent API de OxiMeal **no expone `PUT/PATCH`**, así que no se pueden completar recetas ya creadas desde Valet.
 - **Sin backfill** (decisión del usuario): las 14 recetas creadas el 2026-11-07 siguen sin instrucciones; para recuperarlas, recrearlas por chat o añadir `PUT/PATCH` a OxiMeal en un change futuro.
 
+**23. Las credenciales del blog ya no viven en el entorno: se configuran en Ajustes, y la vía de respuesta depende de un aprovisionamiento en el sitio.** Decidido y ejecutado el 2026-11-09 al cerrar el change `wordpress-credentials-settings` (issue #332; PRs #338/#339; **v0.34.0** desplegada en `co1`). Las herramientas del blog (`blog_comment_reply`, `blog_comment_delete`) resuelven sus credenciales **solo** desde `settings` (`blog_base_url` por defecto `https://atareao.es`, `blog_service_user`, `blog_app_password`); se **retiró el respaldo por variables de entorno `BLOG_*`** (fuera de `.env.example`, `.env.j2` y `.env.prod.sample`). Lo que no se reabre sin orden explícita:
+
+- **`blog_app_password` es sensible** (mismo molde que `zennotes_token` y `opentodo_token`): `GET /api/settings` la omite y `PUT /api/settings` la ignora; la única puerta es `PUT /api/blog/password` (`{"password"}`; `400` vacío / `204` ok). El campo del frontend (`BlogSection.tsx`) arranca **siempre vacío**.
+- **`GET /api/blog/status` → `{configured, base_url, user}`** (nunca la contraseña); `configured` exige usuario y contraseña.
+- **`GET /api/blog/check` es la sonda real** (`GET <base>/wp-json/wp/v2/users/me` con la credencial; siempre `200` con `{ok, detail}`).
+- **Nueva sub-pestaña «Blog»** en Ajustes → Integraciones.
+- **La E2E destapó que la credencial no basta:** el sitio (plugin `atareao-functionality`) elimina la ruta de **colección** `POST /wp-json/wp/v2/comments` salvo para el «usuario de servicio», identidad leída de la opción WP `atareao_valet_reply_user`. Estaba **sin aprovisionar** (default `0`), así que toda respuesta daba `404 rest_no_route`. **No es un bug de Valet.** Se aprovisionó en producción (`wp option update atareao_valet_reply_user 3`, el ID de `yyyxfsgj`) y la E2E pasó. El arreglo definitivo (aprovisionar desde la UI del plugin) queda en `atareao/atareao.es#175`; el endurecimiento del consumidor, en `atareao/valet-ai#340`.
+- **Observación:** la cuenta de servicio es `yyyxfsgj` con rol **administrator**, cuando el plugin recomienda un usuario dedicado con rol mínimo (`read` + `moderate_comments`). Sin tarea asignada.
+
 ---
 
 ## VI. GESTIÓN DE PLANES (`plans/`)
@@ -330,6 +339,7 @@ La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se 
 | `plans/PLAN-021-ARCHIVED.md` | Integración de OxiMeal: recetas, planificación de menús y lista de la compra vía Agent API | ✅ Archivado (E2E pendiente) |
 | `plans/PLAN-022-ARCHIVED.md` | Parámetro `resource` (RFC 8707) en el token M2M de Valet hacia OxiMeal (change `oximeal-m2m-resource`; v0.32.1) | ✅ Completado |
 | `plans/PLAN-023-ARCHIVED.md` | OxiMeal: `create_recipe` documenta y envía instrucciones y tiempo de preparación (change `oximeal-recipe-instructions`; issue #334, PRs #335/#336, v0.33.0) | ✅ Completado |
+| `plans/PLAN-025.md` | Integración con GitHub: crear issues desde Valet por conversación (change `github-integration`; issue #333) | 🔄 En curso |
 
 > Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

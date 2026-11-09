@@ -1,6 +1,6 @@
 [package]
 name = "valet"
-version = "0.34.0"
+version = "0.35.0"
 edition = "2021"
 autobins = false
 
@@ -245,3 +245,11 @@ path = "tests/api/blog.rs"
 [[test]]
 name = "blog-credentials-migration"
 path = "tests/db/blog_credentials_migration.rs"
+
+[[test]]
+name = "github-api"
+path = "tests/api/github.rs"
+
+[[test]]
+name = "github-migration"
+path = "tests/db/github_migration.rs"

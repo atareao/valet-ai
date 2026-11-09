@@ -483,6 +483,27 @@ export interface BlogCheckResult {
   detail: string;
 }
 
+/**
+ * Estado de la configuración de GitHub (`GET /api/github/status`). Espejo del
+ * contrato del backend: **nunca** incluye el token, solo si hay uno resuelto
+ * (`configured`) y el repositorio por defecto vigente (`default_repo`).
+ */
+export interface GithubStatus {
+  configured: boolean;
+  default_repo: string;
+}
+
+/**
+ * Resultado del sondeo activo de la conexión (`GET /api/github/check`). La ruta
+ * responde **siempre** `200`: `ok` indica si la API de GitHub atendió la
+ * petición y `detail` lleva el motivo legible en español. Nunca incluye el
+ * token.
+ */
+export interface GithubCheckResult {
+  ok: boolean;
+  detail: string;
+}
+
 /** Respuesta de `GET /api/push/vapid-key`: la clave pública VAPID en base64url. */
 export interface VapidKeyResponse {
   public_key: string;

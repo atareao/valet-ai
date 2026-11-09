@@ -1,6 +1,7 @@
 pub mod blog;
 pub mod chat;
 pub mod events;
+pub mod github;
 pub mod journal;
 pub mod memories;
 pub mod messages;
