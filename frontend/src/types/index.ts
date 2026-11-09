@@ -461,6 +461,28 @@ export interface OximealCheckResult {
   detail: string;
 }
 
+/**
+ * Estado de la configuración del Blog (`GET /api/blog/status`). Espejo del
+ * contrato del backend: **nunca** incluye la contraseña de aplicación, solo si
+ * hay credenciales resueltas (`configured`) y los valores efectivos de
+ * `base_url`/`user`.
+ */
+export interface BlogStatus {
+  configured: boolean;
+  base_url: string;
+  user: string;
+}
+
+/**
+ * Resultado del sondeo activo de la conexión (`GET /api/blog/check`). La ruta
+ * responde **siempre** `200`: `ok` indica si WordPress atendió la petición y
+ * `detail` lleva el motivo legible en español. Nunca incluye la contraseña.
+ */
+export interface BlogCheckResult {
+  ok: boolean;
+  detail: string;
+}
+
 /** Respuesta de `GET /api/push/vapid-key`: la clave pública VAPID en base64url. */
 export interface VapidKeyResponse {
   public_key: string;

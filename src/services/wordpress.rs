@@ -2,18 +2,22 @@
 //!
 //! Publica respuestas a comentarios del blog autenticándose con una
 //! **Application Password** mediante `Authorization: Basic`. La credencial se
-//! resuelve de las variables de entorno `BLOG_BASE_URL`, `BLOG_SERVICE_USER` y
-//! `BLOG_APP_PASSWORD` en **cada llamada**, jamás se guarda en el cliente, y
-//! **nunca** aparece en un `Debug`, un log o el mensaje de un
-//! [`WordpressError`]. El `Authorization` se construye en el momento de la
-//! petición.
+//! resuelve de los ajustes (tabla `settings`: `blog_base_url`,
+//! `blog_service_user` y `blog_app_password`) en **cada llamada**, **sin**
+//! respaldo de variables de entorno, jamás se guarda en el cliente, y **nunca**
+//! aparece en un `Debug`, un log o el mensaje de un [`WordpressError`]. El
+//! `Authorization` se construye en el momento de la petición.
 //!
 //! Es el molde de [`crate::services::miniflux`] y [`crate::services::apimail`]:
 //! base inyectable, `User-Agent` propio, timeout y traducción de cada desenlace
 //! a un error tipado. **No se reintenta**: cada invocación envía una sola
 //! petición, también ante un `429` o un `5xx`.
 
-/// URL base por defecto cuando `BLOG_BASE_URL` no está definida.
+use sqlx::SqlitePool;
+
+use crate::db::repos::settings::SettingsRepo;
+
+/// URL base por defecto cuando el ajuste `blog_base_url` no tiene valor.
 pub const DEFAULT_BASE_URL: &str = "https://atareao.es";
 
 /// User-Agent propio del cliente.
@@ -24,6 +28,9 @@ const REQUEST_TIMEOUT_SECS: u64 = 15;
 
 /// Ruta del endpoint de comentarios de la API REST del núcleo.
 const COMMENTS_PATH: &str = "/wp-json/wp/v2/comments";
+
+/// Ruta del endpoint que identifica al usuario autenticado (sonda de conexión).
+const ME_PATH: &str = "/wp-json/wp/v2/users/me";
 
 /// Longitud máxima del extracto del comentario que viaja como **evidencia** al
 /// modelo, en caracteres.
@@ -38,7 +45,7 @@ const MAX_EXCERPT_CHARS: usize = 200;
 /// `Authorization`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WordpressError {
-    /// Faltan una o varias variables de entorno; se nombran las que faltan.
+    /// Faltan uno o varios ajustes; se nombran los que faltan.
     MissingCredentials { missing: Vec<&'static str> },
     /// `401` — la credencial no es válida o ha caducado.
     Unauthorized,
@@ -72,14 +79,14 @@ impl std::fmt::Display for WordpressError {
         match self {
             WordpressError::MissingCredentials { missing } => write!(
                 f,
-                "faltan variables de entorno del blog: {}; define el usuario de \
-                 servicio y su Application Password",
+                "faltan ajustes del blog: {}; configúralos en Ajustes → \
+                 Integraciones → Blog (usuario de servicio y Application Password)",
                 missing.join(", ")
             ),
             WordpressError::Unauthorized => write!(
                 f,
                 "la credencial de servicio del blog no es válida o ha caducado \
-                 (revisa BLOG_SERVICE_USER y BLOG_APP_PASSWORD)"
+                 (revisa el usuario y la contraseña en Ajustes → Integraciones → Blog)"
             ),
             WordpressError::Forbidden => write!(
                 f,
@@ -134,9 +141,9 @@ impl std::error::Error for WordpressError {}
 pub struct WordpressConfig {
     /// URL base del sitio (sin barra final).
     pub base_url: String,
-    /// Usuario de servicio (`BLOG_SERVICE_USER`).
+    /// Usuario de servicio (ajuste `blog_service_user`).
     pub service_user: String,
-    /// Application Password (`BLOG_APP_PASSWORD`).
+    /// Application Password (ajuste `blog_app_password`).
     pub app_password: String,
     /// Timeout de cada petición. Es **inyectable** para que los tests no
     /// dependan de la carrera entre un reloj pausado y un servidor lento; en
@@ -228,16 +235,18 @@ impl Wordpress {
         }
     }
 
-    /// Resuelve la configuración de las variables de entorno en **cada
-    /// llamada**: `BLOG_BASE_URL` (con [`DEFAULT_BASE_URL`] por defecto),
-    /// `BLOG_SERVICE_USER` y `BLOG_APP_PASSWORD`. Sin usuario o sin contraseña
-    /// devuelve [`WordpressError::MissingCredentials`] nombrando las variables
-    /// que faltan, **sin** salir a la red.
-    pub fn resolve_config() -> Result<WordpressConfig, WordpressError> {
-        let base_url =
-            env_nonempty("BLOG_BASE_URL").unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-        let service_user = env_nonempty("BLOG_SERVICE_USER");
-        let app_password = env_nonempty("BLOG_APP_PASSWORD");
+    /// Resuelve la configuración de los ajustes en **cada llamada**:
+    /// `blog_base_url` (con [`DEFAULT_BASE_URL`] por defecto),
+    /// `blog_service_user` y `blog_app_password`. **No** hay respaldo de
+    /// variables de entorno. Sin usuario o sin contraseña devuelve
+    /// [`WordpressError::MissingCredentials`] nombrando los ajustes que faltan,
+    /// **sin** salir a la red.
+    pub async fn resolve_config(pool: &SqlitePool) -> Result<WordpressConfig, WordpressError> {
+        let base_url = setting_value(pool, "blog_base_url")
+            .await
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+        let service_user = setting_value(pool, "blog_service_user").await;
+        let app_password = setting_value(pool, "blog_app_password").await;
 
         match (service_user, app_password) {
             (Some(service_user), Some(app_password)) => Ok(WordpressConfig {
@@ -247,15 +256,39 @@ impl Wordpress {
                 timeout: WordpressConfig::default_timeout(),
             }),
             (None, None) => Err(WordpressError::MissingCredentials {
-                missing: vec!["BLOG_SERVICE_USER", "BLOG_APP_PASSWORD"],
+                missing: vec!["blog_service_user", "blog_app_password"],
             }),
             (None, Some(_)) => Err(WordpressError::MissingCredentials {
-                missing: vec!["BLOG_SERVICE_USER"],
+                missing: vec!["blog_service_user"],
             }),
             (Some(_), None) => Err(WordpressError::MissingCredentials {
-                missing: vec!["BLOG_APP_PASSWORD"],
+                missing: vec!["blog_app_password"],
             }),
         }
+    }
+
+    /// Sonda la conexión real: `GET {base}/wp-json/wp/v2/users/me` con
+    /// `Authorization: Basic` (construida en el momento de la petición). Un
+    /// `200` es éxito; un `401`/`403` es una credencial rechazada
+    /// ([`WordpressError::Unauthorized`] / [`WordpressError::Forbidden`,
+    /// distintas de una caída) y cualquier otro desenlace se traduce a un
+    /// [`WordpressError`]. No se reintenta.
+    pub async fn check_connection(&self, config: &WordpressConfig) -> Result<(), WordpressError> {
+        let response = self
+            .http
+            .get(format!("{}{ME_PATH}", self.base_url))
+            .basic_auth(&config.service_user, Some(&config.app_password))
+            .send()
+            .await
+            .map_err(|_| WordpressError::Unavailable)?;
+
+        let status = response.status().as_u16();
+        if status == 200 {
+            return Ok(());
+        }
+
+        let code = extract_code(response).await;
+        Err(error_from_status(status, code))
     }
 
     /// `POST {base}/wp-json/wp/v2/comments` con el cuerpo `{post, parent,
@@ -375,10 +408,14 @@ impl Wordpress {
     }
 }
 
-/// Lee una variable de entorno y la `trim`ea; `None` si falta o está en blanco.
-fn env_nonempty(key: &str) -> Option<String> {
-    std::env::var(key)
+/// Lee un ajuste de `settings` y lo `trim`ea; `None` si falta, está en blanco o
+/// la lectura falla (un error de la base de datos se trata como ausencia, nunca
+/// como pánico).
+async fn setting_value(pool: &SqlitePool, key: &str) -> Option<String> {
+    SettingsRepo::get(pool, key)
+        .await
         .ok()
+        .flatten()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
 }
@@ -480,6 +517,8 @@ mod tests {
     use super::*;
     use base64::Engine;
     use serial_test::serial;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::SqlitePool;
     use wiremock::matchers::{body_json, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -488,6 +527,31 @@ mod tests {
             Some(value) => std::env::set_var(key, value),
             None => std::env::remove_var(key),
         }
+    }
+
+    /// BD en memoria con todas las migraciones aplicadas (la tabla `settings`
+    /// existe y ya trae los ajustes de Blog sembrados).
+    async fn setup_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .expect("pool en memoria");
+        crate::db::schema::run_migrations(&pool)
+            .await
+            .expect("migraciones");
+        pool
+    }
+
+    /// Fija un ajuste como lo haría el usuario desde Ajustes.
+    async fn seed(pool: &SqlitePool, key: &str, value: &str) {
+        crate::db::repos::settings::SettingsRepo::set(pool, key, value)
+            .await
+            .expect("sembrar ajuste");
     }
 
     /// Configuración apuntando al servidor de prueba con credenciales conocidas.
@@ -513,47 +577,72 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Scenario: la configuración se resuelve de nuevo en cada llamada, de modo
-    /// que un cambio en el entorno surte efecto sin reiniciar.
-    #[test]
-    #[serial]
-    fn resolve_config_reads_env_each_call() {
-        set_env("BLOG_SERVICE_USER", Some("alice"));
-        set_env("BLOG_APP_PASSWORD", Some("uno"));
-        set_env("BLOG_BASE_URL", Some("https://blog.test"));
+    /// que un cambio en Ajustes surte efecto sin reiniciar.
+    #[tokio::test]
+    async fn resolve_config_reads_settings_each_call() {
+        let pool = setup_pool().await;
+        seed(&pool, "blog_base_url", "https://blog.test").await;
+        seed(&pool, "blog_service_user", "alice").await;
+        seed(&pool, "blog_app_password", "uno").await;
 
-        let first = Wordpress::resolve_config().unwrap();
+        let first = Wordpress::resolve_config(&pool).await.unwrap();
         assert_eq!(first.service_user, "alice");
         assert_eq!(first.app_password, "uno");
         assert_eq!(first.base_url, "https://blog.test");
 
-        set_env("BLOG_SERVICE_USER", Some("bob"));
-        set_env("BLOG_APP_PASSWORD", Some("dos"));
-        let second = Wordpress::resolve_config().unwrap();
+        seed(&pool, "blog_service_user", "bob").await;
+        seed(&pool, "blog_app_password", "dos").await;
+        let second = Wordpress::resolve_config(&pool).await.unwrap();
         assert_eq!(second.service_user, "bob");
         assert_eq!(second.app_password, "dos");
+    }
+
+    /// Scenario: la configuración NO lee el entorno, aunque las variables
+    /// `BLOG_*` estén definidas.
+    #[tokio::test]
+    #[serial]
+    async fn resolve_config_ignores_the_environment() {
+        set_env("BLOG_SERVICE_USER", Some("env-user"));
+        set_env("BLOG_APP_PASSWORD", Some("env-pass"));
+        set_env("BLOG_BASE_URL", Some("https://env.test"));
+
+        let pool = setup_pool().await;
+        seed(&pool, "blog_service_user", "alice").await;
+        seed(&pool, "blog_app_password", "uno").await;
+
+        let config = Wordpress::resolve_config(&pool).await.unwrap();
+        assert_eq!(config.service_user, "alice", "el usuario sale de settings");
+        assert_eq!(config.app_password, "uno", "la contraseña sale de settings");
+        assert_ne!(config.service_user, "env-user");
+        assert_eq!(
+            config.base_url, DEFAULT_BASE_URL,
+            "el entorno no fija la URL"
+        );
 
         set_env("BLOG_SERVICE_USER", None);
         set_env("BLOG_APP_PASSWORD", None);
         set_env("BLOG_BASE_URL", None);
     }
 
-    /// Scenario: sin usuario ni contraseña el error nombra **las dos** variables
-    /// que faltan y no hay ninguna petición.
+    /// Scenario: sin usuario ni contraseña el error nombra **los dos ajustes**
+    /// que faltan, remite a Ajustes → Integraciones → Blog y no toca la red.
     #[tokio::test]
-    #[serial]
-    async fn missing_credentials_names_both_variables() {
+    async fn missing_credentials_names_both_settings() {
         let server = MockServer::start().await;
-        set_env("BLOG_SERVICE_USER", None);
-        set_env("BLOG_APP_PASSWORD", None);
+        let pool = setup_pool().await;
 
-        let err = Wordpress::resolve_config().unwrap_err();
+        let err = Wordpress::resolve_config(&pool).await.unwrap_err();
         let message = err.to_string();
         assert!(
             matches!(&err, WordpressError::MissingCredentials { .. }),
             "err: {err:?}"
         );
-        assert!(message.contains("BLOG_SERVICE_USER"), "{message}");
-        assert!(message.contains("BLOG_APP_PASSWORD"), "{message}");
+        assert!(message.contains("blog_service_user"), "{message}");
+        assert!(message.contains("blog_app_password"), "{message}");
+        assert!(
+            message.contains("Ajustes") && message.contains("Blog"),
+            "el error debe remitir a Ajustes → Integraciones → Blog: {message}"
+        );
 
         // Sin credenciales no se envía nada.
         assert!(
@@ -562,39 +651,35 @@ mod tests {
         );
     }
 
-    /// Scenario: sin contraseña (pero con usuario) el error nombra la variable
+    /// Scenario: sin contraseña (pero con usuario) el error nombra el ajuste
     /// que falta.
-    #[test]
-    #[serial]
-    fn missing_password_names_it() {
-        set_env("BLOG_SERVICE_USER", Some("alice"));
-        set_env("BLOG_APP_PASSWORD", None);
+    #[tokio::test]
+    async fn missing_password_names_it() {
+        let pool = setup_pool().await;
+        seed(&pool, "blog_service_user", "alice").await;
 
-        let err = Wordpress::resolve_config().unwrap_err();
+        let err = Wordpress::resolve_config(&pool).await.unwrap_err();
         let message = err.to_string();
-        assert!(message.contains("BLOG_APP_PASSWORD"), "{message}");
+        assert!(message.contains("blog_app_password"), "{message}");
         assert!(
-            !message.contains("BLOG_SERVICE_USER"),
-            "no debe nombrar la variable presente: {message}"
+            !message.contains("blog_service_user"),
+            "no debe nombrar el ajuste presente: {message}"
         );
-
-        set_env("BLOG_SERVICE_USER", None);
     }
 
-    /// Scenario: sin `BLOG_BASE_URL` la base es `https://atareao.es`.
-    #[test]
-    #[serial]
-    fn resolve_config_defaults_base_url() {
-        set_env("BLOG_BASE_URL", None);
-        set_env("BLOG_SERVICE_USER", Some("alice"));
-        set_env("BLOG_APP_PASSWORD", Some("uno"));
+    /// Scenario: sin `blog_base_url` la base es `https://atareao.es`.
+    #[tokio::test]
+    async fn resolve_config_defaults_base_url() {
+        let pool = setup_pool().await;
+        // El sembrado de la migración deja `blog_base_url` con el default; lo
+        // vaciamos para probar la ausencia del valor.
+        seed(&pool, "blog_base_url", "").await;
+        seed(&pool, "blog_service_user", "alice").await;
+        seed(&pool, "blog_app_password", "uno").await;
 
-        let config = Wordpress::resolve_config().unwrap();
+        let config = Wordpress::resolve_config(&pool).await.unwrap();
         assert_eq!(config.base_url, "https://atareao.es");
         assert_eq!(config.base_url, DEFAULT_BASE_URL);
-
-        set_env("BLOG_SERVICE_USER", None);
-        set_env("BLOG_APP_PASSWORD", None);
     }
 
     /// Scenario: la petición va a `/wp-json/wp/v2/comments` con `Authorization:
@@ -925,28 +1010,110 @@ mod tests {
     }
 
     /// Scenario: el timeout inyectado **no** cambia el valor de producción: la
-    /// configuración resuelta del entorno lleva siempre el timeout por defecto
+    /// configuración resuelta de los ajustes lleva siempre el timeout por defecto
     /// de 15 s, y el atajo de test no lo altera.
-    #[test]
-    #[serial]
-    fn production_timeout_is_fifteen_seconds() {
+    #[tokio::test]
+    async fn production_timeout_is_fifteen_seconds() {
         assert_eq!(
             WordpressConfig::default_timeout(),
             std::time::Duration::from_secs(15),
             "el timeout de producción debe ser 15 s"
         );
 
-        set_env("BLOG_SERVICE_USER", Some("alice"));
-        set_env("BLOG_APP_PASSWORD", Some("uno"));
-        let config = Wordpress::resolve_config().unwrap();
+        let pool = setup_pool().await;
+        seed(&pool, "blog_service_user", "alice").await;
+        seed(&pool, "blog_app_password", "uno").await;
+        let config = Wordpress::resolve_config(&pool).await.unwrap();
         assert_eq!(
             config.timeout,
             WordpressConfig::default_timeout(),
             "resolve_config debe usar el timeout de producción"
         );
+    }
 
-        set_env("BLOG_SERVICE_USER", None);
-        set_env("BLOG_APP_PASSWORD", None);
+    // -----------------------------------------------------------------------
+    // Sonda de conexión (`check_connection`)
+    // -----------------------------------------------------------------------
+
+    /// Scenario: un `200` de `/wp-json/wp/v2/users/me` es conexión correcta.
+    #[tokio::test]
+    async fn check_connection_ok_on_200() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        Mock::given(method("GET"))
+            .and(path("/wp-json/wp/v2/users/me"))
+            .and(header(
+                "authorization",
+                expected_basic("alice", "s3cret-app-password").as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1,
+                "name": "alice"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Wordpress::new(config.base_url.clone());
+        client
+            .check_connection(&config)
+            .await
+            .expect("un 200 es conexión correcta");
+    }
+
+    /// Scenario: un `401` es credencial rechazada y la contraseña no aparece.
+    #[tokio::test]
+    async fn check_connection_401_is_unauthorized_without_leaking() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        Mock::given(method("GET"))
+            .and(path("/wp-json/wp/v2/users/me"))
+            .respond_with(ResponseTemplate::new(401).set_body_string(format!(
+                "bad: {}\nAuthorization: Basic xyz",
+                config.app_password
+            )))
+            .mount(&server)
+            .await;
+
+        let client = Wordpress::new(config.base_url.clone());
+        let err = client.check_connection(&config).await.unwrap_err();
+        assert!(matches!(&err, WordpressError::Unauthorized), "err: {err:?}");
+        let message = err.to_string();
+        assert!(!message.contains(&config.app_password), "{message}");
+        assert!(!message.contains("Authorization"), "{message}");
+    }
+
+    /// Scenario: un `403` también cuenta como credencial rechazada (distinta de
+    /// una caída).
+    #[tokio::test]
+    async fn check_connection_403_is_not_unavailable() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        Mock::given(method("GET"))
+            .and(path("/wp-json/wp/v2/users/me"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = Wordpress::new(config.base_url.clone());
+        let err = client.check_connection(&config).await.unwrap_err();
+        assert!(
+            !matches!(&err, WordpressError::Unavailable),
+            "un 403 no es una caída: {err:?}"
+        );
+    }
+
+    /// Scenario: un fallo de red es sitio no disponible.
+    #[tokio::test]
+    async fn check_connection_network_failure_is_unavailable() {
+        let config = WordpressConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            service_user: "alice".to_string(),
+            app_password: "s3cret".to_string(),
+            timeout: WordpressConfig::default_timeout(),
+        };
+        let client = Wordpress::new(config.base_url.clone());
+        let err = client.check_connection(&config).await.unwrap_err();
+        assert!(matches!(&err, WordpressError::Unavailable), "err: {err:?}");
     }
 
     // -----------------------------------------------------------------------

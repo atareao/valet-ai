@@ -183,13 +183,13 @@ fn validate_content(args: &Value) -> Result<String, ToolError> {
 /// herramienta exige aprobación explícita.
 pub struct BlogCommentReplyTool {
     db: SqlitePool,
-    /// Configuración inyectada (solo en tests); en producción se resuelve del
-    /// entorno en cada llamada.
+    /// Configuración inyectada (solo en tests); en producción se resuelve de los
+    /// ajustes en cada llamada.
     config: Option<WordpressConfig>,
 }
 
 impl BlogCommentReplyTool {
-    /// Herramienta de producción: la configuración se resuelve del entorno en
+    /// Herramienta de producción: la configuración se resuelve de los ajustes en
     /// cada llamada.
     pub fn new(db: SqlitePool) -> Self {
         Self { db, config: None }
@@ -204,11 +204,12 @@ impl BlogCommentReplyTool {
         }
     }
 
-    /// La configuración a usar: la inyectada o la resuelta del entorno.
-    fn resolve_config(&self) -> Result<WordpressConfig, ToolError> {
+    /// La configuración a usar: la inyectada o la resuelta de los ajustes.
+    async fn resolve_config(&self) -> Result<WordpressConfig, ToolError> {
         match &self.config {
             Some(config) => Ok(config.clone()),
-            None => Wordpress::resolve_config()
+            None => Wordpress::resolve_config(&self.db)
+                .await
                 .map_err(|error| ToolError::ExecutionError(error.to_string())),
         }
     }
@@ -365,7 +366,7 @@ impl Tool for BlogCommentReplyTool {
 
         // 2. Configuración: se resuelve en cada llamada; sin credenciales no se
         //    reserva ni se sale a la red.
-        let config = self.resolve_config()?;
+        let config = self.resolve_config().await?;
 
         // 3. Reserva atómica **antes** de la red. Si ya hay una fila en
         //    `reserved`, `published` o `uncertain`, no se publica y se informa.
@@ -509,13 +510,13 @@ fn releases_reservation(error: &WordpressError) -> bool {
 /// trata como éxito; la herramienta no tiene tabla, reserva ni contador propios.
 pub struct BlogCommentDeleteTool {
     db: SqlitePool,
-    /// Configuración inyectada (solo en tests); en producción se resuelve del
-    /// entorno en cada llamada.
+    /// Configuración inyectada (solo en tests); en producción se resuelve de los
+    /// ajustes en cada llamada.
     config: Option<WordpressConfig>,
 }
 
 impl BlogCommentDeleteTool {
-    /// Herramienta de producción: la configuración se resuelve del entorno en
+    /// Herramienta de producción: la configuración se resuelve de los ajustes en
     /// cada llamada.
     pub fn new(db: SqlitePool) -> Self {
         Self { db, config: None }
@@ -530,11 +531,12 @@ impl BlogCommentDeleteTool {
         }
     }
 
-    /// La configuración a usar: la inyectada o la resuelta del entorno.
-    fn resolve_config(&self) -> Result<WordpressConfig, ToolError> {
+    /// La configuración a usar: la inyectada o la resuelta de los ajustes.
+    async fn resolve_config(&self) -> Result<WordpressConfig, ToolError> {
         match &self.config {
             Some(config) => Ok(config.clone()),
-            None => Wordpress::resolve_config()
+            None => Wordpress::resolve_config(&self.db)
+                .await
                 .map_err(|error| ToolError::ExecutionError(error.to_string())),
         }
     }
@@ -576,7 +578,7 @@ impl Tool for BlogCommentDeleteTool {
 
         // 2. Configuración: se resuelve en cada llamada; sin credenciales no se
         //    sale a la red.
-        let config = self.resolve_config()?;
+        let config = self.resolve_config().await?;
 
         let client = Wordpress::with_timeout(config.base_url.clone(), config.timeout);
 
@@ -1999,20 +2001,46 @@ mod tests {
     }
 
     #[tokio::test]
-    #[serial]
     async fn delete_without_credentials_sends_no_request() {
         let server = MockServer::start().await;
         let pool = setup_db().await;
         let args = delete_args(&pool, "901", "42").await;
-        std::env::remove_var("BLOG_SERVICE_USER");
-        std::env::remove_var("BLOG_APP_PASSWORD");
 
         let tool = BlogCommentDeleteTool::new(pool);
         let err = tool.execute(args).await.unwrap_err();
         let message = err.to_string();
-        assert!(message.contains("BLOG_SERVICE_USER"), "{message}");
-        assert!(message.contains("BLOG_APP_PASSWORD"), "{message}");
+        assert!(message.contains("blog_service_user"), "{message}");
+        assert!(message.contains("blog_app_password"), "{message}");
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    /// Scenario: con `BLOG_SERVICE_USER`/`BLOG_APP_PASSWORD` definidas pero los
+    /// ajustes vacíos, la herramienta falla **sin leer el entorno** y sin enviar
+    /// ninguna petición.
+    #[tokio::test]
+    #[serial]
+    async fn reply_with_env_but_empty_settings_fails_without_request() {
+        let server = MockServer::start().await;
+        let pool = setup_db().await;
+        std::env::set_var("BLOG_SERVICE_USER", "env-user");
+        std::env::set_var("BLOG_APP_PASSWORD", "env-pass");
+
+        let tool = BlogCommentReplyTool::new(pool);
+        let err = tool
+            .execute(json!({ "comment_id": "901", "post_id": "42", "content": "hola" }))
+            .await
+            .unwrap_err();
+
+        std::env::remove_var("BLOG_SERVICE_USER");
+        std::env::remove_var("BLOG_APP_PASSWORD");
+
+        let message = err.to_string();
+        assert!(message.contains("blog_service_user"), "{message}");
+        assert!(message.contains("blog_app_password"), "{message}");
+        assert!(
+            server.received_requests().await.unwrap().is_empty(),
+            "no debe leer el entorno ni salir a la red"
+        );
     }
 
     // ─── 5.3 — evidencia sin credenciales ────────────────────────────────────

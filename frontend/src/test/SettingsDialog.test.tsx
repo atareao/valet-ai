@@ -63,6 +63,13 @@ const mockCheckOpentodo = vi.fn();
 const mockGetOximealStatus = vi.fn();
 const mockSetOximealSecret = vi.fn();
 const mockCheckOximeal = vi.fn();
+// Spies sobre los endpoints dedicados del Blog: misma pauta que OpenTodo
+// (change `wordpress-credentials-settings`). `useBlog` es real, así que se
+// enruta al spy para que el indicador de la décima sub-pestaña sea determinista
+// y ningún test abra una petición real.
+const mockGetBlogStatus = vi.fn();
+const mockSetBlogPassword = vi.fn();
+const mockCheckBlog = vi.fn();
 
 // Fixture de settings devuelta por el hook mockeado (equivale a lo que
 // responde `GET /settings`). Es mutable para que cada test pueda simular
@@ -90,6 +97,8 @@ const defaultSettings: Record<string, string> = {
   oximeal_resource: "",
   oximeal_issuer_url: "",
   oximeal_client_id: "",
+  blog_base_url: "",
+  blog_service_user: "",
   MEMORY_HALF_LIFE_DAYS: "30",
   SIMILARITY_THRESHOLD: "0.4",
   RAG_BUDGET_TOKENS: "400",
@@ -317,6 +326,11 @@ vi.mock("../api/client", async () => {
       getOpentodoStatus: (...args: unknown[]) => mockGetOpentodoStatus(...args),
       setOpentodoToken: (...args: unknown[]) => mockSetOpentodoToken(...args),
       checkOpentodo: (...args: unknown[]) => mockCheckOpentodo(...args),
+      // Endpoints dedicados del Blog: mismo diferido (el factory se hoisted);
+      // solo se toca el spy cuando `useBlog` los invoca.
+      getBlogStatus: (...args: unknown[]) => mockGetBlogStatus(...args),
+      setBlogPassword: (...args: unknown[]) => mockSetBlogPassword(...args),
+      checkBlog: (...args: unknown[]) => mockCheckBlog(...args),
       // Estado de Strava: mismo diferido. Lo consume `useStrava` al montar
       // `StravaIntegration` dentro de «Integraciones».
       getStravaStatus: (...args: unknown[]) => mockGetStravaStatus(...args),
@@ -415,6 +429,18 @@ describe("SettingsDialog", () => {
     });
     mockSetOximealSecret.mockResolvedValue(undefined);
     mockCheckOximeal.mockResolvedValue({
+      ok: true,
+      detail: "conexión correcta",
+    });
+    // Por defecto el Blog no está configurado; los tests que lo necesiten fijan
+    // `configured: true` con `mockResolvedValue`.
+    mockGetBlogStatus.mockResolvedValue({
+      configured: false,
+      base_url: "https://atareao.es",
+      user: "",
+    });
+    mockSetBlogPassword.mockResolvedValue(undefined);
+    mockCheckBlog.mockResolvedValue({
       ok: true,
       detail: "conexión correcta",
     });
@@ -2691,7 +2717,8 @@ describe("SettingsDialog", () => {
   // ════════════════════════════════════════════════════════════════
 
   // Orden cerrado de las sub-pestañas de «Integraciones» (spec aprobada). La
-  // novena, «OxiMeal», la añade el change `oximeal-integration`.
+  // novena, «OxiMeal», la añade el change `oximeal-integration`; la décima,
+  // «Blog», el change `wordpress-credentials-settings`.
   const INTEGRATION_SUBTABS = [
     "Strava",
     "OpenWeatherMap",
@@ -2702,6 +2729,7 @@ describe("SettingsDialog", () => {
     "ZenNotes",
     "OpenTodo",
     "OxiMeal",
+    "Blog",
   ] as const;
 
   // Etiquetas de los campos de credencial que, tras el change, viven SOLO en
@@ -2729,15 +2757,16 @@ describe("SettingsDialog", () => {
   };
 
   // change `settings-tabs-vertical`: pestañas verticales
-  it("organiza «Integraciones» en nueve sub-pestañas verticales en el orden acordado", async () => {
+  it("organiza «Integraciones» en diez sub-pestañas verticales en el orden acordado", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
-    // Nueve sub-pestañas, con «OxiMeal» como novena al final del orden cerrado.
-    expect(INTEGRATION_SUBTABS).toHaveLength(9);
+    // Diez sub-pestañas, con «Blog» como décima al final del orden cerrado.
+    expect(INTEGRATION_SUBTABS).toHaveLength(10);
     expect(INTEGRATION_SUBTABS[8]).toBe("OxiMeal");
+    expect(INTEGRATION_SUBTABS[9]).toBe("Blog");
 
     const subTabs = INTEGRATION_SUBTABS.map((name) =>
       screen.getByRole("tab", {
@@ -3161,7 +3190,7 @@ describe("SettingsDialog", () => {
     await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
     const group = screen.getByRole("group", { name: "Integraciones" });
-    // Las nueve sub-pestañas viven dentro del grupo nombrado (no en el «Tabs»
+    // Las diez sub-pestañas viven dentro del grupo nombrado (no en el «Tabs»
     // de nivel superior).
     for (const name of INTEGRATION_SUBTABS) {
       expect(
@@ -3199,6 +3228,7 @@ describe("SettingsDialog", () => {
     });
     expect(mockGetZennotesStatus).toHaveBeenCalledTimes(1);
     expect(mockGetOpentodoStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetBlogStatus).toHaveBeenCalledTimes(1);
 
     // Y entrar en «Enrutador de skills» monta su control, que relee
     // `GET /api/settings` por su cuenta: la cuenta de lecturas al terminar la
@@ -3225,6 +3255,7 @@ describe("SettingsDialog", () => {
     expect(mockGetStravaStatus).toHaveBeenCalledTimes(1);
     expect(mockGetZennotesStatus).toHaveBeenCalledTimes(1);
     expect(mockGetOpentodoStatus).toHaveBeenCalledTimes(1);
+    expect(mockGetBlogStatus).toHaveBeenCalledTimes(1);
 
     // Reabrir remonta el panel y añade exactamente una lectura más de cada
     // endpoint: una por apertura, ni acumulada por sesión ni duplicada.
@@ -3235,6 +3266,7 @@ describe("SettingsDialog", () => {
     });
     expect(mockGetZennotesStatus).toHaveBeenCalledTimes(2);
     expect(mockGetOpentodoStatus).toHaveBeenCalledTimes(2);
+    expect(mockGetBlogStatus).toHaveBeenCalledTimes(2);
 
     // La pestaña del enrutador también se remonta de cero y su control relee
     // lo persistido en esta apertura: la cuenta de `GET /api/settings` supera
@@ -3732,6 +3764,152 @@ describe("SettingsDialog", () => {
         }),
       );
     });
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // Décima sub-pestaña «Blog» de «Integraciones» (change
+  // `wordpress-credentials-settings`): URL base y usuario por
+  // `PUT /api/settings`; contraseña por su endpoint dedicado; indicador de
+  // `GET /api/blog/status` y sondeo real por `GET /api/blog/check`.
+  // Escenarios: openspec/changes/wordpress-credentials-settings/specs/frontend
+  // ════════════════════════════════════════════════════════════════
+
+  it("el indicador del Blog sale de su endpoint y es visible sin abrir la sub-pestaña", async () => {
+    const user = userEvent.setup();
+    mockGetBlogStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://atareao.es",
+      user: "valet",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // Sin abrir la sub-pestaña «Blog»: el indicador ya es correcto.
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    expect(
+      await screen.findByRole("tab", {
+        name: /^Blog(?![a-zA-Z])[\s\S]*Configurado/,
+      }),
+    ).toBeInTheDocument();
+    expect(mockGetBlogStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("el indicador del Blog muestra «Sin configurar» cuando el estado es negativo", async () => {
+    const user = userEvent.setup();
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    expect(
+      await screen.findByRole("tab", {
+        name: /^Blog(?![a-zA-Z])[\s\S]*Sin configurar/,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("la contraseña del Blog arranca vacía aunque haya una guardada", async () => {
+    const user = userEvent.setup();
+    mockGetBlogStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://atareao.es",
+      user: "valet",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "Blog");
+
+    const field = await screen.findByLabelText("Blog · Application Password");
+    expect(field).toHaveAttribute("type", "password");
+    // Nunca se relee el valor guardado: el campo nace vacío.
+    expect((field as HTMLInputElement).value).toBe("");
+
+    // El estado «Configurado» se muestra en la línea de estado, no en el campo.
+    const region = screen.getByRole("region", { name: "Blog" });
+    expect(await within(region).findByText("Configurado")).toBeInTheDocument();
+  });
+
+  it("guarda la contraseña del Blog por su endpoint dedicado y no por PUT /api/settings", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "Blog");
+
+    const field = await screen.findByLabelText("Blog · Application Password");
+    await user.type(field, "app-password-nueva");
+    await user.click(screen.getByRole("button", { name: "Guardar contraseña" }));
+
+    await waitFor(() => {
+      expect(mockSetBlogPassword).toHaveBeenCalledWith("app-password-nueva");
+    });
+    // La contraseña nunca viaja por `PUT /api/settings`.
+    expect(mockUpdateSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({ blog_app_password: expect.anything() }),
+    );
+    // Y no se relee: el campo se limpia tras guardar.
+    await waitFor(() => {
+      expect(screen.getByLabelText("Blog · Application Password")).toHaveValue("");
+    });
+  });
+
+  it("guarda blog_base_url y blog_service_user por PUT /api/settings", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "Blog");
+
+    const region = await screen.findByRole("region", { name: "Blog" });
+    await user.type(
+      within(region).getByLabelText("Blog · URL base"),
+      "https://atareao.es",
+    );
+    await user.type(
+      within(region).getByLabelText("Blog · Usuario del servicio"),
+      "valet",
+    );
+
+    await user.click(within(region).getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          blog_base_url: "https://atareao.es",
+          blog_service_user: "valet",
+        }),
+      );
+    });
+  });
+
+  it("«Probar conexión» del Blog usa GET /api/blog/check, muestra el detail y no relee el estado", async () => {
+    const user = userEvent.setup();
+    mockCheckBlog.mockResolvedValue({
+      ok: false,
+      detail: "credenciales rechazadas",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "Blog");
+
+    const region = await screen.findByRole("region", { name: "Blog" });
+    await waitFor(() => expect(mockGetBlogStatus).toHaveBeenCalledTimes(1));
+    const statusReadsBeforeCheck = mockGetBlogStatus.mock.calls.length;
+
+    await user.click(
+      within(region).getByRole("button", { name: "Probar conexión" }),
+    );
+
+    await waitFor(() => expect(mockCheckBlog).toHaveBeenCalledTimes(1));
+    // El `detail` del veredicto se muestra como texto en la línea de estado.
+    expect(
+      await within(region).findByText("credenciales rechazadas"),
+    ).toBeInTheDocument();
+    // El sondeo no toca `GET /api/blog/status`.
+    expect(mockGetBlogStatus.mock.calls.length).toBe(statusReadsBeforeCheck);
   });
 
   // El botón refleja el sondeo **en curso**, no solo su resultado: con la
