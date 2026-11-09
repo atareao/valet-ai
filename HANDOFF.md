@@ -26,13 +26,24 @@ desplegado como **v0.36.0** en `co1` y verificado E2E. No queda ninguna tarea cr
   `plans/PLAN-026-ARCHIVED.md`, AGENTS §V entrada 25 + índice §VI, issue **#340** cerrado.
 - Auditoría `@rust-reviewer` sin bloqueantes; los 4 hallazgos aplicados (el más importante:
   anclar la autenticación del índice en el mock).
+- **Documentación** (PR #350 → `development`): `docs/android-http-shortcuts.md`, la receta para
+  lanzar avisos a Valet desde la app Android «Atajos HTTP» (clave de ingesta, atajo, azulejo de
+  ajustes rápidos, errores y límites), enlazada desde la sección `## 🔌 API` del `README.md`.
 
 ## Tarea pendiente / siguiente paso
 
-- Ninguna tarea crítica. Candidatas (sin asignar):
-  - **atareao.es #175**: aprovisionar `atareao_valet_reply_user` desde la UI del plugin (hoy es
-    un paso manual de WP-CLI).
-  - `frontend/src/test/dependency-stack.test.ts` solo cubre la etapa A de React 19 (etapa B sin cubrir).
+- **Ninguna tarea abierta.** `valet-ai` sin issues ni PRs, `openspec list` sin changes activos.
+- Candidatas (sin asignar, por orden de tamaño):
+  1. **`frontend/src/test/dependency-stack.test.ts` solo cubre la etapa A** de React 19 (etapa B:
+     React 19, react-leaflet 5, chart.js 4.6.1 sin cubrir). Alcance cerrado: un fichero de test, sin
+     código de producción. Endurecerlo haría fallar el CI si alguien baja esas versiones.
+  2. **atareao.es #175**: aprovisionar `atareao_valet_reply_user` desde la UI del plugin (hoy paso
+     manual de WP-CLI).
+  3. **«Token de chat» para el móvil** (solo si se pide): hoy solo `POST /api/notifications` admite
+     clave; leer la bandeja o mandar una frase al agente exige cookie OIDC de 8 h. Es superficie
+     nueva de autenticación: necesita change con spec, no un parche.
+- **Aparcado por decisión del usuario, no tocar sin orden:** `PLAN-004-PENDING` (roadmap v2) y
+  `PLAN-010-PENDING` (TTL de sesión de 8 h).
 
 ## Follow-ups conocidos
 
