@@ -3,6 +3,7 @@ pub mod blog;
 pub mod chat;
 pub mod events;
 pub mod export;
+pub mod github;
 pub mod ingest_keys;
 pub mod journal;
 pub mod memories;

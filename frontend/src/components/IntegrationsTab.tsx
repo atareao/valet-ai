@@ -5,6 +5,7 @@ import { useZennotes } from "../hooks/useZennotes";
 import { useOpentodo } from "../hooks/useOpentodo";
 import { useOximeal } from "../hooks/useOximeal";
 import { useBlog } from "../hooks/useBlog";
+import { useGithub } from "../hooks/useGithub";
 import type { SettingsMap } from "../types";
 import { KeyIntegration } from "./KeyIntegration";
 import { StravaIntegration } from "./StravaIntegration";
@@ -12,6 +13,7 @@ import { ZennotesSection } from "./ZennotesSection";
 import { OpentodoSection } from "./OpentodoSection";
 import { OximealSection } from "./OximealSection";
 import { BlogSection } from "./BlogSection";
+import { GithubSection } from "./GithubSection";
 import { isKeyConfigured, keyStatusLabel, UNAVAILABLE_LABEL } from "./integrationStatus";
 import { KEY_INTEGRATIONS } from "./keyIntegrations";
 
@@ -80,7 +82,7 @@ function remoteLabel(state: RemoteState, yes: string, no: string): string {
  * Pestaña «Integraciones» del diálogo de ajustes: un `Tabs` **anidado
  * horizontal** con una sub-pestaña por servicio, en el orden cerrado Strava,
  * OpenWeatherMap, Google Places, Brave Search, apimail, Miniflux, ZenNotes,
- * OpenTodo, OxiMeal y Blog.
+ * OpenTodo, OxiMeal, Blog y GitHub.
  *
  * Los `Form.Item` de las cinco integraciones de clave cuelgan del formulario de
  * ajustes del padre (`SettingsForm`), que envuelve a este componente; por eso
@@ -120,6 +122,7 @@ export function IntegrationsTab({
   const opentodoState = useOpentodo();
   const oximealState = useOximeal();
   const blogState = useBlog();
+  const githubState = useGithub();
 
   const strava: RemoteState = {
     ok: stravaState.status ? stravaState.status.connected : null,
@@ -141,12 +144,17 @@ export function IntegrationsTab({
     ok: blogState.status ? blogState.status.configured : null,
     error: blogState.error,
   };
+  const github: RemoteState = {
+    ok: githubState.status ? githubState.status.configured : null,
+    error: githubState.error,
+  };
 
   const stravaLabel = remoteLabel(strava, "Conectada", "No conectada");
   const zennotesLabel = remoteLabel(zennotes, "Configurado", "Sin configurar");
   const opentodoLabel = remoteLabel(opentodo, "Configurado", "Sin configurar");
   const oximealLabel = remoteLabel(oximeal, "Configurado", "Sin configurar");
   const blogLabel = remoteLabel(blog, "Configurado", "Sin configurar");
+  const githubLabel = remoteLabel(github, "Configurado", "Sin configurar");
 
   return (
     <Tabs
@@ -205,6 +213,12 @@ export function IntegrationsTab({
           label: tabLabel("Blog", blogLabel, blog.ok === true),
           forceRender: true,
           children: <BlogSection blogState={blogState} saving={saving} />,
+        },
+        {
+          key: "github",
+          label: tabLabel("GitHub", githubLabel, github.ok === true),
+          forceRender: true,
+          children: <GithubSection githubState={githubState} saving={saving} />,
         },
       ]}
     />

@@ -1,7 +1,15 @@
 # blog-api Specification
 
 ## Purpose
-TBD - created by archiving change wordpress-credentials-settings. Update Purpose after archive.
+
+Definir la superficie HTTP de la integración de Valet con el blog WordPress
+(`https://atareao.es`): la sonda de conexión (`GET /api/blog/check`), el estado
+(`GET /api/blog/status`) y la puerta dedicada para escribir la Application
+Password (`PUT /api/blog/password`). Fija además que `blog_app_password` es un
+ajuste **sensible** (omitido en `GET /api/settings` e ignorado en
+`PUT /api/settings`), mientras que `blog_base_url` y `blog_service_user` no lo
+son. El comportamiento de las herramientas del blog que consumen esta API
+(`blog_comment_reply`, `blog_comment_delete`) vive en la spec `blog-comments`.
 
 ## Requirements
 

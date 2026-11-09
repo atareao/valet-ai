@@ -339,6 +339,7 @@ La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se 
 | `plans/PLAN-021-ARCHIVED.md` | Integración de OxiMeal: recetas, planificación de menús y lista de la compra vía Agent API | ✅ Archivado (E2E pendiente) |
 | `plans/PLAN-022-ARCHIVED.md` | Parámetro `resource` (RFC 8707) en el token M2M de Valet hacia OxiMeal (change `oximeal-m2m-resource`; v0.32.1) | ✅ Completado |
 | `plans/PLAN-023-ARCHIVED.md` | OxiMeal: `create_recipe` documenta y envía instrucciones y tiempo de preparación (change `oximeal-recipe-instructions`; issue #334, PRs #335/#336, v0.33.0) | ✅ Completado |
+| `plans/PLAN-025.md` | Integración con GitHub: crear issues desde Valet por conversación (change `github-integration`; issue #333) | 🔄 En curso |
 
 > Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

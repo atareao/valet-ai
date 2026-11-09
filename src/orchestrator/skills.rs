@@ -27,6 +27,7 @@ pub enum Skill {
     Blog,
     Zennotes,
     Menus,
+    Github,
 }
 
 /// Especificación cerrada de una skill.
@@ -61,7 +62,7 @@ pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 13] = [
+static CATALOG: [SkillSpec; 14] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
@@ -232,6 +233,17 @@ static CATALOG: [SkillSpec; 13] = [
         prompt_key: "SKILL_MENUS_PROMPT",
         prompt_heading: "# SKILL ACTIVA: MENUS",
     },
+    SkillSpec {
+        skill: Skill::Github,
+        id: "github",
+        instructions: "¿La respuesta requiere abrir un issue en GitHub?",
+        criteria_true: "El mensaje pide crear o abrir una incidencia, un issue o un problema en un repositorio de GitHub, propio o de un proyecto («ábreme un issue», «crea una incidencia en el repo», «apunta esto como issue»). Cuenta también el nombre de un repositorio y la petición de reportar algo en él.",
+        criteria_false: "El mensaje no se refiere a crear un issue ni a un repositorio de GitHub. En particular, apuntar una idea o una nota suelta no es esta skill (es la store interna de `recuerdos`), ni lo es una tarea pendiente o un recordatorio (es `pendientes`), ni escribir en el vault de ZenNotes (es `zennotes`).",
+        threshold: 0.10,
+        tools: &["github"],
+        prompt_key: "SKILL_GITHUB_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: GITHUB",
+    },
 ];
 
 /// Catálogo cerrado de skills, en el orden canónico del sistema.
@@ -273,9 +285,9 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las trece variantes del enum, para exigir que el catálogo las cubra
+    /// Las catorce variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 13] = [
+    const ALL_SKILLS: [Skill; 14] = [
         Skill::Agenda,
         Skill::Pendientes,
         Skill::Recuerdos,
@@ -289,6 +301,7 @@ mod tests {
         Skill::Blog,
         Skill::Zennotes,
         Skill::Menus,
+        Skill::Github,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -503,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_declares_exactly_the_thirteen_wide_domain_ids() {
+    fn catalog_declares_exactly_the_fourteen_wide_domain_ids() {
         let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
 
         for id in [
@@ -520,6 +533,7 @@ mod tests {
             "blog",
             "zennotes",
             "menus",
+            "github",
         ] {
             assert!(
                 ids.contains(&id),
@@ -528,8 +542,8 @@ mod tests {
         }
         assert_eq!(
             ids.len(),
-            13,
-            "el catálogo debe tener exactamente trece skills; tiene {ids:?}"
+            14,
+            "el catálogo debe tener exactamente catorce skills; tiene {ids:?}"
         );
     }
 
@@ -701,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_thirty_four_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_thirty_five_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -713,8 +727,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            34,
-            "el core más las trece skills deben cubrir las treinta y cuatro herramientas: {covered:?}"
+            35,
+            "el core más las catorce skills deben cubrir las treinta y cinco herramientas: {covered:?}"
         );
         assert!(
             covered.iter().any(|t| t == "blog_comment_reply"),
@@ -742,7 +756,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_keys_are_the_thirteen_canonical_keys() {
+    fn prompt_keys_are_the_fourteen_canonical_keys() {
         let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
 
         for key in [
@@ -759,6 +773,7 @@ mod tests {
             "SKILL_BLOG_PROMPT",
             "SKILL_ZENNOTES_PROMPT",
             "SKILL_MENUS_PROMPT",
+            "SKILL_GITHUB_PROMPT",
         ] {
             assert!(
                 keys.contains(&key),
@@ -767,8 +782,8 @@ mod tests {
         }
         assert_eq!(
             keys.len(),
-            13,
-            "el catálogo debe declarar exactamente trece claves de fragmento; tiene {keys:?}"
+            14,
+            "el catálogo debe declarar exactamente catorce claves de fragmento; tiene {keys:?}"
         );
         let mut unique = keys.clone();
         unique.sort_unstable();

@@ -245,3 +245,11 @@ path = "tests/api/blog.rs"
 [[test]]
 name = "blog-credentials-migration"
 path = "tests/db/blog_credentials_migration.rs"
+
+[[test]]
+name = "github-api"
+path = "tests/api/github.rs"
+
+[[test]]
+name = "github-migration"
+path = "tests/db/github_migration.rs"

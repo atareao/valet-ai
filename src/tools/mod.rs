@@ -5,6 +5,7 @@ pub mod current_time;
 pub mod email;
 pub mod geo;
 pub mod geo_utils;
+pub mod github;
 pub mod google_places;
 pub mod journal;
 pub mod notes;

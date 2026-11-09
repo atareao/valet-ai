@@ -70,6 +70,13 @@ const mockCheckOximeal = vi.fn();
 const mockGetBlogStatus = vi.fn();
 const mockSetBlogPassword = vi.fn();
 const mockCheckBlog = vi.fn();
+// Spies sobre los endpoints dedicados de GitHub: misma pauta que el Blog
+// (change `github-integration`). `useGithub` es real, así que se enruta al spy
+// para que el indicador de la undécima sub-pestaña sea determinista y ningún
+// test abra una petición real.
+const mockGetGithubStatus = vi.fn();
+const mockPutGithubToken = vi.fn();
+const mockCheckGithub = vi.fn();
 
 // Fixture de settings devuelta por el hook mockeado (equivale a lo que
 // responde `GET /settings`). Es mutable para que cada test pueda simular
@@ -99,6 +106,8 @@ const defaultSettings: Record<string, string> = {
   oximeal_client_id: "",
   blog_base_url: "",
   blog_service_user: "",
+  github_default_repo: "",
+  github_default_labels: "",
   MEMORY_HALF_LIFE_DAYS: "30",
   SIMILARITY_THRESHOLD: "0.4",
   RAG_BUDGET_TOKENS: "400",
@@ -348,6 +357,16 @@ vi.mock("../api/oximeal", () => ({
   checkOximeal: (...args: unknown[]) => mockCheckOximeal(...args),
 }));
 
+// Los tres endpoints de GitHub viven en su propio módulo (`api/github.ts`),
+// importado solo por `useGithub` (chunk diferido de ajustes). Mismo patrón que
+// `api/oximeal.ts`. El factory se hoisted; solo toca los spies cuando el hook
+// los invoca.
+vi.mock("../api/github", () => ({
+  getGithubStatus: (...args: unknown[]) => mockGetGithubStatus(...args),
+  putGithubToken: (...args: unknown[]) => mockPutGithubToken(...args),
+  checkGithub: (...args: unknown[]) => mockCheckGithub(...args),
+}));
+
 import { SettingsDialog } from "../components/SettingsDialog";
 import { RouterControl } from "../components/RouterControl";
 import { ProfileProvider } from "../contexts/ProfileProvider";
@@ -441,6 +460,17 @@ describe("SettingsDialog", () => {
     });
     mockSetBlogPassword.mockResolvedValue(undefined);
     mockCheckBlog.mockResolvedValue({
+      ok: true,
+      detail: "conexión correcta",
+    });
+    // Por defecto GitHub no está configurado; los tests que lo necesiten fijan
+    // `configured: true` con `mockResolvedValue`.
+    mockGetGithubStatus.mockResolvedValue({
+      configured: false,
+      default_repo: "atareao/valet-ai",
+    });
+    mockPutGithubToken.mockResolvedValue(undefined);
+    mockCheckGithub.mockResolvedValue({
       ok: true,
       detail: "conexión correcta",
     });
@@ -2718,7 +2748,8 @@ describe("SettingsDialog", () => {
 
   // Orden cerrado de las sub-pestañas de «Integraciones» (spec aprobada). La
   // novena, «OxiMeal», la añade el change `oximeal-integration`; la décima,
-  // «Blog», el change `wordpress-credentials-settings`.
+  // «Blog», el change `wordpress-credentials-settings`; la undécima, «GitHub»,
+  // el change `github-integration`.
   const INTEGRATION_SUBTABS = [
     "Strava",
     "OpenWeatherMap",
@@ -2730,6 +2761,7 @@ describe("SettingsDialog", () => {
     "OpenTodo",
     "OxiMeal",
     "Blog",
+    "GitHub",
   ] as const;
 
   // Etiquetas de los campos de credencial que, tras el change, viven SOLO en
@@ -2757,16 +2789,16 @@ describe("SettingsDialog", () => {
   };
 
   // change `settings-tabs-vertical`: pestañas verticales
-  it("organiza «Integraciones» en diez sub-pestañas verticales en el orden acordado", async () => {
+  it("organiza «Integraciones» en once sub-pestañas verticales en el orden acordado", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
-    // Diez sub-pestañas, con «Blog» como décima al final del orden cerrado.
-    expect(INTEGRATION_SUBTABS).toHaveLength(10);
-    expect(INTEGRATION_SUBTABS[8]).toBe("OxiMeal");
+    // Once sub-pestañas, con «GitHub» como undécima al final del orden cerrado.
+    expect(INTEGRATION_SUBTABS).toHaveLength(11);
     expect(INTEGRATION_SUBTABS[9]).toBe("Blog");
+    expect(INTEGRATION_SUBTABS[10]).toBe("GitHub");
 
     const subTabs = INTEGRATION_SUBTABS.map((name) =>
       screen.getByRole("tab", {
@@ -3190,7 +3222,7 @@ describe("SettingsDialog", () => {
     await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
     const group = screen.getByRole("group", { name: "Integraciones" });
-    // Las diez sub-pestañas viven dentro del grupo nombrado (no en el «Tabs»
+    // Las once sub-pestañas viven dentro del grupo nombrado (no en el «Tabs»
     // de nivel superior).
     for (const name of INTEGRATION_SUBTABS) {
       expect(
@@ -3910,6 +3942,122 @@ describe("SettingsDialog", () => {
     ).toBeInTheDocument();
     // El sondeo no toca `GET /api/blog/status`.
     expect(mockGetBlogStatus.mock.calls.length).toBe(statusReadsBeforeCheck);
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // Undécima sub-pestaña «GitHub» de «Integraciones» (change
+  // `github-integration`): repositorio y labels por `PUT /api/settings`; token
+  // por su endpoint dedicado; indicador de `GET /api/github/status` y sondeo
+  // real por `GET /api/github/check`.
+  // Escenarios: openspec/changes/github-integration/specs/frontend/spec.md
+  // ════════════════════════════════════════════════════════════════
+
+  it("el indicador de GitHub sale de su endpoint y es visible sin abrir la sub-pestaña", async () => {
+    const user = userEvent.setup();
+    mockGetGithubStatus.mockResolvedValue({
+      configured: true,
+      default_repo: "atareao/valet-ai",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    // Sin abrir la sub-pestaña «GitHub»: el indicador ya es correcto.
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    expect(
+      await screen.findByRole("tab", {
+        name: /^GitHub(?![a-zA-Z])[\s\S]*Configurado/,
+      }),
+    ).toBeInTheDocument();
+    expect(mockGetGithubStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("el token de GitHub arranca vacío aunque haya uno guardado y se guarda por su endpoint dedicado", async () => {
+    const user = userEvent.setup();
+    mockGetGithubStatus.mockResolvedValue({
+      configured: true,
+      default_repo: "atareao/valet-ai",
+    });
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "GitHub");
+
+    const field = await screen.findByLabelText("GitHub · Token");
+    expect(field).toHaveAttribute("type", "password");
+    // Nunca se relee el valor guardado: el campo nace vacío.
+    expect((field as HTMLInputElement).value).toBe("");
+
+    await user.type(field, "ghp_token-nuevo");
+    await user.click(screen.getByRole("button", { name: "Guardar token" }));
+
+    await waitFor(() => {
+      expect(mockPutGithubToken).toHaveBeenCalledWith("ghp_token-nuevo");
+    });
+    // El token nunca viaja por `PUT /api/settings`…
+    expect(mockUpdateSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({ github_token: expect.anything() }),
+    );
+    // …y no se relee: el campo se limpia tras guardar.
+    await waitFor(() => {
+      expect(screen.getByLabelText("GitHub · Token")).toHaveValue("");
+    });
+  });
+
+  it("guarda github_default_repo y github_default_labels por PUT /api/settings", async () => {
+    const user = userEvent.setup();
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "GitHub");
+
+    const region = await screen.findByRole("region", { name: "GitHub" });
+    await user.type(
+      within(region).getByLabelText("GitHub · Repositorio por defecto"),
+      "atareao/valet-ai",
+    );
+    await user.type(
+      within(region).getByLabelText("GitHub · Labels por defecto"),
+      "feature, valet",
+    );
+
+    await user.click(within(region).getByRole("button", { name: "Guardar" }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          github_default_repo: "atareao/valet-ai",
+          github_default_labels: "feature, valet",
+        }),
+      );
+    });
+  });
+
+  it("«Probar conexión» de GitHub usa GET /api/github/check, muestra el detail y no relee el estado", async () => {
+    const user = userEvent.setup();
+    mockCheckGithub.mockResolvedValue({
+      ok: false,
+      detail: "token rechazado",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "GitHub");
+
+    const region = await screen.findByRole("region", { name: "GitHub" });
+    await waitFor(() => expect(mockGetGithubStatus).toHaveBeenCalledTimes(1));
+    const statusReadsBeforeCheck = mockGetGithubStatus.mock.calls.length;
+
+    await user.click(
+      within(region).getByRole("button", { name: "Probar conexión" }),
+    );
+
+    await waitFor(() => expect(mockCheckGithub).toHaveBeenCalledTimes(1));
+    // El `detail` del veredicto se muestra como texto en la línea de estado.
+    expect(await within(region).findByText("token rechazado")).toBeInTheDocument();
+    // El sondeo no toca `GET /api/github/status`.
+    expect(mockGetGithubStatus.mock.calls.length).toBe(statusReadsBeforeCheck);
   });
 
   // El botón refleja el sondeo **en curso**, no solo su resultado: con la
