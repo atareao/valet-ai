@@ -1870,6 +1870,8 @@ La pestaña «Integraciones» del SettingsDialog SHALL organizarse en **sub-pest
 6. **Miniflux**
 7. **ZenNotes**
 8. **OpenTodo**
+9. **OxiMeal**
+10. **Blog**
 
 Cada sub-pestaña SHALL contener únicamente los campos y acciones de su integración y SHALL tener
 **su propio botón «Guardar»**; no habrá un botón de guardado común a todas las sub-pestañas.
@@ -1909,9 +1911,9 @@ clave SHALL conservar el placeholder «Dejar vacío para usar variable de entorn
 
 - **Given** el SettingsDialog está abierto
 - **When** el usuario hace clic en la tab «Integraciones»
-- **Then** se muestran ocho sub-pestañas en vertical, con `aria-orientation="vertical"` en su `tablist`
+- **Then** se muestran diez sub-pestañas en vertical, con `aria-orientation="vertical"` en su `tablist`
 - **And** su orden es Strava, OpenWeatherMap, Google Places, Brave Search, apimail, Miniflux,
-  ZenNotes y OpenTodo
+  ZenNotes, OpenTodo, OxiMeal y Blog
 - **And** la sub-pestaña activa por defecto es la primera (Strava)
 
 #### Scenario: Cada sub-pestaña tiene sus propios campos y su propio botón Guardar
@@ -2019,6 +2021,8 @@ El criterio de estado SHALL ser:
   `GET /api/zennotes/status`.
 - **OpenTodo** → «Configurado» / «Sin configurar», derivado del campo `configured` de
   `GET /api/opentodo/status`.
+- **Blog** → «Configurado» / «Sin configurar», derivado del campo `configured` de
+  `GET /api/blog/status`.
 
 El indicador de la etiqueta SHALL ser correcto **desde el primer render** del panel Integraciones,
 es decir, **NO SHALL** depender de que el usuario abra la sub-pestaña correspondiente (el montaje
@@ -2063,6 +2067,12 @@ sub-pestaña, su indicador SHALL actualizarse sin necesidad de recargar la pági
 - **Given** `GET /api/opentodo/status` responde `{ configured: true, base_url: "…" }`
 - **When** se abre la pestaña «Integraciones»
 - **Then** la sub-pestaña «OpenTodo» muestra «Configurado»
+
+#### Scenario: El indicador de Blog sale del endpoint de estado
+
+- **Given** `GET /api/blog/status` responde `{ configured: false, ... }`
+- **When** se abre la pestaña «Integraciones»
+- **Then** la sub-pestaña «Blog» muestra «Sin configurar»
 
 #### Scenario: Los indicadores son correctos sin abrir cada sub-pestaña
 
@@ -2348,3 +2358,34 @@ Ajustes → Integraciones SHALL incluir una sección «OxiMeal» con campos no s
 - **When** se muestra la línea de estado de la sección «OxiMeal»
 - **Then** se refleja ese `resource` resuelto
 - **And** NO se muestra el secreto
+
+### Requirement: SettingsDialog SHALL display a Blog section in Integraciones
+
+Ajustes → Integraciones SHALL incluir una sección «Blog» con los campos no sensibles `blog_base_url`
+(placeholder `https://atareao.es`) y `blog_service_user` (por `PUT /api/settings`), y
+`blog_app_password`, que SHALL arrancar **siempre vacío**, NO SHALL releerse de ninguna respuesta y
+SHALL enviarse solo por `PUT /api/blog/password`. SHALL mostrar el estado de `GET /api/blog/status`
+sin la contraseña y SHALL ofrecer «Probar conexión» (`GET /api/blog/check`) mostrando su `detail` como
+texto en la línea de estado.
+
+#### Scenario: La contraseña arranca vacía y no se relee
+
+- **Given** un `blog_app_password` ya guardado
+- **When** se abre la sección «Blog» de Ajustes → Integraciones
+- **Then** el campo de la contraseña está vacío
+- **And** el frontend no lo lee de ninguna respuesta
+
+#### Scenario: Guardar usa los endpoints correctos
+
+- **Given** la sección «Blog» con la contraseña rellena y la URL base o el usuario editados
+- **When** se guarda la sección
+- **Then** la contraseña viaja por `PUT /api/blog/password`
+- **And** `blog_base_url` y `blog_service_user` viajan por `PUT /api/settings`
+- **And** la contraseña NO se envía en `PUT /api/settings`
+
+#### Scenario: Probar conexión muestra el veredicto
+
+- **Given** la sección «Blog» abierta
+- **When** se pulsa «Probar conexión»
+- **Then** se llama a `GET /api/blog/check`
+- **And** se muestra el `detail` de la respuesta como texto
