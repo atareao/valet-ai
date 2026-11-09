@@ -229,6 +229,8 @@ Background workers in `src/workers/`: `briefing`, `collapse`, `conflict_detector
 
 The notification ingest API, the inbox and the WebPush transport are documented in [`docs/api-notifications.md`](docs/api-notifications.md).
 
+Para lanzar avisos a Valet desde el móvil, la receta con la app Android «Atajos HTTP» está en [`docs/android-http-shortcuts.md`](docs/android-http-shortcuts.md).
+
 ## 🧪 Development and Tests
 
 ```bash
