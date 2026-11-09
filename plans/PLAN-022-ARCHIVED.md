@@ -1,8 +1,8 @@
 # PLAN-022 — Parámetro `resource` (RFC 8707) en el token M2M de Valet hacia OxiMeal
 
-- **Estado:** 🔄 En curso — código, tests y auditorías hechos; pendiente PR, release y verificación real.
+- **Estado:** ✅ Completado — PR mergeado, release v0.32.1 desplegada en `co1` (Dockge) y conexión real Valet↔OxiMeal verificada el 2026-11-07. Change archivado.
 - **Fecha:** 2026-11-07.
-- **Change de OpenSpec:** `oximeal-m2m-resource` (sin archivar todavía).
+- **Change de OpenSpec:** `oximeal-m2m-resource` (archivado como `2026-11-07-oximeal-m2m-resource`).
 - **Rama:** `feature/oximeal-m2m-resource`.
 
 ---
@@ -58,11 +58,15 @@ fallos del IdP y de OxiMeal para que el diagnóstico deje de ser opaco.
 - [x] `openspec validate --all --strict` → **65 passed, 0 failed**.
 - [x] Tareas 3.0 (Purpose de las specs), 3.1 (validación strict) y 3.2
       (auditorías) del change marcadas.
-- [ ] Tarea 3.3: abrir PR a `development`.
-- [ ] Release y despliegue de la imagen nueva en `co1`.
-- [ ] Verificación real del `check`: `GET /api/oximeal/check` →
-      `{ok:true, detail:"conexión correcta"}` contra un OxiMeal accesible.
-- [ ] Archivar el change (`openspec archive oximeal-m2m-resource`) y renombrar
+- [x] Tarea 3.3: PR #329 (`feature/oximeal-m2m-resource` → `development`)
+      mergeado.
+- [x] Release v0.32.1 (PR #330 → `main`, tag `v0.32.1`, imagen
+      `ghcr.io/atareao/valet-ai:{v0.32.1,0.32,latest}`) y despliegue en `co1`
+      (Dockge).
+- [x] Verificación real del `check`: `GET /api/oximeal/check` →
+      `{ok:true, detail:"conexión correcta"}` contra OxiMeal accesible
+      (verificado el 2026-11-07).
+- [x] Archivar el change (`openspec archive oximeal-m2m-resource`) y renombrar
       este plan a `PLAN-022-ARCHIVED.md`.
 
 ---

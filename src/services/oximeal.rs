@@ -1781,6 +1781,75 @@ mod tests {
         assert_eq!(created.get("id").and_then(|v| v.as_str()), Some("new-id"));
     }
 
+    /// Scenario: Las instrucciones viajan en el cuerpo de la petición.
+    ///
+    /// El cuerpo enviado a `POST /api/agent/recipes` contiene `instructions` tal
+    /// cual lo recibió el cliente: `body_json` exige coincidencia **exacta**, así
+    /// que el resto de campos también debe viajar sin alterar.
+    #[tokio::test]
+    #[serial]
+    async fn create_recipe_sends_instructions_in_body() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        let input = serde_json::json!({
+            "name": "Tortilla",
+            "category": "main",
+            "ingredients": [{ "name": "Huevo", "amount": 3, "unit": "ud" }],
+            "instructions": "Cortar y servir.",
+            "prep_time_minutes": 15
+        });
+        Mock::given(method("POST"))
+            .and(path("/api/agent/recipes"))
+            .and(body_json(&input))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": "new-id",
+                "name": "Tortilla",
+                "category": "main"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        client_for(&server)
+            .create_recipe(&input)
+            .await
+            .expect("la receta con instrucciones se crea");
+    }
+
+    /// Scenario: Sin instrucciones la receta se sigue creando.
+    ///
+    /// Como la coincidencia del cuerpo es exacta, este test también demuestra que
+    /// el cliente NO añade un `instructions` vacío cuando el modelo no lo manda.
+    #[tokio::test]
+    #[serial]
+    async fn create_recipe_without_instructions_omits_the_field() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        let input = serde_json::json!({
+            "name": "Tortilla",
+            "category": "main",
+            "ingredients": [{ "name": "Huevo", "amount": 3, "unit": "ud" }]
+        });
+        Mock::given(method("POST"))
+            .and(path("/api/agent/recipes"))
+            .and(body_json(&input))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "id": "new-id",
+                "name": "Tortilla",
+                "category": "main"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        client_for(&server)
+            .create_recipe(&input)
+            .await
+            .expect("la receta sin instrucciones se crea igualmente");
+    }
+
     /// `probe` consulta las recetas de las últimas 24 h (`days=1`).
     #[tokio::test]
     #[serial]

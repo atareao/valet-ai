@@ -20,4 +20,4 @@
 - [x] 3.0 Rellenar el `## Purpose` de `openspec/specs/oximeal-api/spec.md` y `openspec/specs/oximeal-service/spec.md` (hoy en `TBD`, causa de 2 fallos de `--strict`) con un resumen real de cada capacidad: `oximeal-api` = endpoints `/api/oximeal/*` (status, check, secret) sin exponer el secreto; `oximeal-service` = cliente de la Agent API de OxiMeal con token M2M y sus seis operaciones.
 - [x] 3.1 Verificar que `openspec validate --all --strict` pasa sin errores ni warnings → 65 passed, 0 failed
 - [x] 3.2 Ejecutar las auditorías `@rust-reviewer` y `@react-reviewer` y verificar que no dejan hallazgos bloqueantes → sin bloqueantes; mejoras menores registradas como follow-ups
-- [ ] 3.3 Abrir PR a `development` y verificar la conexión real Valet↔OxiMeal: `GET /api/oximeal/check` devuelve `ok: true` con «conexión correcta»
+- [x] 3.3 Abrir PR a `development` y verificar la conexión real Valet↔OxiMeal: `GET /api/oximeal/check` devuelve `ok: true` con «conexión correcta» — PR #329 a `development` mergeado; release v0.32.1 desplegada en co1 (Dockge) y verificada el 2026-11-07: `GET /api/oximeal/check` → `{ok:true, detail:"conexión correcta"}`
