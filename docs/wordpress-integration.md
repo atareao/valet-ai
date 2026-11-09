@@ -35,8 +35,15 @@ papelera (`blog_comment_delete`). Las credenciales se gestionan desde **Ajustes*
   (`{"password"}` → `400` si vacío, `204` si se guarda). El campo del frontend
   arranca **siempre vacío**.
 - `GET /api/blog/status` → `{configured, base_url, user}` (nunca la contraseña).
-- `GET /api/blog/check` → sonda real: `GET <base>/wp-json/wp/v2/users/me` con la
-  credencial; responde siempre `200` con `{ok, detail}`.
+- `GET /api/blog/check` → sonda real **en dos fases**: `GET <base>/wp-json/wp/v2/users/me`
+  con la credencial y, solo si da `200`, `GET <base>/wp-json/` (índice REST) para
+  comprobar que la identidad dispone de la vía de respuesta (`routes["/wp/v2/comments"]`
+  con `POST`). Responde siempre `200` con `{ok, detail}`; el detalle nunca lleva la
+  contraseña. Veredictos: `"conexión correcta"` cuando ambas fases pasan;
+  `"las credenciales son válidas, pero la ruta de respuesta del blog no está disponible: revisa la política REST del plugin"`
+  cuando la credencial vale pero la vía está cerrada; `"faltan el usuario o la contraseña de aplicación del blog"`;
+  `"el usuario o la contraseña de aplicación no son válidos"`; `"el blog no responde"`.
+  La sonda **no** escribe nada: no crea, modifica ni enumera comentarios.
 - Publicar: `POST /wp-json/wp/v2/comments` con
   `{post, parent, content, status:"approved"}` (sin `author_name`/`author_email`).
   Borrar: `DELETE /wp-json/wp/v2/comments/<id>?force=false` (papelera, reversible
@@ -94,9 +101,6 @@ wp option get atareao_valet_reply_user
 
 - **Sitio** — aprovisionar el usuario de servicio desde la UI del plugin (hoy es
   un paso manual de WP-CLI): https://github.com/atareao/atareao.es/issues/175
-- **Consumidor** — endurecer `GET /api/blog/check` para que detecte la vía de
-  respuesta muerta (hoy `users/me` da `200` aunque la escritura esté cerrada):
-  https://github.com/atareao/valet-ai/issues/340
 - **Seguridad** — la cuenta de servicio es `yyyxfsgj` con rol `administrator`;
   el plugin recomienda un usuario dedicado con rol mínimo (`read` +
   `moderate_comments`). Sin tarea asignada.

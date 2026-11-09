@@ -196,6 +196,14 @@ async fn check_reports_a_working_connection() {
         .expect(1)
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/wp-json/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "routes": { "/wp/v2/comments": { "methods": ["GET", "POST"] } }
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
     seed(&app, "blog_base_url", &server.uri()).await;
     seed(&app, "blog_service_user", "alice").await;
     seed(&app, "blog_app_password", "SECRET").await;
@@ -254,6 +262,43 @@ async fn check_reports_invalid_credentials() {
     assert!(text.contains("\"ok\":false"), "{text}");
     assert!(
         text.contains("el usuario o la contraseña de aplicación no son válidos"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("SECRET"),
+        "no debe filtrar la contraseña: {text}"
+    );
+}
+
+/// Scenario: la vía de respuesta cerrada se distingue de unas credenciales válidas.
+#[tokio::test]
+async fn check_reports_reply_route_unavailable() {
+    let app = TestApp::new_empty().await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/wp-json/wp/v2/users/me"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "id": 1 })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/wp-json/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "routes": {} })))
+        .mount(&server)
+        .await;
+    seed(&app, "blog_base_url", &server.uri()).await;
+    seed(&app, "blog_service_user", "alice").await;
+    seed(&app, "blog_app_password", "SECRET").await;
+
+    let resp = app.get("/api/blog/check").await;
+    assert_eq!(resp.status(), 200, "el sondeo responde siempre 200");
+    let text = resp.text().await;
+
+    assert!(text.contains("\"ok\":false"), "{text}");
+    assert!(
+        text.contains(
+            "las credenciales son válidas, pero la ruta de respuesta del blog no \
+             está disponible: revisa la política REST del plugin"
+        ),
         "{text}"
     );
     assert!(

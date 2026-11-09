@@ -12,6 +12,11 @@
 //! base inyectable, `User-Agent` propio, timeout y traducción de cada desenlace
 //! a un error tipado. **No se reintenta**: cada invocación envía una sola
 //! petición, también ante un `429` o un `5xx`.
+//!
+//! La sonda de conexión ([`Wordpress::check_connection`]) sí encadena **dos**
+//! peticiones: `users/me` para validar la credencial y el índice REST
+//! (`GET /wp-json/`) para comprobar que la identidad autenticada dispone de la
+//! vía de respuesta, **sin** tocar nunca la colección de comentarios.
 
 use sqlx::SqlitePool;
 
@@ -31,6 +36,17 @@ const COMMENTS_PATH: &str = "/wp-json/wp/v2/comments";
 
 /// Ruta del endpoint que identifica al usuario autenticado (sonda de conexión).
 const ME_PATH: &str = "/wp-json/wp/v2/users/me";
+
+/// Ruta del **índice REST** del sitio: publica el mapa `routes` ya filtrado por
+/// la política del sitio para la identidad autenticada (sonda de la vía de
+/// respuesta).
+const INDEX_PATH: &str = "/wp-json/";
+
+/// Clave del índice REST que declara la colección de comentarios.
+const COMMENTS_ROUTE_KEY: &str = "/wp/v2/comments";
+
+/// Método que la sonda exige en la colección de comentarios.
+const COMMENTS_REQUIRED_METHOD: &str = "POST";
 
 /// Longitud máxima del extracto del comentario que viaja como **evidencia** al
 /// modelo, en caracteres.
@@ -59,6 +75,13 @@ pub enum WordpressError {
     /// `404` con otro `code` (`rest_comment_invalid_id`) — el comentario no
     /// existe en el sitio.
     CommentNotFound,
+    /// La credencial es válida pero el sitio **no expone** la vía de respuesta
+    /// (su índice REST no declara `/wp/v2/comments` con `POST`, o no se puede
+    /// leer). Es **distinta** de [`WordpressError::Unauthorized`] (la credencial
+    /// no vale), [`WordpressError::Forbidden`] (la credencial vale pero le falta
+    /// rol), [`WordpressError::RouteNotFound`] (la ruta pedida no existe) y
+    /// [`WordpressError::Unavailable`] (el sitio no responde).
+    ReplyRouteUnavailable,
     /// `501` con `code` `rest_trash_not_supported` — el sitio no tiene papelera
     /// (`EMPTY_TRASH_DAYS = 0`); el comentario no se ha borrado.
     TrashUnsupported,
@@ -103,6 +126,12 @@ impl std::fmt::Display for WordpressError {
             WordpressError::CommentNotFound => {
                 write!(f, "el comentario no existe en el sitio del blog")
             }
+            WordpressError::ReplyRouteUnavailable => write!(
+                f,
+                "la credencial del blog es válida, pero la ruta de respuesta no \
+                 está disponible para este usuario: revisa la política REST del \
+                 plugin (la colección de comentarios no admite POST)"
+            ),
             WordpressError::TrashUnsupported => write!(
                 f,
                 "el sitio del blog no admite la papelera (EMPTY_TRASH_DAYS = 0): \
@@ -267,12 +296,16 @@ impl Wordpress {
         }
     }
 
-    /// Sonda la conexión real: `GET {base}/wp-json/wp/v2/users/me` con
-    /// `Authorization: Basic` (construida en el momento de la petición). Un
-    /// `200` es éxito; un `401`/`403` es una credencial rechazada
-    /// ([`WordpressError::Unauthorized`] / [`WordpressError::Forbidden`,
-    /// distintas de una caída) y cualquier otro desenlace se traduce a un
-    /// [`WordpressError`]. No se reintenta.
+    /// Sonda la conexión real, en **dos fases** y **sin** reintentos:
+    ///
+    /// 1. `GET {base}/wp-json/wp/v2/users/me` con `Authorization: Basic`
+    ///    (construida en el momento de la petición) para validar la **credencial**:
+    ///    un `200` sigue a la fase 2, un `401`/`403` es una credencial rechazada
+    ///    ([`WordpressError::Unauthorized`] / [`WordpressError::Forbidden`],
+    ///    distintas de una caída) y cualquier otro desenlace se traduce a un
+    ///    [`WordpressError`];
+    /// 2. [`Self::reply_route_available`], que comprueba en el índice REST del
+    ///    sitio que la vía de respuesta existe para esa identidad.
     pub async fn check_connection(&self, config: &WordpressConfig) -> Result<(), WordpressError> {
         let response = self
             .http
@@ -284,11 +317,58 @@ impl Wordpress {
 
         let status = response.status().as_u16();
         if status == 200 {
-            return Ok(());
+            return self.reply_route_available(config).await;
         }
 
         let code = extract_code(response).await;
         Err(error_from_status(status, code))
+    }
+
+    /// Segunda fase de la sonda: comprueba que el sitio **expone** la vía de
+    /// respuesta.
+    ///
+    /// Consulta el **índice REST** (`GET {base}/wp-json/`) con la misma
+    /// `Authorization: Basic`: el índice publica el mapa `routes` del sitio **ya
+    /// filtrado** por su política para la identidad autenticada, así que basta con
+    /// que exista la clave `/wp/v2/comments` y que sus `methods` incluyan `POST`.
+    /// La sonda **no** toca la colección de comentarios (ni `POST` ni `GET`), no
+    /// escribe nada y **no reintenta**.
+    ///
+    /// Clasificación:
+    ///
+    /// - índice `200` con la ruta y `POST` → `Ok(())`;
+    /// - índice `200` sin la ruta, sin `POST`, o con un cuerpo sin `routes`
+    ///   interpretable → [`WordpressError::ReplyRouteUnavailable`];
+    /// - índice con cualquier código distinto de `200` y distinto de `5xx`
+    ///   (`401`, `403`, `404`, …) → [`WordpressError::ReplyRouteUnavailable`];
+    /// - índice con `5xx` o fallo de red → [`WordpressError::Unavailable`].
+    async fn reply_route_available(&self, config: &WordpressConfig) -> Result<(), WordpressError> {
+        let response = self
+            .http
+            .get(format!("{}{INDEX_PATH}", self.base_url))
+            .basic_auth(&config.service_user, Some(&config.app_password))
+            .send()
+            .await
+            .map_err(|_| WordpressError::Unavailable)?;
+
+        let status = response.status().as_u16();
+        if status != 200 {
+            return Err(if (500..=599).contains(&status) {
+                WordpressError::Unavailable
+            } else {
+                WordpressError::ReplyRouteUnavailable
+            });
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|_| WordpressError::Unavailable)?;
+        if index_declares_comments_post(&body) {
+            Ok(())
+        } else {
+            Err(WordpressError::ReplyRouteUnavailable)
+        }
     }
 
     /// `POST {base}/wp-json/wp/v2/comments` con el cuerpo `{post, parent,
@@ -510,6 +590,31 @@ fn parse_comment_snapshot(body: &str, requested_id: &str) -> Option<CommentSnaps
 /// Recorta un texto a `max` caracteres (por límites de carácter, no de byte).
 fn truncate_chars(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
+}
+
+/// Interpreta el **índice REST** de WordPress (`GET /wp-json/`) y responde si la
+/// colección de comentarios admite `POST` para la identidad autenticada.
+///
+/// Un cuerpo que no es JSON, sin `routes`, sin la clave `/wp/v2/comments` o con
+/// unos `methods` que no incluyan `POST` responden `false`: para la sonda, un
+/// índice ilegible **no** confirma la vía de respuesta. Nunca falla.
+fn index_declares_comments_post(body: &str) -> bool {
+    let value: serde_json::Value = match serde_json::from_str(body) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    value
+        .get("routes")
+        .and_then(|routes| routes.get(COMMENTS_ROUTE_KEY))
+        .and_then(|route| route.get("methods"))
+        .and_then(|methods| methods.as_array())
+        .is_some_and(|methods| {
+            methods
+                .iter()
+                .filter_map(|method| method.as_str())
+                .any(|method| method.eq_ignore_ascii_case(COMMENTS_REQUIRED_METHOD))
+        })
 }
 
 #[cfg(test)]
@@ -1035,7 +1140,8 @@ mod tests {
     // Sonda de conexión (`check_connection`)
     // -----------------------------------------------------------------------
 
-    /// Scenario: un `200` de `/wp-json/wp/v2/users/me` es conexión correcta.
+    /// Scenario: un `200` de `/wp-json/wp/v2/users/me` y un índice REST que sí
+    /// declara la vía de respuesta es conexión correcta.
     #[tokio::test]
     async fn check_connection_ok_on_200() {
         let server = MockServer::start().await;
@@ -1052,6 +1158,16 @@ mod tests {
             })))
             .mount(&server)
             .await;
+        mount_index(
+            &server,
+            200,
+            serde_json::json!({
+                "routes": {
+                    "/wp/v2/comments": { "methods": ["GET", "POST"] }
+                }
+            }),
+        )
+        .await;
 
         let client = Wordpress::new(config.base_url.clone());
         client
@@ -1114,6 +1230,308 @@ mod tests {
         let client = Wordpress::new(config.base_url.clone());
         let err = client.check_connection(&config).await.unwrap_err();
         assert!(matches!(&err, WordpressError::Unavailable), "err: {err:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Sonda de conexión — segunda fase: la vía de respuesta del blog
+    // -----------------------------------------------------------------------
+
+    /// Cliente con un timeout corto: una respuesta retrasada se trata como fallo
+    /// de red sin esperar los 15 s de producción.
+    fn client_with_short_timeout(server: &MockServer) -> Wordpress {
+        Wordpress::with_timeout(server.uri(), std::time::Duration::from_secs(1))
+    }
+
+    /// Monta el `users/me` con `200`: la credencial es válida.
+    async fn mount_valid_credentials(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/wp-json/wp/v2/users/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": 1 })))
+            .mount(server)
+            .await;
+    }
+
+    /// Monta el índice REST (`GET /wp-json/`) con el estado y el cuerpo dados.
+    ///
+    /// Exige la cabecera `Authorization` de las credenciales de prueba: el índice
+    /// es una petición **autenticada**, así que si `reply_route_available` deja de
+    /// enviar `.basic_auth(...)` el mock no casa y el test falla.
+    async fn mount_index(server: &MockServer, status: u16, body: serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(path("/wp-json/"))
+            .and(header(
+                "authorization",
+                expected_basic("alice", "s3cret-app-password").as_str(),
+            ))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    /// Scenario: índice `200` con `/wp/v2/comments` y `POST` → la vía de respuesta
+    /// está disponible.
+    #[tokio::test]
+    async fn check_connection_ok_when_index_declares_comments_with_post() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        mount_valid_credentials(&server).await;
+        mount_index(
+            &server,
+            200,
+            serde_json::json!({
+                "routes": {
+                    "/wp/v2/comments": { "methods": ["GET", "POST"] }
+                }
+            }),
+        )
+        .await;
+
+        let client = client_with_short_timeout(&server);
+        client
+            .check_connection(&config)
+            .await
+            .expect("el índice declara la vía de respuesta");
+    }
+
+    /// Scenario: índice `200` sin la clave `/wp/v2/comments` → la vía de respuesta
+    /// no está disponible.
+    #[tokio::test]
+    async fn check_connection_index_without_comments_route_is_reply_route_unavailable() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        mount_valid_credentials(&server).await;
+        mount_index(
+            &server,
+            200,
+            serde_json::json!({
+                "routes": {
+                    "/wp/v2/posts": { "methods": ["GET", "POST"] }
+                }
+            }),
+        )
+        .await;
+
+        let client = client_with_short_timeout(&server);
+        let err = client.check_connection(&config).await.unwrap_err();
+        assert!(
+            matches!(&err, WordpressError::ReplyRouteUnavailable),
+            "err: {err:?}"
+        );
+        assert!(
+            !matches!(&err, WordpressError::Unauthorized),
+            "una vía cerrada no es una credencial rechazada: {err:?}"
+        );
+    }
+
+    /// Scenario: índice `200` con la ruta pero `methods` sin `POST` → la vía de
+    /// respuesta no está disponible.
+    #[tokio::test]
+    async fn check_connection_index_without_post_is_reply_route_unavailable() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        mount_valid_credentials(&server).await;
+        mount_index(
+            &server,
+            200,
+            serde_json::json!({
+                "routes": {
+                    "/wp/v2/comments": { "methods": ["GET"] }
+                }
+            }),
+        )
+        .await;
+
+        let client = client_with_short_timeout(&server);
+        let err = client.check_connection(&config).await.unwrap_err();
+        assert!(
+            matches!(&err, WordpressError::ReplyRouteUnavailable),
+            "err: {err:?}"
+        );
+    }
+
+    /// Scenario: índice `404` → la vía de respuesta no está disponible (no es una
+    /// caída ni una credencial rechazada).
+    #[tokio::test]
+    async fn check_connection_index_404_is_reply_route_unavailable() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        mount_valid_credentials(&server).await;
+        mount_index(&server, 404, serde_json::json!({ "code": "rest_no_route" })).await;
+
+        let client = client_with_short_timeout(&server);
+        let err = client.check_connection(&config).await.unwrap_err();
+        assert!(
+            matches!(&err, WordpressError::ReplyRouteUnavailable),
+            "err: {err:?}"
+        );
+        assert!(
+            !matches!(&err, WordpressError::RouteNotFound),
+            "el índice es la sonda, no la operación: {err:?}"
+        );
+    }
+
+    /// Scenario: índice `403` → la vía de respuesta no está disponible, distinto
+    /// de una credencial sin permisos (`Forbidden`).
+    #[tokio::test]
+    async fn check_connection_index_403_is_reply_route_unavailable() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        mount_valid_credentials(&server).await;
+        mount_index(
+            &server,
+            403,
+            serde_json::json!({ "code": "rest_forbidden" }),
+        )
+        .await;
+
+        let client = client_with_short_timeout(&server);
+        let err = client.check_connection(&config).await.unwrap_err();
+        assert!(
+            matches!(&err, WordpressError::ReplyRouteUnavailable),
+            "err: {err:?}"
+        );
+        assert!(
+            !matches!(&err, WordpressError::Forbidden),
+            "la fase 1 ya validó la credencial: {err:?}"
+        );
+    }
+
+    /// Scenario: índice `503` → el blog no responde.
+    #[tokio::test]
+    async fn check_connection_index_503_is_unavailable() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        mount_valid_credentials(&server).await;
+        mount_index(&server, 503, serde_json::json!({})).await;
+
+        let client = client_with_short_timeout(&server);
+        let err = client.check_connection(&config).await.unwrap_err();
+        assert!(matches!(&err, WordpressError::Unavailable), "err: {err:?}");
+    }
+
+    /// Scenario: el índice no responde a tiempo → fallo de red, no una vía
+    /// cerrada.
+    #[tokio::test]
+    async fn check_connection_index_network_failure_is_unavailable() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        mount_valid_credentials(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/wp-json/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({ "routes": {} }))
+                    .set_delay(std::time::Duration::from_secs(2)),
+            )
+            .mount(&server)
+            .await;
+
+        let client = client_with_short_timeout(&server);
+        let err = client.check_connection(&config).await.unwrap_err();
+        assert!(matches!(&err, WordpressError::Unavailable), "err: {err:?}");
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "una caída no se reintenta"
+        );
+    }
+
+    /// Scenario: índice `200` con un cuerpo sin `routes` (`{}`), con `routes`
+    /// nulo, con `methods` como cadena o sin `methods`, o que no es JSON → la vía
+    /// de respuesta no está disponible.
+    #[tokio::test]
+    async fn check_connection_index_unreadable_body_is_reply_route_unavailable() {
+        for body in [
+            "{}",
+            "no soy json",
+            "[]",
+            r#"{"routes": []}"#,
+            r#"{"routes": null}"#,
+            r#"{"routes": {"/wp/v2/comments": {"methods": "POST"}}}"#,
+            r#"{"routes": {"/wp/v2/comments": {}}}"#,
+        ] {
+            let server = MockServer::start().await;
+            let config = config_for(&server);
+            mount_valid_credentials(&server).await;
+            Mock::given(method("GET"))
+                .and(path("/wp-json/"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .mount(&server)
+                .await;
+
+            let client = client_with_short_timeout(&server);
+            let err = client.check_connection(&config).await.unwrap_err();
+            assert!(
+                matches!(&err, WordpressError::ReplyRouteUnavailable),
+                "cuerpo {body:?} → {err:?}"
+            );
+        }
+    }
+
+    /// Scenario: la sonda envía exactamente `users/me` y el índice; **ninguna**
+    /// petición a la colección de comentarios y ningún `POST`.
+    #[tokio::test]
+    async fn check_connection_does_not_touch_the_comments_collection() {
+        let server = MockServer::start().await;
+        let config = config_for(&server);
+        mount_valid_credentials(&server).await;
+        mount_index(
+            &server,
+            200,
+            serde_json::json!({
+                "routes": {
+                    "/wp/v2/comments": { "methods": ["GET", "POST"] }
+                }
+            }),
+        )
+        .await;
+
+        let client = client_with_short_timeout(&server);
+        client.check_connection(&config).await.expect("sonda sana");
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2, "la sonda son dos peticiones");
+        assert_eq!(requests[0].url.path(), "/wp-json/wp/v2/users/me");
+        assert_eq!(requests[1].url.path(), "/wp-json/");
+        for request in &requests {
+            assert_ne!(request.method.as_str(), "POST", "la sonda no escribe");
+            assert!(
+                !request.url.path().starts_with("/wp-json/wp/v2/comments"),
+                "la sonda no toca la colección: {}",
+                request.url.path()
+            );
+        }
+    }
+
+    /// Scenario: el mensaje de `ReplyRouteUnavailable` no lleva la contraseña ni
+    /// la cabecera `Authorization`, y es distinto de los demás errores del mapa.
+    #[test]
+    fn reply_route_unavailable_display_hides_the_password() {
+        let error = WordpressError::ReplyRouteUnavailable;
+        let message = error.to_string();
+        let debug = format!("{error:?}");
+
+        assert!(!message.contains("s3cret-app-password"), "{message}");
+        assert!(!message.contains("Authorization"), "{message}");
+        assert!(!message.contains("Basic "), "{message}");
+        assert!(!debug.contains("s3cret-app-password"), "{debug}");
+        let lowered = message.to_lowercase();
+        assert!(
+            lowered.contains("política rest") || lowered.contains("politica rest"),
+            "el mensaje debe remitir a la política REST: {message}"
+        );
+        for other in [
+            WordpressError::Unauthorized,
+            WordpressError::Forbidden,
+            WordpressError::RouteNotFound,
+            WordpressError::Unavailable,
+        ] {
+            assert_ne!(
+                format!("{error:?}"),
+                format!("{other:?}"),
+                "la vía cerrada debe ser un error distinto"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
