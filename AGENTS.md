@@ -301,6 +301,16 @@ Lo que no se reabre sin orden explícita:
 - **Mapeo de errores:** `404`→`NotFound`, `401/403`→`Unauthorized`, `422`→`InvalidInput`, `429`→`RateLimited`, `5xx`/red→`Upstream`; éxito solo `201`; sin reintentos.
 - **E2E real (2026-11-09):** con un PAT clásico (usuario `atareao`, scopes `repo, workflow`), el router seleccionó `Github` (0.99) y el turno creó el issue **#344** en `atareao/valet-ai` (`success:true`); `check` → `{ok:true}`; `GET /api/settings` **sin** `github_token`; 0 coincidencias del token en logs.
 
+**25. La sonda del blog sondea en dos fases y falla cerrado: la credencial no basta.** Decidido y ejecutado el 2026-11-09 al cerrar el change `blog-check-reply-route` (issue #340; PRs #346/#347; **v0.36.0** desplegada en `co1`). Lo que no se reabre sin orden explícita:
+
+- **Dos validaciones, no una:** autenticación (`GET /wp-json/wp/v2/users/me`) **y** capacidad de respuesta, leyendo el índice REST `GET /wp-json/` **autenticado** y exigiendo `routes["/wp/v2/comments"].methods` con `POST`. El índice publica el mapa de rutas **ya filtrado** para esa identidad.
+- **Sin efectos secundarios:** ninguna petición a la colección de comentarios (ni `POST` ni `GET`); verificado con `received_requests` de wiremock. Descartados el `POST` de prueba, `OPTIONS` y `HEAD`.
+- **Variante nueva** `WordpressError::ReplyRouteUnavailable` con detalle accionable: «las credenciales son válidas, pero la ruta de respuesta del blog no está disponible: revisa la política REST del plugin».
+- **Clasificación que falla cerrado:** `5xx` o caída de red → `Unavailable` («el blog no responde»); cualquier otro no-`200`, índice ilegible, ruta ausente o sin `POST` → `ReplyRouteUnavailable`. Un índice restringido da falso negativo, nunca falso positivo.
+- **Sin cambios:** el `200` constante, el formato `{ok, detail}`, el texto de éxito `"conexión correcta"`, los ajustes, las rutas, las migraciones y el frontend (pinta el `detail` tal cual).
+- **Medido contra el sitio real:** el check pasa de una a dos peticiones y tarda **1,13 s**; el índice declara `/wp/v2/comments` con `["POST"]`.
+- **Hallazgo de auditoría, corregido:** el mock del índice no anclaba la cabecera `Authorization`, así que retirar `basic_auth` habría dejado la batería en verde. Ahora se exige (comprobado en rojo).
+
 ## VI. GESTIÓN DE PLANES (`plans/`)
 
 Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la raíz.
@@ -353,6 +363,7 @@ La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se 
 | `plans/PLAN-023-ARCHIVED.md` | OxiMeal: `create_recipe` documenta y envía instrucciones y tiempo de preparación (change `oximeal-recipe-instructions`; issue #334, PRs #335/#336, v0.33.0) | ✅ Completado |
 | `plans/PLAN-024-ARCHIVED.md` | Integración del blog: credenciales de WordPress desde Ajustes (change `wordpress-credentials-settings`; issue #332, PRs #338/#339, v0.34.0) | ✅ Completado |
 | `plans/PLAN-025-ARCHIVED.md` | Integración con GitHub: crear issues desde Valet por conversación (change `github-integration`; issue #333, PRs #342/#343, v0.35.0) | ✅ Completado |
+| `plans/PLAN-026-ARCHIVED.md` | Endurecer `GET /api/blog/check`: la sonda comprueba la vía de respuesta por el índice REST y falla cerrado (change `blog-check-reply-route`; issue #340, PRs #346/#347, v0.36.0) | ✅ Completado |
 
 > Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

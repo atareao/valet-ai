@@ -3,7 +3,7 @@
 **Issue:** [atareao/valet-ai#340](https://github.com/atareao/valet-ai/issues/340)
 **Change OpenSpec:** `blog-check-reply-route`
 **Rama:** `feature/blog-check-reply-route` (desde `development`)
-**Estado:** 📝 Spec redactada — pendiente de aprobación del usuario
+**Estado:** ✅ Completado — v0.36.0 desplegada en `co1`; E2E `GET /api/blog/check` → `{ok:true}`.
 
 ## 1. Contexto
 
@@ -52,32 +52,32 @@ Que la sonda distinga cinco desenlaces:
 ## 5. Tareas (TDD)
 
 ### 5.1 RED
-- [ ] Test (`wiremock`) `users/me` 200 + índice con `/wp/v2/comments` y `POST` → `Ok(())`.
-- [ ] Test: índice sin `/wp/v2/comments` → `ReplyRouteUnavailable`.
-- [ ] Test: índice con la ruta pero sin `POST` en `methods` → `ReplyRouteUnavailable`.
-- [ ] Test: índice `404`/`403` → `ReplyRouteUnavailable`.
-- [ ] Test: índice `5xx` y fallo de red → `Unavailable`.
-- [ ] Test: cuerpo del índice ilegible o sin `routes` → `ReplyRouteUnavailable`.
-- [ ] Test: 0 peticiones a `/wp-json/wp/v2/comments` y ningún `POST`.
-- [ ] Test (`src/handlers/blog.rs`): índice sin la ruta → `ok:false` con el detalle específico y sin contraseña.
-- [ ] `cargo test` → RED.
+- [x] Test (`wiremock`) `users/me` 200 + índice con `/wp/v2/comments` y `POST` → `Ok(())`.
+- [x] Test: índice sin `/wp/v2/comments` → `ReplyRouteUnavailable`.
+- [x] Test: índice con la ruta pero sin `POST` en `methods` → `ReplyRouteUnavailable`.
+- [x] Test: índice `404`/`403` → `ReplyRouteUnavailable`.
+- [x] Test: índice `5xx` y fallo de red → `Unavailable`.
+- [x] Test: cuerpo del índice ilegible o sin `routes` → `ReplyRouteUnavailable`.
+- [x] Test: 0 peticiones a `/wp-json/wp/v2/comments` y ningún `POST`.
+- [x] Test (`src/handlers/blog.rs`): índice sin la ruta → `ok:false` con el detalle específico y sin contraseña.
+- [x] `cargo test` → RED.
 
 ### 5.2 GREEN
-- [ ] Añadir `WordpressError::ReplyRouteUnavailable` con su `Display`.
-- [ ] Implementar la segunda fase en `Wordpress::check_connection` (helper privado del índice).
-- [ ] Mapear la variante nueva en `check_detail`.
-- [ ] `cargo test` y `cargo check` verdes.
+- [x] Añadir `WordpressError::ReplyRouteUnavailable` con su `Display`.
+- [x] Implementar la segunda fase en `Wordpress::check_connection` (helper privado del índice).
+- [x] Mapear la variante nueva en `check_detail`.
+- [x] `cargo test` y `cargo check` verdes.
 
 ### 5.3 REFACTOR
-- [ ] `cargo fmt --check` y `cargo clippy -- -D warnings` limpios.
-- [ ] `openspec validate --all --strict` limpio.
-- [ ] Actualizar `docs/wordpress-integration.md`.
-- [ ] `npx vitest run` en `frontend/`.
+- [x] `cargo fmt --check` y `cargo clippy -- -D warnings` limpios.
+- [x] `openspec validate --all --strict` limpio.
+- [x] Actualizar `docs/wordpress-integration.md`.
+- [x] `npx vitest run` en `frontend/`.
 
 ### 5.4 Cierre
-- [ ] Auditoría `@rust-reviewer` sin bloqueantes.
-- [ ] PR a `development`, release `v0.36.0` a `main`, despliegue en `co1` y E2E `{ok:true}`.
-- [ ] `openspec archive blog-check-reply-route`, `docs/`, índice de `plans/`, issue #340 cerrado.
+- [x] Auditoría `@rust-reviewer` sin bloqueantes.
+- [x] PR a `development`, release `v0.36.0` a `main`, despliegue en `co1` y E2E `{ok:true}`.
+- [x] `openspec archive blog-check-reply-route`, `docs/`, índice de `plans/`, issue #340 cerrado.
 
 ## 6. Riesgos
 
