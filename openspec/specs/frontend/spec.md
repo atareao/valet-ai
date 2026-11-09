@@ -1872,6 +1872,7 @@ La pestaña «Integraciones» del SettingsDialog SHALL organizarse en **sub-pest
 8. **OpenTodo**
 9. **OxiMeal**
 10. **Blog**
+11. **GitHub**
 
 Cada sub-pestaña SHALL contener únicamente los campos y acciones de su integración y SHALL tener
 **su propio botón «Guardar»**; no habrá un botón de guardado común a todas las sub-pestañas.
@@ -1911,9 +1912,9 @@ clave SHALL conservar el placeholder «Dejar vacío para usar variable de entorn
 
 - **Given** el SettingsDialog está abierto
 - **When** el usuario hace clic en la tab «Integraciones»
-- **Then** se muestran diez sub-pestañas en vertical, con `aria-orientation="vertical"` en su `tablist`
+- **Then** se muestran once sub-pestañas en vertical, con `aria-orientation="vertical"` en su `tablist`
 - **And** su orden es Strava, OpenWeatherMap, Google Places, Brave Search, apimail, Miniflux,
-  ZenNotes, OpenTodo, OxiMeal y Blog
+  ZenNotes, OpenTodo, OxiMeal, Blog y GitHub
 - **And** la sub-pestaña activa por defecto es la primera (Strava)
 
 #### Scenario: Cada sub-pestaña tiene sus propios campos y su propio botón Guardar
@@ -2023,6 +2024,8 @@ El criterio de estado SHALL ser:
   `GET /api/opentodo/status`.
 - **Blog** → «Configurado» / «Sin configurar», derivado del campo `configured` de
   `GET /api/blog/status`.
+- **GitHub** → «Configurado» / «Sin configurar», derivado del campo `configured` de
+  `GET /api/github/status`.
 
 El indicador de la etiqueta SHALL ser correcto **desde el primer render** del panel Integraciones,
 es decir, **NO SHALL** depender de que el usuario abra la sub-pestaña correspondiente (el montaje
@@ -2073,6 +2076,12 @@ sub-pestaña, su indicador SHALL actualizarse sin necesidad de recargar la pági
 - **Given** `GET /api/blog/status` responde `{ configured: false, ... }`
 - **When** se abre la pestaña «Integraciones»
 - **Then** la sub-pestaña «Blog» muestra «Sin configurar»
+
+#### Scenario: El indicador de GitHub sale del endpoint de estado
+
+- **Given** `GET /api/github/status` responde `{ configured: true, default_repo: "atareao/valet-ai" }`
+- **When** se abre la pestaña «Integraciones»
+- **Then** la sub-pestaña «GitHub» muestra «Configurado»
 
 #### Scenario: Los indicadores son correctos sin abrir cada sub-pestaña
 
@@ -2389,3 +2398,42 @@ texto en la línea de estado.
 - **When** se pulsa «Probar conexión»
 - **Then** se llama a `GET /api/blog/check`
 - **And** se muestra el `detail` de la respuesta como texto
+
+### Requirement: SettingsDialog SHALL display a GitHub section in Integraciones
+
+Ajustes → Integraciones SHALL incluir una sección «GitHub» con los campos no sensibles
+`github_default_repo` (placeholder `atareao/valet-ai`) y `github_default_labels` (placeholder con
+lista separada por comas, p. ej. `feature, valet`), que se persisten con `PUT /api/settings`, y el
+token `github_token`, que SHALL arrancar **siempre vacío**, NO SHALL releerse de ninguna respuesta y
+SHALL enviarse solo por `PUT /api/github/token`. SHALL mostrar el estado de `GET /api/github/status`
+sin el token y SHALL ofrecer «Probar conexión» (`GET /api/github/check`) mostrando su `detail` como
+texto en la línea de estado.
+
+#### Scenario: El token arranca vacío y no se relee
+
+- **Given** un `github_token` ya guardado
+- **When** se abre la sección «GitHub» de Ajustes → Integraciones
+- **Then** el campo del token está vacío
+- **And** el frontend no lo lee de ninguna respuesta
+
+#### Scenario: Guardar usa los endpoints correctos
+
+- **Given** la sección «GitHub» con el token relleno y el repositorio o los labels editados
+- **When** se guarda la sección
+- **Then** el token viaja por `PUT /api/github/token`
+- **And** `github_default_repo` y `github_default_labels` viajan por `PUT /api/settings`
+- **And** el token NO se envía en `PUT /api/settings`
+
+#### Scenario: Probar conexión muestra el veredicto
+
+- **Given** la sección «GitHub» abierta
+- **When** se pulsa «Probar conexión»
+- **Then** se llama a `GET /api/github/check`
+- **And** se muestra el `detail` de la respuesta como texto en la línea de estado
+
+#### Scenario: La sección no ofrece listar ni buscar issues
+
+- **Given** la sección «GitHub» abierta
+- **When** se inspeccionan sus campos y acciones
+- **Then** solo gestiona el token, el repositorio por defecto y los labels por defecto
+- **And** NO ofrece operaciones de listado o búsqueda de issues

@@ -77,8 +77,10 @@ pub async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
     })
 }
 
-/// `GET /api/blog/check` — sondea la conexión **real** con `GET
-/// /wp-json/wp/v2/users/me`.
+/// `GET /api/blog/check` — sondea la conexión **real**, en dos fases: `GET
+/// /wp-json/wp/v2/users/me` para validar la credencial y `GET /wp-json/` para
+/// comprobar que el sitio expone la vía de respuesta (ver
+/// [`Wordpress::check_connection`]).
 ///
 /// Responde siempre `200` con un veredicto legible: que el blog no responda no
 /// es un error del cliente, es precisamente lo que se está averiguando. El
@@ -109,9 +111,9 @@ pub async fn check(State(state): State<AppState>) -> Json<CheckResponse> {
 
 /// Traduce el error del sondeo a un detalle en español, sin la contraseña.
 ///
-/// Los dos casos que el usuario tiene que poder distinguir son «faltan las
-/// credenciales» y «las credenciales no valen»; el resto se resume en que el blog
-/// no responde.
+/// Los casos que el usuario tiene que poder distinguir son «faltan las
+/// credenciales», «las credenciales no valen», «las credenciales valen pero la
+/// vía de respuesta está cerrada» y «el blog no responde».
 fn check_detail(error: &WordpressError) -> &'static str {
     match error {
         WordpressError::MissingCredentials { .. } => {
@@ -119,6 +121,10 @@ fn check_detail(error: &WordpressError) -> &'static str {
         }
         WordpressError::Unauthorized | WordpressError::Forbidden => {
             "el usuario o la contraseña de aplicación no son válidos"
+        }
+        WordpressError::ReplyRouteUnavailable => {
+            "las credenciales son válidas, pero la ruta de respuesta del blog no \
+             está disponible: revisa la política REST del plugin"
         }
         _ => "el blog no responde",
     }
@@ -251,7 +257,17 @@ mod tests {
         );
     }
 
-    /// `GET /api/blog/check` con credenciales válidas → `200` con `ok: true`.
+    /// Monta el índice REST (`GET /wp-json/`) con el cuerpo dado.
+    async fn mount_index(server: &MockServer, body: serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(path("/wp-json/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    /// `GET /api/blog/check` con credenciales válidas y la vía de respuesta
+    /// disponible → `200` con `ok: true`.
     #[tokio::test]
     async fn check_reports_a_working_connection() {
         let state = AppState::new_in_memory_empty().await;
@@ -264,6 +280,15 @@ mod tests {
             })))
             .mount(&server)
             .await;
+        mount_index(
+            &server,
+            serde_json::json!({
+                "routes": {
+                    "/wp/v2/comments": { "methods": ["GET", "POST"] }
+                }
+            }),
+        )
+        .await;
         seed(&state, "blog_base_url", &server.uri()).await;
         seed(&state, "blog_service_user", "alice").await;
         seed(&state, "blog_app_password", "SECRET").await;
@@ -272,6 +297,43 @@ mod tests {
 
         assert!(body.ok, "una conexión sana debe informar ok: true");
         assert_eq!(body.detail, "conexión correcta");
+    }
+
+    /// `GET /api/blog/check` con credenciales válidas pero la vía de respuesta
+    /// cerrada → `200` con `ok: false`, el detalle específico y sin la contraseña.
+    #[tokio::test]
+    async fn check_reports_reply_route_unavailable() {
+        let state = AppState::new_in_memory_empty().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/wp-json/wp/v2/users/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": 1
+            })))
+            .mount(&server)
+            .await;
+        mount_index(&server, serde_json::json!({ "routes": {} })).await;
+        seed(&state, "blog_base_url", &server.uri()).await;
+        seed(&state, "blog_service_user", "alice").await;
+        seed(&state, "blog_app_password", "SECRET").await;
+
+        let Json(body) = check(State(state)).await;
+
+        assert!(!body.ok, "una vía cerrada no es una conexión correcta");
+        assert_eq!(
+            body.detail,
+            "las credenciales son válidas, pero la ruta de respuesta del blog no \
+             está disponible: revisa la política REST del plugin"
+        );
+        assert!(
+            !body.detail.contains("SECRET"),
+            "el detalle no debe filtrar la contraseña: {}",
+            body.detail
+        );
+        assert_ne!(
+            body.detail, "el usuario o la contraseña de aplicación no son válidos",
+            "una vía cerrada no es una credencial rechazada"
+        );
     }
 
     /// `GET /api/blog/check` sin credenciales → `200` con `ok: false` y sin tocar

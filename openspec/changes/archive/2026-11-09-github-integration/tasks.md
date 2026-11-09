@@ -61,7 +61,7 @@
 - [x] 3.5 Auditoría: `@rust-reviewer` (servicio/tool/rutas) y `@react-reviewer` (UI de ajustes); enrutar hallazgos. (`rust-reviewer` ⚠️ y `react-reviewer` ⚠️, sin bloqueantes; hallazgos aplicados: rename del test a *fourteen*, `validate_repo` rechaza espacios internos, `optional_str`/`required_str` type-aware, helper `setting()` deduplicado, sonda inyectable con asserts de que el token no se filtra, `refetch` muerto retirado y aserción del estado «Sin datos». Además, `frontend/src/api/github.ts` extraído para que los métodos de GitHub NO entren en el grafo inicial del bundle)
 
 ## 4. Cierre
-- [ ] 4.1 Verificación E2E contra GitHub real con un PAT clásico: `check` → `{ok:true}`; `create_issue` contra `atareao/valet-ai` y comprobación del issue creado.
-- [ ] 4.2 Verificar que `GET /api/settings` no contiene `github_token` ni ningún log lo filtra.
-- [ ] 4.3 `openspec archive github-integration`.
-- [ ] 4.4 Gitflow: `feature/github-integration`, commits gitmoji, PR a `development`.
+- [x] 4.1 Verificación E2E contra GitHub real con un PAT clásico: `check` → `{ok:true}`; `create_issue` contra `atareao/valet-ai` y comprobación del issue creado.
+- [x] 4.2 Verificar que `GET /api/settings` no contiene `github_token` ni ningún log lo filtra.
+- [x] 4.3 `openspec archive github-integration`.
+- [x] 4.4 Gitflow: `feature/github-integration`, commits gitmoji, PR a `development`.

@@ -1,28 +1,48 @@
 # HANDOFF
 
-**Fecha:** 2026-11-07
+**Fecha:** 2026-11-09
 
 ## Estado
 
-**COMPLETADO.** La E2E real de OxiMeal (que quedaba pendiente) está hecha: `GET /api/oximeal/check` → `{ok:true}` verificado en `co1` con la **v0.32.1** desplegada (Dockge). El change quedó archivado (`2026-11-07-oximeal-m2m-resource`) y el plan vive en `plans/PLAN-022-ARCHIVED.md`. No queda ninguna tarea crítica.
+**COMPLETADO.** El roadmap de tres features (OxiMeal, WordPress, GitHub) está cerrado. La
+integración con GitHub (issue #333) quedó implementada, auditada, desplegada como **v0.35.0** en
+`co1` y **verificada E2E** con un PAT clásico real: la tool creó el issue #344 por conversación
+(skill `Github` 0.99, `success:true`), `check` → `{ok:true}`, `GET /api/settings` sin
+`github_token` y 0 filtraciones en logs. No queda ninguna tarea crítica.
 
-## Qué se ha hecho
+## Qué se ha hecho (GitHub)
 
-- **PR #329** (`feature/oximeal-m2m-resource` → `development`), **release v0.32.1** (PR #330 → `main`, tag `v0.32.1`, imagen `ghcr.io/atareao/valet-ai:{v0.32.1,0.32,latest}`) y **back-merge a `development`**.
-- **Cambios:** `resource` en la petición `client_credentials` (resuelto ajuste `oximeal_resource` → env `OXIMEAL_RESOURCE` → derivado `<base_url>/api`), `status.resource`, `check` con detalle redactado del IdP y campo UI «OxiMeal · Resource».
-- Auditorías `@rust-reviewer` y `@react-reviewer` sin bloqueantes.
-- Change archivado y plan en `plans/PLAN-022-ARCHIVED.md`.
+- **Código** (PR #342 → `development`, CI verde): servicio `Github`, tool `github` (`create_issue`,
+  permiso `Notify`), endpoints `status`/`token`/`check`, `github_token` sensible, ajustes
+  `github_default_repo`/`github_default_labels`, skill `github` (14 skills / 35 tools), migración
+  `20261111000001_github`.
+- **Release v0.35.0** (PR #343 → `main`, tag `v0.35.0`, imagen publicada) y back-merge a `development`.
+- **Despliegue** en `co1` (Dockge): `/api/health` → `{"version":"0.35.0"}`; migración
+  `20261111000001|github|1` aplicada.
+- **E2E** (local con copia de BD + PAT real, y turno real de la tool): router selecciona `Github`
+  (0.99), issue **#344** creado y luego cerrado.
+- **Cierre documental** (PR #345 → `development`, CI verde): change archivado
+  (`2026-11-09-github-integration`), `Purpose` real de `github`/`github-api`, `docs/github-integration.md`,
+  `plans/PLAN-025-ARCHIVED.md`, AGENTS §V entrada 24 + índice §VI, issue **#333** cerrado.
+- Auditorías `@rust-reviewer` y `@react-reviewer` sin bloqueantes; hallazgos aplicados.
 
 ## Tarea pendiente / siguiente paso
 
-- Ninguna tarea crítica. Candidatas:
-  - Los **5 follow-ups menores** del change (en `docs/oximeal-m2m-resource.md`): doble lectura de `base_url` en `resolve_config`; normalización del `resource` explícito; brazo `_` de `check_detail` para `NotFound`/`InvalidInput`; `redact` del token M2M; test del reset de `oximeal_resource`.
-  - La **E2E de las operaciones concretas del agente** (`search_recipes`, `plan_week`, `add_shopping_items`, `clear_purchased`, `create_recipe`) desde el chat.
+- Ninguna tarea crítica. Candidatas (sin asignar):
+  - **Valet-ai #340**: endurecer `GET /api/blog/check` para detectar la vía de respuesta muerta
+    (hoy sondea solo `users/me`).
+  - **atareao.es #175**: aprovisionar `atareao_valet_reply_user` desde la UI del plugin.
+  - `frontend/src/test/dependency-stack.test.ts` solo cubre la etapa A de React 19 (etapa B sin cubrir).
 
 ## Follow-ups conocidos
 
-- Causa raíz a recordar: **Pocket ID exige `resource` (RFC 8707)** para scopes personalizados; sin él responde `invalid_scope` y el `aud` del token no coincide con `OIDC_API_AUDIENCE` de OxiMeal.
-- Los 5 follow-ups menores del change listados arriba.
+- **Bundle inicial al límite:** 69.98/70.00 kB. Los métodos por integración **no** van en
+  `api/client.ts` (grafo inicial); van en su propio `api/<X>.ts` importado por un hook lazy.
+  No subir el límite del control de bundle.
+- **Archive deja el `Purpose` en placeholder** para capabilities nuevas: reescribirlo a mano y
+  volver a pasar `openspec validate --all --strict`.
+- **Pedir el dominio público desde `co1` da `403 Ko`** (bloqueo de IP origen/WAF); desde fuera
+  responde 200.
 
 ## Restricciones
 
