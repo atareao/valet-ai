@@ -3,8 +3,9 @@ use sqlx::SqlitePool;
 use std::collections::HashMap;
 
 /// Claves de `settings` cuyo valor es **material sensible** (tokens OAuth, el
-/// token de ZenNotes y el de OpenTodo) y que por tanto **nunca** deben salir por
-/// la API de ajustes ni aceptarse por escritura desde un cliente.
+/// token de ZenNotes, el de OpenTodo, el client secret M2M de OxiMeal y la
+/// Application Password del blog) y que por tanto **nunca** deben salir por la
+/// API de ajustes ni aceptarse por escritura desde un cliente.
 ///
 /// Es la única fuente de verdad: añadir aquí una clave la excluye de
 /// `GET /api/settings` y hace que `PUT /api/settings` la ignore. El
@@ -17,6 +18,7 @@ pub const SENSITIVE_KEYS: &[&str] = &[
     "zennotes_token",
     "opentodo_token",
     "oximeal_client_secret",
+    "blog_app_password",
 ];
 
 /// `true` si `key` es sensible y por tanto debe omitirse en las respuestas y
@@ -155,6 +157,11 @@ mod tests {
         assert!(!is_sensitive_key("oximeal_base_url"));
         assert!(!is_sensitive_key("oximeal_issuer_url"));
         assert!(!is_sensitive_key("oximeal_client_id"));
+        // La Application Password del blog solo se escribe por `PUT
+        // /api/blog/password`; su URL base y su usuario son ajustes normales.
+        assert!(is_sensitive_key("blog_app_password"));
+        assert!(!is_sensitive_key("blog_base_url"));
+        assert!(!is_sensitive_key("blog_service_user"));
         assert!(!is_sensitive_key("max_window_tokens"));
     }
 

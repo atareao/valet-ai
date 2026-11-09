@@ -597,6 +597,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::opentodo::routes())
         // OxiMeal integration (config status, connection check + secret endpoint)
         .merge(routes::oximeal::routes())
+        // Blog integration (config status, connection check + password endpoint)
+        .merge(routes::blog::routes())
         // WebPush (VAPID public key, subscribe, unsubscribe)
         .merge(routes::push::routes())
         // Notifications inbox: ingest (ingest-token authenticated) + session reads

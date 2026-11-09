@@ -237,3 +237,11 @@ path = "tests/db/opentodo_migration.rs"
 [[test]]
 name = "oximeal-recipe-instructions-migration"
 path = "tests/db/oximeal_recipe_instructions.rs"
+
+[[test]]
+name = "blog-api"
+path = "tests/api/blog.rs"
+
+[[test]]
+name = "blog-credentials-migration"
+path = "tests/db/blog_credentials_migration.rs"
