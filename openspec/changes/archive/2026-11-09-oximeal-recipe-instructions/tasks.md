@@ -27,6 +27,6 @@ Issue de entrada: [#334](https://github.com/atareao/valet-ai/issues/334)
 
 ## 4. Verificación E2E y cierre
 
-- [ ] 4.1 Verificar contra la instancia real de OxiMeal (`co1`) que una receta creada con instrucciones las guarda.
-- [ ] 4.2 Crear `docs/oximeal-recipe-instructions.md` y actualizar `docs/oximeal-integration.md` si procede.
-- [ ] 4.3 Marcar las tareas y archivar el change con `openspec archive oximeal-recipe-instructions`.
+- [x] 4.1 Verificar contra la instancia real de OxiMeal (`co1`, v0.33.0) que una receta creada con instrucciones y tiempo se guarda. **Confirmado por el usuario.**
+- [x] 4.2 Crear `docs/oximeal-recipe-instructions.md`.
+- [x] 4.3 Marcar las tareas y archivar el change con `openspec archive oximeal-recipe-instructions`.
