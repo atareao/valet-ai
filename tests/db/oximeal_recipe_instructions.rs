@@ -155,13 +155,17 @@ async fn test_fragment_asks_for_instructions_and_prep_time() {
 /// Scenario: El texto por defecto compilado y el sembrado coinciden.
 ///
 /// El fragmento que siembra la migración (embebida en el binario) es exactamente
-/// el valor que la base de datos acaba teniendo tras migrar.
+/// el valor que la base de datos acaba teniendo tras aplicarla. Desde que una
+/// migración posterior (`20261112000001`, oximeal-search-semantics) también
+/// actualiza este fragmento, una base recién migrada ya no lleva su texto: se
+/// parte del estado previo y se aplica solo el cuerpo de esta migración.
 #[tokio::test]
 async fn test_compiled_migration_literal_matches_the_seeded_value() {
-    let pool = setup().await;
+    let pool = pool_before(PROMPT_VERSION).await;
+    apply_migration(&pool).await;
     let value = settings_value(&pool, "SKILL_MENUS_PROMPT")
         .await
-        .expect("SKILL_MENUS_PROMPT must exist after migrating");
+        .expect("SKILL_MENUS_PROMPT must exist after applying the migration");
 
     let sql = migration_sql();
     assert!(

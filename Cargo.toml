@@ -239,6 +239,10 @@ name = "oximeal-recipe-instructions-migration"
 path = "tests/db/oximeal_recipe_instructions.rs"
 
 [[test]]
+name = "oximeal-search-semantics-migration"
+path = "tests/db/oximeal_search_semantics.rs"
+
+[[test]]
 name = "blog-api"
 path = "tests/api/blog.rs"
 
