@@ -365,6 +365,7 @@ La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se 
 | `plans/PLAN-025-ARCHIVED.md` | Integración con GitHub: crear issues desde Valet por conversación (change `github-integration`; issue #333, PRs #342/#343, v0.35.0) | ✅ Completado |
 | `plans/PLAN-026-ARCHIVED.md` | Endurecer `GET /api/blog/check`: la sonda comprueba la vía de respuesta por el índice REST y falla cerrado (change `blog-check-reply-route`; issue #340, PRs #346/#347, v0.36.0) | ✅ Completado |
 | `plans/PLAN-027-ARCHIVED.md` | Endurecer el contrato de OxiMeal: `tags` objeto en `search_recipes`, detalle del `400` y procedencia del `recipe_id` (issue #358; PRs #359/#360, v0.36.1) | ✅ Completado |
+| `plans/PLAN-028-ARCHIVED.md` | Búsqueda de recetas de OxiMeal por palabras: `search_recipes` combina términos en paralelo (intersección primero, luego por número de coincidencias) y aviso accionable cuando no hay resultados (change `oximeal-search-semantics`; issue #361, PRs #363/#364, v0.37.0) | ✅ Completado |
 
 > Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

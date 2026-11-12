@@ -25,10 +25,10 @@ en un turno, todas multi-palabra, todas a 0.
 
 - [x] 3.1 Change `oximeal-search-semantics` (proposal, deltas, design, tasks) validado en verde.
 - [x] 3.2 TDD RED → GREEN → REFACTOR.
-- [ ] 3.3 Auditoría `@rust-reviewer` sin bloqueantes.
-- [ ] 3.4 PR a `development` y release a `main`.
-- [ ] 3.5 Despliegue en `co1` y E2E: planificar el menú con una búsqueda de varias palabras.
-- [ ] 3.6 `openspec archive oximeal-search-semantics`, índice de `plans/`, issue #361 cerrado.
+- [x] 3.3 Auditoría `@rust-reviewer` sin bloqueantes.
+- [x] 3.4 PR a `development` y release a `main`.
+- [x] 3.5 Despliegue en `co1` y E2E: planificar el menú con una búsqueda de varias palabras.
+- [x] 3.6 `openspec archive oximeal-search-semantics`, índice de `plans/`, issue #361 cerrado.
 
 ## 4. Fuera de alcance
 
