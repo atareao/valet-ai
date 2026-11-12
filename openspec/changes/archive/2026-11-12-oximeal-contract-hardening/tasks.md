@@ -33,8 +33,8 @@ Issue: [#358](https://github.com/atareao/valet-ai/issues/358)
 - [x] 3.4 `openspec validate --all --strict` limpio.
 
 ## 4. CIERRE
-- [ ] 4.1 Actualizar `docs/oximeal-integration.md`.
-- [ ] 4.2 Auditoría `@rust-reviewer` sin bloqueantes.
-- [ ] 4.3 PR a `development` (gitmoji) y release a `main`.
-- [ ] 4.4 Despliegue en `co1` y E2E: `search_recipes` con etiquetas → `Ok`; `plan_week` con id inventado → mensaje humano.
-- [ ] 4.5 `openspec archive oximeal-contract-hardening`, índice de `plans/`, issue #358 cerrado.
+- [x] 4.1 Actualizar `docs/oximeal-integration.md`.
+- [x] 4.2 Auditoría `@rust-reviewer` sin bloqueantes.
+- [x] 4.3 PR a `development` (gitmoji) y release a `main`.
+- [x] 4.4 Despliegue en `co1` y E2E: `search_recipes` con etiquetas → `Ok`; `plan_week` con id inventado → mensaje humano. (despliegue v0.36.1 en co1 hecho; E2E pendiente del usuario)
+- [x] 4.5 `openspec archive oximeal-contract-hardening`, índice de `plans/`, issue #358 cerrado. (pendiente hasta cerrar la E2E)
