@@ -37,7 +37,7 @@ Issue: [#340](https://github.com/atareao/valet-ai/issues/340)
 
 ## 4. CIERRE
 - [x] 4.1 Actualizar `docs/wordpress-integration.md`.
-- [ ] 4.2 Auditoría `@rust-reviewer` sin bloqueantes.
-- [ ] 4.3 PR a `development` (gitmoji) y release `v0.36.0` a `main`.
-- [ ] 4.4 Despliegue en `co1` y E2E: `GET /api/blog/check` → `{ok:true}`.
+- [x] 4.2 Auditoría `@rust-reviewer` sin bloqueantes.
+- [x] 4.3 PR a `development` (gitmoji) y release `v0.36.0` a `main`.
+- [x] 4.4 Despliegue en `co1` y E2E: `GET /api/blog/check` → `{ok:true}`.
 - [ ] 4.5 `openspec archive blog-check-reply-route`, índice de `plans/`, issue #340 cerrado.
