@@ -337,7 +337,11 @@ fn recent_recipe_json(recipe: &RecentRecipe) -> Value {
 }
 
 /// Presenta una [`RecipeSummary`] como JSON.
+///
+/// Las etiquetas salen como **lista de nombres**: OxiMeal las envía como
+/// objetos `{id, name, slug, source}` y al modelo solo le interesa el nombre.
 fn recipe_summary_json(recipe: &RecipeSummary) -> Value {
+    let tags: Vec<&str> = recipe.tags.iter().map(|tag| tag.name.as_str()).collect();
     json!({
         "id": recipe.id,
         "name": recipe.name,
@@ -345,7 +349,7 @@ fn recipe_summary_json(recipe: &RecipeSummary) -> Value {
         "diet_type": recipe.diet_type,
         "prep_time_minutes": recipe.prep_time_minutes,
         "servings": recipe.servings,
-        "tags": recipe.tags,
+        "tags": tags,
     })
 }
 
@@ -513,7 +517,7 @@ impl Tool for OximealTool {
                 },
                 "entries": {
                     "type": "array",
-                    "description": "Entradas del plan semanal (obligatorio en plan_week)",
+                    "description": "Entradas del plan semanal (obligatorio en plan_week). Cada `recipe_id` debe ser el identificador de una receta EXISTENTE, obtenido de `search_recipes` (buscándola por texto o categoría) o del `id` que devuelve `create_recipe` en el mismo turno: el identificador NO se inventa, y un nombre de receta no vale como id.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -522,7 +526,10 @@ impl Tool for OximealTool {
                                 "type": "string",
                                 "enum": MEAL_TYPES
                             },
-                            "recipe_id": { "type": "string" },
+                            "recipe_id": {
+                                "type": "string",
+                                "description": "Id de una receta EXISTENTE, obtenido de `search_recipes` o `create_recipe`; no un nombre inventado"
+                            },
                             "role": {
                                 "type": "string",
                                 "enum": ROLES
@@ -1019,5 +1026,126 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.data["count"], 1);
         assert_eq!(result.data["recipes"][0]["id"], "a");
+    }
+
+    /// Scenario: la salida de `search_recipes` expone las etiquetas por su
+    /// **nombre**, aunque OxiMeal las envíe como objetos.
+    #[tokio::test]
+    async fn test_search_recipes_output_lists_tag_names() {
+        let server = MockServer::start().await;
+        mount_auth(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/search-recipes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "recipes": [{
+                    "id": "abc",
+                    "name": "Ensalada",
+                    "category": "salad",
+                    "servings": 2,
+                    "tags": [
+                        {"id": "t1", "name": "ligera", "slug": "ligera", "source": "auto"},
+                        {"id": "t2", "name": "verano", "slug": "verano", "source": "auto"}
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let tool = tool_for(&server).await;
+        let result = tool
+            .execute(json!({ "operation": "search_recipes", "query": "ensalada" }))
+            .await
+            .expect("la búsqueda no debe fallar con etiquetas objeto");
+
+        assert!(result.success);
+        assert_eq!(result.data["count"], 1);
+        assert_eq!(
+            result.data["recipes"][0]["tags"],
+            json!(["ligera", "verano"])
+        );
+    }
+
+    /// Scenario: un `400` de OxiMeal en `plan_week` surfacea el mensaje humano.
+    ///
+    /// El servidor responde con el código máquina en `error` y la explicación en
+    /// `message`; el error de la herramienta debe llevar la explicación.
+    #[tokio::test]
+    async fn test_plan_week_400_surfaces_the_human_message() {
+        let server = MockServer::start().await;
+        mount_auth(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/weekly-plan"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": "validation",
+                "message": "datos inválidos: receta inexistente: CREMA_CALABAZA"
+            })))
+            .mount(&server)
+            .await;
+
+        let tool = tool_for(&server).await;
+        let err = tool
+            .execute(json!({ "operation": "plan_week", "entries": [{
+                "date": "2026-11-09", "meal_type": "dinner", "recipe_id": "CREMA_CALABAZA"
+            }] }))
+            .await
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(
+            message.contains("receta inexistente: CREMA_CALABAZA"),
+            "el error pierde el mensaje humano: {message}"
+        );
+        assert!(
+            !message.contains("validation"),
+            "el código máquina no debe desplazar al mensaje: {message}"
+        );
+    }
+
+    /// Scenario: el esquema de `plan_week` documenta la procedencia del
+    /// `recipe_id`.
+    ///
+    /// Debe decirlo dos veces: en la descripción de `entries` y en la de la
+    /// propia propiedad `recipe_id`, que es la que el modelo mira al rellenarla.
+    #[tokio::test]
+    async fn test_parameters_plan_week_entries_document_recipe_id_source() {
+        let db = setup_db().await;
+        let params = OximealTool::new(db).parameters();
+
+        let entries = &params["properties"]["entries"];
+        let description = entries["description"]
+            .as_str()
+            .expect("`entries` debe declarar una descripción");
+
+        assert!(
+            description.contains("search_recipes"),
+            "la descripción debe nombrar `search_recipes`: {description:?}"
+        );
+        assert!(
+            description.contains("create_recipe"),
+            "la descripción debe nombrar `create_recipe`: {description:?}"
+        );
+        assert!(
+            description.to_lowercase().contains("no se inventa"),
+            "la descripción debe decir que el identificador no se inventa: {description:?}"
+        );
+
+        let recipe_id = &entries["items"]["properties"]["recipe_id"];
+        assert_eq!(
+            recipe_id["type"], "string",
+            "`recipe_id` sigue siendo una cadena: {recipe_id:?}"
+        );
+        let recipe_id_description = recipe_id["description"]
+            .as_str()
+            .expect("`recipe_id` debe declarar una descripción");
+
+        assert!(
+            recipe_id_description.contains("search_recipes")
+                && recipe_id_description.contains("create_recipe"),
+            "la descripción de `recipe_id` debe nombrar sus fuentes: {recipe_id_description:?}"
+        );
+        assert!(
+            recipe_id_description.to_lowercase().contains("inventad"),
+            "la descripción de `recipe_id` debe decir que no se inventa: {recipe_id_description:?}"
+        );
     }
 }

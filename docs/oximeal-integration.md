@@ -162,6 +162,24 @@ Alternativamente, todo puede pre-configurarse por entorno: ver el bloque
   cachean por proceso con margen de 30 s; un candado por emisor evita que N
   llamadas concurrentes pidan N tokens. Cambiar el `client_id` o el emisor
   invalida el token cacheado.
+- **Las etiquetas de receta se decodifican como objetos y se exponen como
+  nombres.** OxiMeal (feature *recipe-tags*) envía `RecipeSummary.tags` como
+  objetos `{id, name, slug, source}`; `TagRef` se queda con el `name` e ignora el
+  resto, y la salida de la herramienta sigue siendo una lista de cadenas. Con
+  `Vec<String>` toda búsqueda reventaba con `invalid type: map, expected a
+  string`.
+- **El detalle de un `4xx` prefiere `message` a `error`.** OxiMeal usa `error`
+  como código máquina (`validation`, `not_found`) y deja la explicación humana en
+  `message`; el orden de extracción es `message`, `error`, `detail`, `title`. El
+  propio cuerpo recortado a 300 caracteres se usa cuando el cuerpo no es JSON
+  legible **o** cuando sí lo es pero ninguna de esas cuatro claves es una cadena.
+- **El `recipe_id` de `plan_week` no se inventa.** El esquema que se envía al
+  modelo lo dice explícitamente, tanto en la descripción de `entries` como en la
+  de la propia propiedad `recipe_id`: el identificador sale de `search_recipes` o
+  del `id` que devuelve `create_recipe`, nunca de un nombre de receta. **No** se
+  pre-valida con una llamada extra a `search_recipes` (una petición de más por
+  cada entrada y una fuente de fallo añadida): la corrección llega por el `400`
+  del servidor, ahora legible, dentro del mismo turno.
 - **`GET /api/oximeal/check` es la sonda real.** Obtiene un token y consulta
   `recent-recipes`; responde siempre `200` con `{ok, detail}` porque que OxiMeal
   (o su IdP) no responda es precisamente lo que se averigua. El `detail` separa

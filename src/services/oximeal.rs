@@ -137,6 +137,18 @@ pub struct RecentRecipe {
     pub last_planned: Option<String>,
 }
 
+/// Etiqueta de receta devuelta por OxiMeal.
+///
+/// El servidor la envía como **objeto** `{id, name, slug, source}` (feature
+/// *recipe-tags*), pero de todo el objeto solo interesa el `name`: es lo que la
+/// herramienta expone al modelo. Los campos sobrantes se ignoran, que es el
+/// comportamiento por defecto de `serde`.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct TagRef {
+    pub name: String,
+}
+
 /// Resumen de receta devuelto por la búsqueda (`GET /api/agent/search-recipes`).
 ///
 /// Tolerante a campos extra: `#[serde(default)]` a nivel de estructura.
@@ -149,7 +161,7 @@ pub struct RecipeSummary {
     pub diet_type: Option<String>,
     pub prep_time_minutes: Option<i64>,
     pub servings: i64,
-    pub tags: Vec<String>,
+    pub tags: Vec<TagRef>,
 }
 
 /// Entrada del plan semanal (`POST /api/agent/weekly-plan`).
@@ -566,11 +578,15 @@ impl Oximeal {
     }
 
     /// Extrae el mensaje del servidor de un cuerpo de error, **sin** redactar.
+    ///
+    /// Se prefiere `message` a `error`: OxiMeal usa `error` como **código
+    /// máquina** (`validation`, `not_found`) y la explicación humana viaja en
+    /// `message`. El orden es `message`, `error`, `detail`, `title`.
     fn server_message(&self, body: &str) -> String {
         let detail = serde_json::from_str::<serde_json::Value>(body)
             .ok()
             .and_then(|value| {
-                ["error", "message", "detail", "title"]
+                ["message", "error", "detail", "title"]
                     .iter()
                     .find_map(|key| value.get(*key).and_then(|value| value.as_str()))
                     .map(str::to_string)
@@ -1531,6 +1547,118 @@ mod tests {
         }
     }
 
+    /// Scenario: un `400` con `message` humano prefiere el `message` al código
+    /// máquina de `error`.
+    ///
+    /// OxiMeal responde `{"error":"validation","message":"datos inválidos: …"}`;
+    /// el detalle debe quedarse con la explicación humana.
+    #[tokio::test]
+    #[serial]
+    async fn error_400_prefers_message_over_error_code() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/recipes"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "validation",
+                "message": format!("datos inválidos: usa {SECRET} mal")
+            })))
+            .mount(&server)
+            .await;
+
+        let err = client_for(&server)
+            .create_recipe(&serde_json::json!({ "name": "x" }))
+            .await
+            .unwrap_err();
+
+        match err {
+            OximealError::InvalidInput(detail) => {
+                assert!(
+                    detail.contains("datos inválidos: usa"),
+                    "el detalle pierde el mensaje humano: {detail}"
+                );
+                assert!(
+                    !detail.contains("validation"),
+                    "el código máquina no debe desplazar al mensaje: {detail}"
+                );
+                // El secreto va **dentro** del mensaje humano, que es la rama
+                // preferida tras este change: debe pasar por `redact`.
+                assert!(
+                    detail.contains("***"),
+                    "el secreto debe redactarse, no desaparecer: {detail}"
+                );
+                assert!(
+                    !detail.contains(SECRET),
+                    "el detalle filtra el secreto: {detail}"
+                );
+            }
+            other => panic!("se esperaba InvalidInput: {other:?}"),
+        }
+    }
+
+    /// Un `400` con **solo** `error` humano (sin `message`) sigue usándolo.
+    #[tokio::test]
+    #[serial]
+    async fn error_400_with_only_error_uses_it() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        Mock::given(method("POST"))
+            .and(path("/api/agent/recipes"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "receta inexistente: CREMA_CALABAZA"
+            })))
+            .mount(&server)
+            .await;
+
+        let err = client_for(&server)
+            .create_recipe(&serde_json::json!({ "name": "x" }))
+            .await
+            .unwrap_err();
+
+        match err {
+            OximealError::InvalidInput(detail) => assert!(
+                detail.contains("receta inexistente: CREMA_CALABAZA"),
+                "sin `message` debe usarse `error`: {detail}"
+            ),
+            other => panic!("se esperaba InvalidInput: {other:?}"),
+        }
+    }
+
+    /// Un `400` con cuerpo **no JSON** usa el propio cuerpo, recortado a 300.
+    #[tokio::test]
+    #[serial]
+    async fn error_400_with_non_json_body_uses_the_trimmed_body() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        // 400 `x` + `fin` = 403 caracteres: el detalle debe recortarse a 300.
+        let body = format!("{}fin", "x".repeat(400));
+        Mock::given(method("POST"))
+            .and(path("/api/agent/recipes"))
+            .respond_with(ResponseTemplate::new(400).set_body_string(body))
+            .mount(&server)
+            .await;
+
+        let err = client_for(&server)
+            .create_recipe(&serde_json::json!({ "name": "x" }))
+            .await
+            .unwrap_err();
+
+        match err {
+            OximealError::InvalidInput(detail) => {
+                assert!(detail.starts_with('x'), "detalle inesperado: {detail:?}");
+                assert!(
+                    !detail.contains("fin"),
+                    "el cuerpo debe recortarse: {detail:?}"
+                );
+                assert_eq!(detail.chars().count(), 300, "recorte a 300 caracteres");
+            }
+            other => panic!("se esperaba InvalidInput: {other:?}"),
+        }
+    }
+
     /// `404` → `NotFound` y `5xx` → `Upstream`.
     #[tokio::test]
     #[serial]
@@ -1600,7 +1728,10 @@ mod tests {
                     "diet_type": "vegetarian",
                     "prep_time_minutes": 20,
                     "servings": 2,
-                    "tags": ["italiana", "rápida"],
+                    "tags": [
+                        {"id": "t1", "name": "italiana", "slug": "italiana", "source": "auto"},
+                        {"id": "t2", "name": "rápida", "slug": "rapida", "source": "auto"}
+                    ],
                     "extra_field": "se ignora"
                 }]
             })))
@@ -1616,7 +1747,115 @@ mod tests {
         assert_eq!(recipes[0].id, "abc");
         assert_eq!(recipes[0].name, "Pasta al pesto");
         assert_eq!(recipes[0].prep_time_minutes, Some(20));
-        assert_eq!(recipes[0].tags, vec!["italiana", "rápida"]);
+        let tags: Vec<&str> = recipes[0]
+            .tags
+            .iter()
+            .map(|tag| tag.name.as_str())
+            .collect();
+        assert_eq!(tags, vec!["italiana", "rápida"]);
+    }
+
+    /// Scenario: las recetas con etiquetas objeto se decodifican.
+    ///
+    /// OxiMeal (feature *recipe-tags*) envía `tags` como objetos
+    /// `{id, name, slug, source}`. Antes `RecipeSummary` lo declaraba como
+    /// `Vec<String>`, así que **toda** búsqueda reventaba con
+    /// «invalid type: map, expected a string».
+    #[tokio::test]
+    #[serial]
+    async fn search_recipes_decodes_object_tags() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/search-recipes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "recipes": [{
+                    "id": "abc",
+                    "name": "Ensalada",
+                    "category": "salad",
+                    "diet_type": "mediterranean",
+                    "prep_time_minutes": 10,
+                    "servings": 2,
+                    "tags": [{"id": "t1", "name": "ligera", "slug": "ligera", "source": "auto"}]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let recipes = client_for(&server)
+            .search_recipes(Some("ensalada"), None)
+            .await
+            .expect("las etiquetas objeto no deben romper la decodificación");
+
+        assert_eq!(recipes.len(), 1);
+        let tags: Vec<&str> = recipes[0]
+            .tags
+            .iter()
+            .map(|tag| tag.name.as_str())
+            .collect();
+        assert_eq!(tags, vec!["ligera"]);
+    }
+
+    /// Scenario: una receta sin etiquetas se decodifica igual.
+    ///
+    /// Vale tanto omitir el campo `tags` como enviarlo vacío.
+    #[tokio::test]
+    #[serial]
+    async fn search_recipes_decodes_recipe_without_tags() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/search-recipes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "recipes": [
+                    {"id": "omitido", "name": "Sin campo", "category": "main", "servings": 1},
+                    {"id": "vacio", "name": "Vacío", "category": "main", "servings": 1, "tags": []}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let recipes = client_for(&server)
+            .search_recipes(None, None)
+            .await
+            .expect("una receta sin etiquetas debe decodificarse");
+
+        assert_eq!(recipes.len(), 2);
+        assert!(
+            recipes.iter().all(|recipe| recipe.tags.is_empty()),
+            "ninguna receta debe traer etiquetas: {recipes:?}"
+        );
+    }
+
+    /// No-regresión: `recent_recipes` usa [`RecentRecipe`], que no declara
+    /// `tags`; si el cuerpo trae uno (objeto), se ignora sin romper.
+    #[tokio::test]
+    #[serial]
+    async fn recent_recipes_tolerates_an_unknown_tags_field() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/recent-recipes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "recipes": [{
+                    "id": "a",
+                    "name": "A",
+                    "category": "main",
+                    "last_planned": "2026-11-06",
+                    "tags": [{"id": "t1", "name": "ligera", "slug": "ligera", "source": "auto"}]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let recipes = client_for(&server).recent_recipes(7).await.expect("ok");
+
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].id, "a");
+        assert_eq!(recipes[0].last_planned.as_deref(), Some("2026-11-06"));
     }
 
     /// `recent_recipes`: `days` por defecto 7 y acotado a `1..=365`.
