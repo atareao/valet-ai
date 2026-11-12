@@ -93,7 +93,7 @@ El servicio SHALL implementar exactamente estas operaciones, contra los endpoint
 | `delete_completed()` | `DELETE /api/agent/shopping/completed` | — |
 | `create_recipe(input)` | `POST /api/agent/recipes` | cuerpo `RecipeInput` (`name`, `category`, `ingredients` obligatorios) |
 
-Un `400` del servidor SHALL traducirse a `InvalidInput` conservando el mensaje del servidor (que nunca contiene credenciales); un `404` SHALL traducirse a `NotFound`; un `5xx` o un fallo de red SHALL traducirse a `Upstream`.
+Un `400` del servidor SHALL traducirse a `InvalidInput` conservando el **mensaje humano** del servidor (que nunca contiene credenciales). Al extraer ese mensaje de un cuerpo de error en JSON, el servicio SHALL preferir los campos en el orden `message`, `error`, `detail`, `title`: `error` es a menudo un código máquina (`validation`, `not_found`) y NO SHALL desplazar a `message`; si el cuerpo no es JSON legible, SHALL usar el propio cuerpo (recortado) como detalle. Un `404` SHALL traducirse a `NotFound`; un `5xx` o un fallo de red SHALL traducirse a `Upstream`.
 
 #### Scenario: La búsqueda de recetas usa query y categoría
 - **Given** una llamada `search_recipes("pasta", "main")`
@@ -108,9 +108,10 @@ Un `400` del servidor SHALL traducirse a `InvalidInput` conservando el mensaje d
 - **And** la respuesta incluye `created` y `shopping_list`
 
 #### Scenario: Un 400 del servidor conserva su mensaje
-- **Given** la Agent API respondiendo `400` con `{"error":"categoría inválida: foo"}`
+- **Given** la Agent API respondiendo `400` con `{"error":"validation","message":"datos inválidos: categoría inválida: foo"}`
 - **When** se ejecuta `create_recipe` con esa categoría
-- **Then** el error es `InvalidInput` con el mensaje del servidor
+- **Then** el error es `InvalidInput` con el mensaje humano del servidor (contiene `categoría inválida: foo`)
+- **And** el detalle NO es el código máquina `validation`
 - **And** el secreto NO aparece en el error
 
 ### Requirement: El servicio SHALL transmitir sin alterar los campos opcionales de `RecipeInput` en `create_recipe`
@@ -128,3 +129,19 @@ La operación `create_recipe` del servicio OxiMeal SHALL enviar a `POST /api/age
 - **When** se ejecuta
 - **Then** el cuerpo enviado NO incluye `instructions`
 - **And** la petición se completa igualmente
+
+### Requirement: La decodificación de las listas de recetas SHALL tolerar las etiquetas objeto de OxiMeal
+
+La decodificación de las listas de recetas (`recent_recipes` y `search_recipes`) SHALL ser tolerante a la forma real de las etiquetas de OxiMeal: cada receta puede traer `tags` como una lista de **objetos** `{id, name, slug, source}` (no de cadenas), y el servicio SHALL decodificarlas sin fallar. La representación interna SHALL quedarse con el **nombre** de cada etiqueta, y la salida de la herramienta SHALL seguir exponiendo una lista de nombres.
+
+#### Scenario: Las recetas con etiquetas objeto se decodifican
+- **Given** la Agent API devolviendo `{"recipes":[{"id":"abc","name":"Ensalada","category":"salad","diet_type":"mediterranean","prep_time_minutes":10,"servings":2,"tags":[{"id":"t1","name":"ligera","slug":"ligera","source":"auto"}]}]}`
+- **When** se ejecuta `search_recipes` (o `recent_recipes`)
+- **Then** la operación completa sin error
+- **And** la etiqueta se conserva por su `name` (`ligera`)
+
+#### Scenario: Una receta sin etiquetas se decodifica igual
+- **Given** la Agent API devolviendo una receta sin el campo `tags` (o con `tags: []`)
+- **When** se ejecuta `search_recipes` (o `recent_recipes`)
+- **Then** la operación completa sin error
+- **And** la receta aparece sin etiquetas
