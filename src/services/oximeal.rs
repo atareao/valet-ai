@@ -22,7 +22,7 @@
 
 use crate::db::repos::settings::SettingsRepo;
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,12 @@ const TOKEN_EXPIRY_MARGIN_SECS: u64 = 30;
 /// Número máximo de recetas que devuelve [`Oximeal::search_recipes`] (el
 /// servidor ya acota, pero el cliente no confía en ello).
 const MAX_SEARCH_RESULTS: usize = 10;
+
+/// Tope de términos que [`Oximeal::search_recipes`] considera de una consulta.
+///
+/// Acota la latencia y la carga de una búsqueda de varias palabras: los términos
+/// sobrantes se ignoran, sin fallar.
+const MAX_SEARCH_TERMS: usize = 6;
 
 /// Errores del cliente de OxiMeal.
 ///
@@ -423,42 +429,83 @@ impl Oximeal {
 
     /// `GET /api/agent/search-recipes?query=&category=` — búsqueda de recetas.
     ///
-    /// Devuelve como mucho [`MAX_SEARCH_RESULTS`] recetas, aunque el servidor ya
-    /// acote.
+    /// OxiMeal coincide con una **subcadena contigua** del nombre o de las
+    /// instrucciones, no con palabras sueltas: una consulta de varias palabras
+    /// como frase no encuentra nada. Por eso aquí `query` se interpreta como una
+    /// consulta **de términos**: con uno solo se hace **una** petición; con
+    /// varios se hace **una petición por término** (aplicando el mismo
+    /// `category`), en paralelo, y se combinan los resultados en memoria
+    /// —primero las recetas que coinciden con **todos** los términos y, si esa
+    /// intersección está vacía, las que coinciden con **más**, por orden
+    /// descendente (la puntuación cuenta **términos** que coinciden, no
+    /// apariciones)—. El resultado se deduplica por `id` y se acota a
+    /// [`MAX_SEARCH_RESULTS`]. El número de términos considerados está acotado
+    /// por [`MAX_SEARCH_TERMS`]: los sobrantes se ignoran, sin fallar.
     pub async fn search_recipes(
         &self,
         query: Option<&str>,
         category: Option<&str>,
     ) -> Result<Vec<RecipeSummary>, OximealError> {
-        // La query se construye a mano: `reqwest` va sin la feature que habilita
-        // `.query()` en este proyecto (mismo motivo por el que `zennotes` usa
-        // `url::form_urlencoded`).
-        let endpoint = {
-            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-            if let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) {
-                serializer.append_pair("query", query);
-            }
-            if let Some(category) = category
-                .map(str::trim)
-                .filter(|category| !category.is_empty())
-            {
-                serializer.append_pair("category", category);
-            }
-            let query = serializer.finish();
-            if query.is_empty() {
-                "/api/agent/search-recipes".to_string()
-            } else {
-                format!("/api/agent/search-recipes?{query}")
-            }
-        };
+        let terms = query_terms(query);
 
-        let value = self
-            .send_authed(|token| self.http.get(self.url(&endpoint)).bearer_auth(token))
-            .await?;
+        // Sin términos (consulta ausente o en blanco): una sola petición sin
+        // `query`, respetando `category`.
+        if terms.is_empty() {
+            let mut recipes = self.search_once(&search_endpoint(None, category)).await?;
+            recipes.truncate(MAX_SEARCH_RESULTS);
+            return Ok(recipes);
+        }
 
-        let mut recipes: Vec<RecipeSummary> = self.decode_list(&value, "recetas")?;
+        // Una petición por término, con el mismo `category`, en paralelo. Es una
+        // operación de solo lectura, así que la concurrencia es segura.
+        let requests = terms.iter().map(|term| {
+            let endpoint = search_endpoint(Some(term), category);
+            async move { self.search_once(&endpoint).await }
+        });
+        let results = futures::future::join_all(requests).await;
+
+        // Combina contando los **términos** que coinciden por `id`, no las
+        // apariciones: la respuesta de cada término se deduplica por `id`
+        // (conservando su primera aparición) para que un `id` repetido dentro de
+        // ella no sume dos coincidencias. Un `id` vacío no identifica nada y
+        // **no** se deduplica —no se le inventa un identificador—: todas las
+        // apariciones sin id caen en la misma entrada de índice vacío, como
+        // antes. Cualquier error de una petición se propaga.
+        let mut index: HashMap<String, usize> = HashMap::new();
+        let mut scored: Vec<(usize, RecipeSummary)> = Vec::new();
+        for result in results {
+            let mut seen_in_term: HashSet<String> = HashSet::new();
+            for recipe in result? {
+                if !recipe.id.is_empty() && !seen_in_term.insert(recipe.id.clone()) {
+                    continue;
+                }
+                match index.get(&recipe.id) {
+                    Some(&position) => scored[position].0 += 1,
+                    None => {
+                        index.insert(recipe.id.clone(), scored.len());
+                        scored.push((1, recipe));
+                    }
+                }
+            }
+        }
+
+        // Orden **estable** por número de coincidencias descendente: la
+        // intersección (coincidencia con todos) queda arriba y, a igual
+        // recuento, se conserva el orden de primera aparición.
+        scored.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        let mut recipes: Vec<RecipeSummary> =
+            scored.into_iter().map(|(_, recipe)| recipe).collect();
         recipes.truncate(MAX_SEARCH_RESULTS);
         Ok(recipes)
+    }
+
+    /// Una única petición de `search-recipes` y su decodificación.
+    async fn search_once(&self, endpoint: &str) -> Result<Vec<RecipeSummary>, OximealError> {
+        let value = self
+            .send_authed(|token| self.http.get(self.url(endpoint)).bearer_auth(token))
+            .await?;
+
+        self.decode_list(&value, "recetas")
     }
 
     /// `POST /api/agent/weekly-plan` — fija el plan semanal.
@@ -813,6 +860,58 @@ impl Oximeal {
             500..=599 => Err(self.upstream(&self.server_message(&body))),
             other => Err(self.upstream(&format!("OxiMeal respondió {other}"))),
         }
+    }
+}
+
+/// Parte `query` en términos: recorta, separa por espacios en blanco y
+/// deduplica (sin distinguir mayúsculas de minúsculas) conservando el orden de
+/// aparición.
+///
+/// Se acota a [`MAX_SEARCH_TERMS`]. Una consulta ausente, vacía o en blanco no
+/// produce ningún término, lo que significa «sin `query`».
+fn query_terms(query: Option<&str>) -> Vec<String> {
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return Vec::new();
+    };
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut terms: Vec<String> = Vec::new();
+    for term in query.split_whitespace() {
+        let key = term.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        terms.push(term.to_string());
+        if terms.len() == MAX_SEARCH_TERMS {
+            break;
+        }
+    }
+    terms
+}
+
+/// Endpoint de `GET /api/agent/search-recipes` para un `query` (posiblemente
+/// vacío) y una `category`, ambos recortados.
+///
+/// La query se construye a mano: `reqwest` va sin la feature que habilita
+/// `.query()` en este proyecto (mismo motivo por el que `zennotes` usa
+/// `url::form_urlencoded`).
+fn search_endpoint(query: Option<&str>, category: Option<&str>) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) {
+        serializer.append_pair("query", query);
+    }
+    if let Some(category) = category
+        .map(str::trim)
+        .filter(|category| !category.is_empty())
+    {
+        serializer.append_pair("category", category);
+    }
+    let query = serializer.finish();
+    if query.is_empty() {
+        "/api/agent/search-recipes".to_string()
+    } else {
+        format!("/api/agent/search-recipes?{query}")
     }
 }
 
@@ -1826,6 +1925,281 @@ mod tests {
         assert!(
             recipes.iter().all(|recipe| recipe.tags.is_empty()),
             "ninguna receta debe traer etiquetas: {recipes:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Búsqueda por términos (`oximeal-search-semantics`)
+    // -----------------------------------------------------------------------
+
+    /// Receta mínima de una respuesta de búsqueda.
+    fn recipe(id: &str, name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "name": name,
+            "category": "main",
+            "servings": 2,
+        })
+    }
+
+    /// Monta la respuesta de búsqueda de `term` (con la `category` dada, si la
+    /// hay) y exige **exactamente una** petición para ese término.
+    async fn mount_search(
+        server: &MockServer,
+        term: &str,
+        category: Option<&str>,
+        recipes: serde_json::Value,
+    ) {
+        let mut mock = Mock::given(method("GET"))
+            .and(path("/api/agent/search-recipes"))
+            .and(query_param("query", term));
+        if let Some(category) = category {
+            mock = mock.and(query_param("category", category));
+        }
+        mock.respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "recipes": recipes,
+        })))
+        .expect(1)
+        .mount(server)
+        .await;
+    }
+
+    /// Scenario: una consulta de un término sigue haciendo una sola petición.
+    #[tokio::test]
+    #[serial]
+    async fn search_recipes_single_term_makes_one_request() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        mount_search(
+            &server,
+            "mozzarella",
+            None,
+            serde_json::json!([recipe("a", "Mozzarella")]),
+        )
+        .await;
+
+        let recipes = client_for(&server)
+            .search_recipes(Some("mozzarella"), None)
+            .await
+            .expect("ok");
+
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].id, "a");
+        assert_eq!(
+            count_path(&server, "/api/agent/search-recipes").await,
+            1,
+            "un único término debe hacer exactamente una petición"
+        );
+    }
+
+    /// Scenario: una consulta de varios términos combina los resultados.
+    #[tokio::test]
+    #[serial]
+    async fn search_recipes_combines_terms_and_ranks_full_matches_first() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        // `X` aparece en los tres términos; cada término trae además una receta
+        // propia. El mismo `category` viaja en las tres peticiones.
+        mount_search(
+            &server,
+            "tomate",
+            Some("salad"),
+            serde_json::json!([recipe("X", "Ensalada completa"), recipe("a", "Tomate")]),
+        )
+        .await;
+        mount_search(
+            &server,
+            "aguacate",
+            Some("salad"),
+            serde_json::json!([recipe("b", "Aguacate"), recipe("X", "Ensalada completa")]),
+        )
+        .await;
+        mount_search(
+            &server,
+            "mozzarella",
+            Some("salad"),
+            serde_json::json!([recipe("X", "Ensalada completa"), recipe("c", "Mozzarella")]),
+        )
+        .await;
+
+        let recipes = client_for(&server)
+            .search_recipes(Some("tomate aguacate mozzarella"), Some("salad"))
+            .await
+            .expect("ok");
+
+        assert_eq!(
+            count_path(&server, "/api/agent/search-recipes").await,
+            3,
+            "cada término debe provocar su propia petición"
+        );
+        assert_eq!(
+            recipes[0].id, "X",
+            "la receta que coincide con todos los términos va primera: {recipes:?}"
+        );
+        let ids: Vec<&str> = recipes.iter().map(|recipe| recipe.id.as_str()).collect();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "el resultado no puede traer ids duplicados: {ids:?}"
+        );
+        assert!(recipes.len() <= 10, "acotado a 10: {}", recipes.len());
+    }
+
+    /// Scenario: sin coincidencia completa, se ordena por número de
+    /// coincidencias descendente.
+    #[tokio::test]
+    #[serial]
+    async fn search_recipes_orders_by_match_count_without_full_match() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        // `P` coincide con dos términos; `Q` y `R` con uno solo.
+        mount_search(
+            &server,
+            "salmón",
+            None,
+            serde_json::json!([recipe("P", "Salmón ahumado"), recipe("Q", "Salmón fresco")]),
+        )
+        .await;
+        mount_search(
+            &server,
+            "espárragos",
+            None,
+            serde_json::json!([recipe("P", "Salmón ahumado")]),
+        )
+        .await;
+        mount_search(
+            &server,
+            "ahumado",
+            None,
+            serde_json::json!([recipe("R", "Ahumado")]),
+        )
+        .await;
+
+        let recipes = client_for(&server)
+            .search_recipes(Some("salmón espárragos ahumado"), None)
+            .await
+            .expect("ok");
+
+        let ids: Vec<&str> = recipes.iter().map(|recipe| recipe.id.as_str()).collect();
+        assert_eq!(
+            ids.first().copied(),
+            Some("P"),
+            "la receta que coincide con dos términos va antes que las de uno: {ids:?}"
+        );
+        assert_eq!(ids.len(), 3, "sin duplicados: {ids:?}");
+    }
+
+    /// Scenario: el resultado se deduplica por `id` y se acota a 10.
+    #[tokio::test]
+    #[serial]
+    async fn search_recipes_dedupes_and_caps_at_ten() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+
+        let mut first = vec![recipe("dup", "Duplicada")];
+        let mut second = vec![recipe("dup", "Duplicada")];
+        for index in 0..7 {
+            first.push(recipe(&format!("a{index}"), &format!("A{index}")));
+            second.push(recipe(&format!("b{index}"), &format!("B{index}")));
+        }
+        mount_search(&server, "primero", None, serde_json::json!(first)).await;
+        mount_search(&server, "segundo", None, serde_json::json!(second)).await;
+
+        let recipes = client_for(&server)
+            .search_recipes(Some("primero segundo"), None)
+            .await
+            .expect("ok");
+
+        let ids: Vec<&str> = recipes.iter().map(|recipe| recipe.id.as_str()).collect();
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "ids duplicados: {ids:?}");
+        assert_eq!(
+            recipes.len(),
+            10,
+            "quince ids distintos deben quedar acotados a diez: {ids:?}"
+        );
+    }
+
+    /// Scenario: los términos sobrantes se ignoran sin fallar.
+    #[tokio::test]
+    #[serial]
+    async fn search_recipes_ignores_terms_beyond_the_cap() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/search-recipes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "recipes": [],
+            })))
+            .mount(&server)
+            .await;
+
+        let recipes = client_for(&server)
+            .search_recipes(Some("uno dos tres cuatro cinco seis siete ocho"), None)
+            .await
+            .expect("los términos sobrantes no deben hacer fallar la búsqueda");
+
+        assert!(recipes.is_empty());
+        assert_eq!(
+            count_path(&server, "/api/agent/search-recipes").await,
+            MAX_SEARCH_TERMS,
+            "solo se consideran los primeros {MAX_SEARCH_TERMS} términos"
+        );
+    }
+
+    /// Scenario: un `id` repetido en la respuesta de un término cuenta como una
+    /// sola coincidencia.
+    ///
+    /// La puntuación es «nº de **términos** que coinciden», no «nº de
+    /// apariciones»: si la respuesta de un término trae el mismo `id` varias
+    /// veces, esa receta no debe adelantar a otra que coincide con otro término.
+    #[tokio::test]
+    #[serial]
+    async fn search_recipes_repeated_id_within_a_term_scores_once() {
+        clear_token_cache();
+        let server = MockServer::start().await;
+        mount_auth(&server, "tok-1", 3600).await;
+        // `P` coincide con un término; `Q` con otro, pero llega **tres veces**
+        // en la respuesta de ese mismo término.
+        mount_search(
+            &server,
+            "uno",
+            None,
+            serde_json::json!([recipe("P", "Una coincidencia")]),
+        )
+        .await;
+        mount_search(
+            &server,
+            "dos",
+            None,
+            serde_json::json!([
+                recipe("Q", "Repetida"),
+                recipe("Q", "Repetida"),
+                recipe("Q", "Repetida"),
+            ]),
+        )
+        .await;
+
+        let recipes = client_for(&server)
+            .search_recipes(Some("uno dos"), None)
+            .await
+            .expect("ok");
+
+        let ids: Vec<&str> = recipes.iter().map(|recipe| recipe.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["P", "Q"],
+            "una repetición dentro de un término no puede sumar dos coincidencias: {ids:?}"
         );
     }
 

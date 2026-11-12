@@ -405,10 +405,21 @@ impl OximealTool {
             .map_err(oximeal_error)?;
         let count = recipes.len();
         let recipes: Vec<Value> = recipes.iter().map(recipe_summary_json).collect();
+        // Sin coincidencias, la lista vacía no ayuda al modelo: explica la
+        // semántica de la búsqueda (subcadena contigua) y sugiere cómo acertar.
+        let message = if count == 0 {
+            "Sin recetas para esa búsqueda. OxiMeal busca una subcadena contigua \
+             del nombre o de las instrucciones (no palabras sueltas), aunque \
+             Valet combina los términos de la consulta. Prueba con un término más \
+             corto y distintivo: una sola palabra significativa del plato."
+                .to_string()
+        } else {
+            format!("{count} recetas")
+        };
         Ok(ToolResult {
             success: true,
             data: json!({ "count": count, "recipes": recipes }),
-            message: Some(format!("{count} recetas")),
+            message: Some(message),
         })
     }
 
@@ -508,7 +519,7 @@ impl Tool for OximealTool {
                 },
                 "query": {
                     "type": "string",
-                    "description": "Texto a buscar en search_recipes"
+                    "description": "Texto de búsqueda de search_recipes. OxiMeal busca una subcadena contigua del nombre o de las instrucciones, no palabras sueltas; Valet combina varios términos separados por espacios (una petición por término), así que usa términos cortos y distintivos."
                 },
                 "category": {
                     "type": "string",
@@ -1147,5 +1158,92 @@ mod tests {
             recipe_id_description.to_lowercase().contains("inventad"),
             "la descripción de `recipe_id` debe decir que no se inventa: {recipe_id_description:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Semántica de la búsqueda (`oximeal-search-semantics`)
+    // -----------------------------------------------------------------------
+
+    /// Scenario: el esquema de `query` documenta la semántica de la búsqueda.
+    #[tokio::test]
+    async fn test_parameters_query_documents_the_search_semantics() {
+        let db = setup_db().await;
+        let params = OximealTool::new(db).parameters();
+
+        let description = params["properties"]["query"]["description"]
+            .as_str()
+            .expect("`query` debe declarar una descripción");
+        let lower = description.to_lowercase();
+
+        assert!(
+            lower.contains("subcadena contigua"),
+            "la descripción debe decir que la búsqueda es por subcadena contigua: {description:?}"
+        );
+        assert!(
+            lower.contains("varios términos"),
+            "la descripción debe indicar que varios términos se combinan: {description:?}"
+        );
+        assert!(
+            lower.contains("cortos y distintivos"),
+            "la descripción debe recomendar términos cortos y distintivos: {description:?}"
+        );
+    }
+
+    /// Scenario: una búsqueda sin resultados explica cómo buscar.
+    #[tokio::test]
+    async fn test_search_recipes_empty_result_explains_the_semantics() {
+        let server = MockServer::start().await;
+        mount_auth(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/search-recipes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "recipes": [],
+            })))
+            .mount(&server)
+            .await;
+
+        let tool = tool_for(&server).await;
+        let result = tool
+            .execute(json!({ "operation": "search_recipes", "query": "zzz" }))
+            .await
+            .expect("una búsqueda sin resultados no debe ser un error");
+
+        assert!(result.success);
+        assert_eq!(result.data["count"], 0);
+        assert_eq!(result.data["recipes"], json!([]));
+
+        let message = result.message.unwrap_or_default();
+        assert!(
+            message.to_lowercase().contains("subcadena contigua"),
+            "el mensaje debe explicar la semántica de la búsqueda: {message:?}"
+        );
+        let lower = message.to_lowercase();
+        assert!(
+            lower.contains("corto") && lower.contains("distintiv"),
+            "el mensaje debe sugerir un término más corto y distintivo: {message:?}"
+        );
+    }
+
+    /// Scenario: con resultados, el mensaje sigue siendo `"{count} recetas"`.
+    #[tokio::test]
+    async fn test_search_recipes_with_results_keeps_the_short_message() {
+        let server = MockServer::start().await;
+        mount_auth(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/api/agent/search-recipes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "recipes": [{"id": "abc", "name": "Ensalada", "category": "salad", "servings": 2}]
+            })))
+            .mount(&server)
+            .await;
+
+        let tool = tool_for(&server).await;
+        let result = tool
+            .execute(json!({ "operation": "search_recipes", "query": "ensalada" }))
+            .await
+            .expect("ok");
+
+        assert_eq!(result.data["count"], 1);
+        assert_eq!(result.message.as_deref(), Some("1 recetas"));
     }
 }
