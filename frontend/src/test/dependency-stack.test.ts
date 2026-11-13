@@ -3,12 +3,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Guarda de contrato sobre `frontend/package.json` para la **ETAPA A** del
- * change `frontend-react19-antd6`: antd 6 sobre React 18.
+ * Guarda de contrato sobre `frontend/package.json` para el stack de UI
+ * completo: React 19 (con sus tipos), antd 6, react-leaflet 5 y chart.js 4.6.
  *
- * No cubre aquí lo que solo corresponde a la etapa B (React 19, react-leaflet 5,
- * chart.js 4.6): afirmarlo ahora dejaría este test en rojo durante toda la
- * etapa A por una razón ajena a su objeto.
+ * No vigila la cadena de herramientas (`jsdom`, `vitest`, `vite`, `eslint`):
+ * cambia a otro ritmo y su contrato ya lo ejerce el CI al correr la suite.
  */
 interface PackageJson {
   dependencies?: Record<string, string>;
@@ -46,7 +45,7 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-describe("stack de dependencias del frontend (etapa A)", () => {
+describe("stack de dependencias de UI del frontend", () => {
   it("declara antd en la serie 6", () => {
     const range = deps["antd"];
     if (!range) throw new Error("antd no está declarado en dependencies");
@@ -66,5 +65,41 @@ describe("stack de dependencias del frontend (etapa A)", () => {
     expect(devDeps["@ant-design/v5-patch-for-react-19"]).toBeUndefined();
   });
 
-  // Etapa B: react/react-dom/@types a la serie 19, react-leaflet 5, chart.js 4.6
+  it("declara react en la serie 19", () => {
+    const range = deps["react"];
+    if (!range) throw new Error("react no está declarado en dependencies");
+    expect(major(range)).toBe(19);
+  });
+
+  it("declara react-dom en la serie 19", () => {
+    const range = deps["react-dom"];
+    if (!range) throw new Error("react-dom no está declarado en dependencies");
+    expect(major(range)).toBe(19);
+  });
+
+  it("declara @types/react en la serie 19", () => {
+    const range = devDeps["@types/react"];
+    if (!range) throw new Error("@types/react no está declarado en devDependencies");
+    expect(major(range)).toBe(19);
+  });
+
+  it("declara @types/react-dom en la serie 19", () => {
+    const range = devDeps["@types/react-dom"];
+    if (!range) throw new Error("@types/react-dom no está declarado en devDependencies");
+    expect(major(range)).toBe(19);
+  });
+
+  it("declara react-leaflet en la serie 5", () => {
+    const range = deps["react-leaflet"];
+    if (!range) throw new Error("react-leaflet no está declarado en dependencies");
+    expect(major(range)).toBe(5);
+  });
+
+  it("declara chart.js en la serie 4.6", () => {
+    const range = deps["chart.js"];
+    if (!range) throw new Error("chart.js no está declarado en dependencies");
+    const [majorPart, minorPart] = minVersion(range).split(".").map(Number);
+    expect(majorPart).toBe(4);
+    expect(minorPart).toBeGreaterThanOrEqual(6);
+  });
 });

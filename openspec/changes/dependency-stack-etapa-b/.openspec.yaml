@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-13
+skip_specs: true
+goal: "Ampliar frontend/src/test/dependency-stack.test.ts para que vigile el stack completo de la etapa B (React 19, react-leaflet 5, chart.js 4.6.1 y los @types 19), que la spec ya declara y que la guarda nunca afirmó"
