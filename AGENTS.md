@@ -311,6 +311,14 @@ Lo que no se reabre sin orden explícita:
 - **Medido contra el sitio real:** el check pasa de una a dos peticiones y tarda **1,13 s**; el índice declara `/wp/v2/comments` con `["POST"]`.
 - **Hallazgo de auditoría, corregido:** el mock del índice no anclaba la cabecera `Authorization`, así que retirar `basic_auth` habría dejado la batería en verde. Ahora se exige (comprobado en rojo).
 
+**26. La cola de Dependabot de nov-2026 entró salvo `vite` 8.3.7, y el umbral de bundle no se sube.** Decidido y ejecutado el 2026-11-13 al cerrar el change `deps-queue-2026-11` (issue #367; PR #369). Entraron `uuid` 1.29.2, `react-router-dom` 7.18.5, `vitest` 5.1.0, `eslint` 10.14.0 y `jsdom` **31.0.0**. Lo que no se reabre sin orden explícita:
+
+- **`vite` se queda en `^8.3.5`.** 8.3.7 deja el grafo inicial en **70.01 kB** sobre un umbral de **70.00 kB** (medido en CI con la rama rebasada, run `43368520339`), y el margen real es de 0.02 kB porque 65.95 de esos 70.00 kB son `react` + `react-dom`. **No se sube el umbral**: `openspec/specs/frontend/spec.md` lo prohíbe. #353 se cerró con ese motivo.
+- **`jsdom` 31 no rompió nada.** 738 tests verdes **sin adaptar ninguno**, a diferencia del precedente `adopt-jsdom-30-1-3`. Su motor CSS nuevo se lleva ~300 líneas del lockfile (`@csstools/*`, `css-tree`, `@asamuzakjp/*`) y su peer `@napi-rs/canvas` es opcional, así que no se instala.
+- **Los cuatro bumps del frontend no engordaron el grafo inicial:** 69.98 kB, byte-idéntico al baseline.
+- **Pendiente (sin tarea):** decidir la política del umbral —o asumir que los patches de `vite` quedan congelados—, y el gate local depende del Node del runtime (Node 24 mide 70.02 kB por `zlib`; Node 22, el del CI, mide 69.98 kB).
+
+
 ## VI. GESTIÓN DE PLANES (`plans/`)
 
 Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la raíz.
@@ -366,6 +374,7 @@ La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se 
 | `plans/PLAN-026-ARCHIVED.md` | Endurecer `GET /api/blog/check`: la sonda comprueba la vía de respuesta por el índice REST y falla cerrado (change `blog-check-reply-route`; issue #340, PRs #346/#347, v0.36.0) | ✅ Completado |
 | `plans/PLAN-027-ARCHIVED.md` | Endurecer el contrato de OxiMeal: `tags` objeto en `search_recipes`, detalle del `400` y procedencia del `recipe_id` (issue #358; PRs #359/#360, v0.36.1) | ✅ Completado |
 | `plans/PLAN-028-ARCHIVED.md` | Búsqueda de recetas de OxiMeal por palabras: `search_recipes` combina términos en paralelo (intersección primero, luego por número de coincidencias) y aviso accionable cuando no hay resultados (change `oximeal-search-semantics`; issue #361, PRs #363/#364, v0.37.0) | ✅ Completado |
+| `plans/PLAN-029-ARCHIVED.md` | La cola de Dependabot de nov-2026 entra salvo `vite` 8.3.7, que no cabe en el presupuesto de bundle (change `deps-queue-2026-11`; issue #367, PR #369) | ✅ Completado |
 
 > Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.

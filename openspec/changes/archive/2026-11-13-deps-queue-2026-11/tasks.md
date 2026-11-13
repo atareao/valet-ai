@@ -25,7 +25,7 @@
 ## 4. Cierre
 
 - [x] 4.1 `openspec validate deps-queue-2026-11 --strict` (válido) y `just check-spec` (OK).
-- [ ] 4.2 PR a `development` con CI verde.
-- [ ] 4.3 Cerrar #352, #354, #355, #356 y #357 como absorbidos, referenciando este change.
-- [ ] 4.4 Cerrar **#353** con el motivo medido (70.01 kB > 70.00 kB; el umbral no se sube).
-- [ ] 4.5 Archivar el change, cerrar el issue #367 y crear `docs/deps-queue-2026-11.md`
+- [x] 4.2 PR a `development` con CI verde: **#369**, ambos jobs en verde.
+- [x] 4.3 Cerrar #352, #354, #355, #356 y #357 como absorbidos, referenciando este change.
+- [x] 4.4 Cerrar **#353** con el motivo medido (70.01 kB > 70.00 kB; el umbral no se sube).
+- [x] 4.5 Archivar el change, cerrar el issue #367 y crear `docs/deps-queue-2026-11.md`
