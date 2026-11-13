@@ -23,6 +23,7 @@ OxiMeal **no se modifica** desde aquí: solo se consume.
 | `src/services/oximeal.rs` | Cliente HTTP de la Agent API: resolución de config, token M2M cacheado, seis operaciones y traducción de errores. |
 | `src/orchestrator/skills.rs` | Skill `menus` (`tools: &["oximeal"]`, `prompt_key: "SKILL_MENUS_PROMPT"`, umbral `0.10`). |
 | `migrations/20261107000001_oximeal.sql` | Siembra `oximeal_base_url`, `oximeal_issuer_url`, `oximeal_client_id` y el fragmento `SKILL_MENUS_PROMPT`. |
+| `migrations/20261112000001_oximeal_search_semantics.sql` | Añade al fragmento `SKILL_MENUS_PROMPT` la guía de búsqueda (subcadena contigua, términos cortos y distintivos, procedencia del `recipe_id`) con guarda byte a byte. |
 | `src/handlers/oximeal.rs` | Handlers HTTP de integración: `status`, `check` y alta del secreto. |
 | `src/routes/oximeal.rs` | Rutas `/api/oximeal/*`. |
 | `src/lib.rs` | Registra la herramienta (`registry.register`) y monta las rutas. |
@@ -71,6 +72,40 @@ Operaciones de la herramienta y su permiso:
 | `add_shopping_items` | `POST /api/agent/shopping-items` | `Notify` |
 | `clear_purchased` | `DELETE /api/agent/shopping/completed` | `ExplicitApproval` |
 | `create_recipe` | `POST /api/agent/recipes` | `Notify` |
+
+### Búsqueda de recetas (`search_recipes`)
+
+La búsqueda de OxiMeal coincide con una **subcadena contigua** del nombre o de las
+instrucciones (FTS5 `trigram`, frase entre comillas), **no** con palabras sueltas:
+una consulta de varias palabras como frase no encuentra nada. Como el agente
+razona en palabras, el servicio interpreta `query` como una consulta **de
+términos** y combina el trabajo en Valet:
+
+- **Un término** → **una** petición `GET /api/agent/search-recipes?query=<término>`
+  (más `category`, si procede). Es el comportamiento de siempre.
+- **Varios términos** → **una petición por término** (el mismo `category` en
+  todas), lanzadas **en paralelo** con `futures::future::join_all`.
+- **Tope de 6 términos** (`MAX_SEARCH_TERMS`). Los términos sobrantes se ignoran,
+  sin fallar.
+- **Combinación en memoria, por `id`:** primero las recetas que coinciden con
+  **todos** los términos (intersección); si esa intersección está vacía, las que
+  coinciden con **más** términos, por orden descendente. La puntuación cuenta
+  **términos**, no apariciones: la respuesta de cada término se deduplica por `id`
+  antes de puntuar. El resultado se deduplica por `id` y se acota a **10 recetas**
+  (`MAX_SEARCH_RESULTS`).
+- **Sin resultados, mensaje accionable:** la herramienta devuelve `success: true`
+  con `count: 0` y un mensaje en español que explica la semántica de la búsqueda y
+  sugiere un término **más corto y distintivo**. La forma del JSON de éxito no
+  cambia (`{count, recipes}`), y con resultados el mensaje sigue siendo
+  `"{count} recetas"`.
+- **Esquema de la herramienta:** la descripción del parámetro `query` que se
+  ofrece al modelo documenta la semántica (subcadena contigua, varios términos
+  combinados, fragmentos cortos y distintivos).
+
+La misma guía vive en el fragmento de la skill `menus`, actualizado por la
+migración **`migrations/20261112000001_oximeal_search_semantics.sql`** (aditiva,
+idempotente y con guarda **byte a byte**: solo sustituye los textos por defecto
+conocidos y nunca pisa una edición del usuario).
 
 ## Variables/config
 
@@ -162,11 +197,39 @@ Alternativamente, todo puede pre-configurarse por entorno: ver el bloque
   cachean por proceso con margen de 30 s; un candado por emisor evita que N
   llamadas concurrentes pidan N tokens. Cambiar el `client_id` o el emisor
   invalida el token cacheado.
+- **Las etiquetas de receta se decodifican como objetos y se exponen como
+  nombres.** OxiMeal (feature *recipe-tags*) envía `RecipeSummary.tags` como
+  objetos `{id, name, slug, source}`; `TagRef` se queda con el `name` e ignora el
+  resto, y la salida de la herramienta sigue siendo una lista de cadenas. Con
+  `Vec<String>` toda búsqueda reventaba con `invalid type: map, expected a
+  string`.
+- **El detalle de un `4xx` prefiere `message` a `error`.** OxiMeal usa `error`
+  como código máquina (`validation`, `not_found`) y deja la explicación humana en
+  `message`; el orden de extracción es `message`, `error`, `detail`, `title`. El
+  propio cuerpo recortado a 300 caracteres se usa cuando el cuerpo no es JSON
+  legible **o** cuando sí lo es pero ninguna de esas cuatro claves es una cadena.
+- **El `recipe_id` de `plan_week` no se inventa.** El esquema que se envía al
+  modelo lo dice explícitamente, tanto en la descripción de `entries` como en la
+  de la propia propiedad `recipe_id`: el identificador sale de `search_recipes` o
+  del `id` que devuelve `create_recipe`, nunca de un nombre de receta. **No** se
+  pre-valida con una llamada extra a `search_recipes` (una petición de más por
+  cada entrada y una fuente de fallo añadida): la corrección llega por el `400`
+  del servidor, ahora legible, dentro del mismo turno.
 - **`GET /api/oximeal/check` es la sonda real.** Obtiene un token y consulta
   `recent-recipes`; responde siempre `200` con `{ok, detail}` porque que OxiMeal
   (o su IdP) no responda es precisamente lo que se averigua. El `detail` separa
   estructuralmente las cuatro averías: configuración incompleta, el IdP no
   entregó token, el token fue rechazado y OxiMeal no responde.
+- **La búsqueda por palabras se resuelve en Valet, no en OxiMeal.** OxiMeal busca
+  por **subcadena contigua** (deliberado y documentado en su `docs/search.md`) y el
+  agente razona en palabras, así que `search_recipes` parte la consulta en términos,
+  hace una petición por término (en paralelo, con el mismo `category`) y combina en
+  memoria: la intersección por `id` primero y, si está vacía, por número de
+  términos coincidentes. Se descartó cambiar OxiMeal (fuera de alcance) y fiarlo
+  solo a la guía del prompt: una guía prescriptiva sola no cambia el comportamiento
+  del modelo de forma fiable (lección de `widgets-always-on`). La guía de la skill
+  `menus` se actualiza con la migración
+  `20261112000001_oximeal_search_semantics.sql`.
 
 ## Follow-ups
 

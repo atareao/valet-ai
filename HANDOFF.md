@@ -1,34 +1,37 @@
 # HANDOFF
 
-**Fecha:** 2026-11-09
+**Fecha:** 2026-11-12
 
 ## Estado
 
-**COMPLETADO.** El change `blog-check-reply-route` (issue #340) está implementado, auditado,
-desplegado como **v0.36.0** en `co1` y verificado E2E. No queda ninguna tarea crítica.
+**COMPLETADO.** El change `oximeal-search-semantics` (issue #361) está implementado, auditado,
+desplegado como **v0.37.0** en `co1` y verificado E2E contra OxiMeal real. `openspec list` sin
+changes activos.
 
-## Qué se ha hecho (sonda del blog)
+## Qué se ha hecho (búsqueda de recetas de OxiMeal)
 
-- **Código** (PR #346 → `development`, CI verde): `check_connection` sondea en dos fases —
-  `GET /wp-json/wp/v2/users/me` y `GET /wp-json/` autenticado exigiendo
-  `routes["/wp/v2/comments"].methods` con `POST`. Variante nueva
-  `WordpressError::ReplyRouteUnavailable` y detalle accionable en `GET /api/blog/check`. Sin
-  efectos secundarios: ninguna petición a la colección de comentarios.
-- **Release v0.36.0** (PR #347 → `main`, tag `v0.36.0`, imagen publicada) y back-merge a
-  `development` (PR #348).
-- **Despliegue** en `co1` (Dockge): `/api/health` → `{"version":"0.36.0"}`.
-- **E2E** (instancia local con copia de la BD de producción, `AUTH_ENABLED=false`):
-  `GET /api/blog/status` → `{configured:true,...}` y `GET /api/blog/check` →
-  `{ok:true,"detail":"conexión correcta"}` en 1,13 s. El índice del sitio declara
-  `/wp/v2/comments` con `["POST"]`.
-- **Cierre documental** (rama `chore/blog-check-reply-route-closeout`): change archivado
-  (`2026-11-09-blog-check-reply-route`), `docs/wordpress-integration.md` actualizado,
-  `plans/PLAN-026-ARCHIVED.md`, AGENTS §V entrada 25 + índice §VI, issue **#340** cerrado.
-- Auditoría `@rust-reviewer` sin bloqueantes; los 4 hallazgos aplicados (el más importante:
-  anclar la autenticación del índice en el mock).
-- **Documentación** (PR #350 → `development`): `docs/android-http-shortcuts.md`, la receta para
-  lanzar avisos a Valet desde la app Android «Atajos HTTP» (clave de ingesta, atajo, azulejo de
-  ajustes rápidos, errores y límites), enlazada desde la sección `## 🔌 API` del `README.md`.
+- **Código** (PR #363 → `development`, CI verde): `search_recipes` parte la consulta en términos
+  (`split_whitespace`, dedup case-insensitive, tope `MAX_SEARCH_TERMS = 6`), hace **una petición
+  por término en paralelo** (`futures::future::join_all`, mismo `category`) y combina en Valet:
+  primero las recetas que coinciden con **todos** los términos, si no por **nº de coincidencias**
+  descendente; dedup por `id` (la puntuación cuenta términos, no apariciones), máx 10. El esquema
+  de `query` documenta la semántica (subcadena contigua) y el aviso accionable cuando `count == 0`.
+  Migración `20261112000001_oximeal_search_semantics.sql` actualiza `SKILL_MENUS_PROMPT` con
+  guarda byte a byte.
+- **Release v0.37.0** (PR #364 → `main`, tag `v0.37.0`, imagen publicada). Hubo conflicto de
+  versión en el PR de release (`development` estaba en 0.36.0, `main` en 0.36.1); resuelto a
+  0.37.0.
+- **Despliegue** en `co1` (Dockge, `~/docker/dockge/stacks/valet`):
+  `docker compose pull valet && up -d valet`; `/api/health` → `{"version":"0.37.0"}` (verificado
+  por IP del contenedor, porque desde el host el dominio público da 403).
+- **E2E real contra OxiMeal** (token M2M desde la BD de producción, una petición por término,
+  combinación idéntica a Valet): `tomate aguacate mozzarella` → «Ensalada de tomate, aguacate y
+  mozzarella» **primera con 3/3 términos** (antes daba 0).
+- **Cierre documental** (PR #365 → `development`): change archivado
+  (`2026-11-12-oximeal-search-semantics`), deltas fusionados en `oximeal-service`/`tools/registry`/
+  `oximeal-api`, `docs/oximeal-integration.md` actualizado, `plans/PLAN-028-ARCHIVED.md`, fila
+  nueva en el índice §VI de `AGENTS.md`, issue **#361** cerrado.
+- Auditoría `@rust-reviewer` sin bloqueantes; hallazgo aplicado (dedup por término).
 
 ## Tarea pendiente / siguiente paso
 
@@ -53,7 +56,9 @@ desplegado como **v0.36.0** en `co1` y verificado E2E. No queda ninguna tarea cr
 - **Archive deja el `Purpose` en placeholder** para capabilities nuevas: reescribirlo a mano y
   volver a pasar `openspec validate --all --strict`.
 - **Pedir el dominio público desde `co1` da `403 Ko`** (bloqueo de IP origen/WAF); desde fuera
-  responde 200.
+  responde 200. Para E2E desde `co1`, usar la IP del contenedor o un contenedor en su red.
+- **Duplicados en el catálogo de OxiMeal** (Merluza/Crema/Lentejas ×2, sin instrucciones):
+  limpieza aparte, fuera de alcance.
 
 ## Restricciones
 
