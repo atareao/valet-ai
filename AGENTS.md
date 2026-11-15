@@ -383,6 +383,7 @@ La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se 
 | `plans/PLAN-028-ARCHIVED.md` | Búsqueda de recetas de OxiMeal por palabras: `search_recipes` combina términos en paralelo (intersección primero, luego por número de coincidencias) y aviso accionable cuando no hay resultados (change `oximeal-search-semantics`; issue #361, PRs #363/#364, v0.37.0) | ✅ Completado |
 | `plans/PLAN-029-ARCHIVED.md` | La cola de Dependabot de nov-2026 entra salvo `vite` 8.3.7, que no cabe en el presupuesto de bundle (change `deps-queue-2026-11`; issue #367, PR #369) | ✅ Completado |
 | `plans/PLAN-030-ARCHIVED.md` | La guarda de versiones del frontend cubre por fin la etapa B del stack de UI (change `dependency-stack-etapa-b`; issue #368, PR #371) | ✅ Completado |
+| `plans/PLAN-031-ARCHIVED.md` | Ingesta de notificaciones: aceptar webhooks genéricos (change `notification-ingest-envelope`; issue #374, PR #375) | ✅ Archivado (E2E pendiente de despliegue) |
 
 > Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
