@@ -405,6 +405,194 @@ async fn ingest_trims_message_before_persisting() {
     assert_eq!(message, "hola mundo", "the message must be trimmed");
 }
 
+/// Scenario: un mensaje ausente se deriva del `title`.
+///
+/// El envelope de OpenObserve trae `title` en vez de `message`; el `message`
+/// persistido debe ser el `title` recortado.
+#[tokio::test]
+async fn ingest_derives_message_from_title_when_message_absent() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({ "title": "  Aviso de OpenObserve  " }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = resp.json::<Value>().await["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let (_, _, message, level, _) = stored_row(&app, &id).await;
+    assert_eq!(
+        message, "Aviso de OpenObserve",
+        "the stored message must be the trimmed title"
+    );
+    assert_eq!(level, "info", "level defaults to info");
+}
+
+/// Scenario: un `message` en blanco cae al `title`.
+///
+/// Un `message` que solo trae espacios tras `trim` no aporta texto, así que el
+/// mensaje persistido debe ser el `title` recortado, no un `400`.
+#[tokio::test]
+async fn ingest_blank_message_falls_back_to_title() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({ "message": "   ", "title": "  Título del envelope  " }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = resp.json::<Value>().await["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let (_, _, message, _, _) = stored_row(&app, &id).await;
+    assert_eq!(
+        message, "Título del envelope",
+        "a blank message must fall back to the trimmed title"
+    );
+}
+
+/// Scenario: un mensaje ausente o en blanco se rechaza también cuando el
+/// `title` falta o queda en blanco.
+///
+/// Complementa a `ingest_missing_or_blank_message_returns_400`: la ausencia de
+/// `title` (y un `title` en blanco) no salvan el `400`.
+#[tokio::test]
+async fn ingest_without_message_nor_title_returns_400() {
+    let (app, token) = app_with_key("monitor").await;
+
+    for body in [
+        json!({ "origin": "x" }),
+        json!({ "message": "   ", "title": "   " }),
+        json!({ "title": null }),
+    ] {
+        let resp = app
+            .post(NOTIFICATIONS)
+            .header("authorization", &format!("Bearer {token}"))
+            .json(&body)
+            .send()
+            .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "a body without usable text must be rejected: {body}"
+        );
+        let body = resp.json::<Value>().await;
+        assert!(body["error"].is_string(), "the body must carry an error");
+    }
+
+    assert_eq!(count_notifications(&app).await, 0);
+}
+
+/// Scenario: un mensaje explícito manda sobre el `title`.
+#[tokio::test]
+async fn ingest_explicit_message_wins_over_title() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({ "message": "mensaje explícito", "title": "título distinto" }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = resp.json::<Value>().await["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let (_, _, message, _, _) = stored_row(&app, &id).await;
+    assert_eq!(message, "mensaje explícito", "`message` has precedence");
+}
+
+/// Un `title` usado como mensaje respeta el límite de 4096 bytes.
+#[tokio::test]
+async fn ingest_rejects_oversized_title_used_as_message() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let long_title = "a".repeat(4097);
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({ "title": long_title }))
+        .send()
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "the derived message must respect the 4096-byte limit"
+    );
+
+    assert_eq!(count_notifications(&app).await, 0);
+}
+
+/// Scenario: `severity` determina el nivel cuando falta `level`.
+///
+/// El envelope de OpenObserve trae `severity` en lugar de `level`: se normaliza
+/// a minúsculas y se mapea a la lista blanca; un valor desconocido cae a `info`
+/// (no se rechaza).
+#[tokio::test]
+async fn ingest_severity_maps_to_level() {
+    let (app, token) = app_with_key("monitor").await;
+
+    for (severity, expected) in [
+        ("critical", "critical"),
+        ("WARNING", "warning"),
+        ("info", "info"),
+        ("emergency", "info"),
+    ] {
+        let resp = app
+            .post(NOTIFICATIONS)
+            .header("authorization", &format!("Bearer {token}"))
+            .json(&json!({ "message": "hola", "severity": severity }))
+            .send()
+            .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::CREATED,
+            "a `severity` value must never be rejected: {severity}"
+        );
+        let id = resp.json::<Value>().await["id"]
+            .as_str()
+            .expect("id")
+            .to_string();
+        let (_, _, _, level, _) = stored_row(&app, &id).await;
+        assert_eq!(
+            level, expected,
+            "`severity = {severity}` must map to `{expected}`"
+        );
+    }
+}
+
+/// Scenario: un `level` explícito manda sobre `severity`.
+#[tokio::test]
+async fn ingest_explicit_level_wins_over_severity() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({ "message": "hola", "level": "warning", "severity": "critical" }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = resp.json::<Value>().await["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let (_, _, _, level, _) = stored_row(&app, &id).await;
+    assert_eq!(level, "warning", "`level` has precedence over `severity`");
+}
+
 /// Scenario: un `level` fuera de la lista blanca se rechaza; `critical` pasa.
 #[tokio::test]
 async fn ingest_level_whitelist() {
@@ -461,6 +649,225 @@ async fn ingest_metadata_must_be_object() {
     let metadata = metadata.expect("metadata must be stored");
     let parsed: Value = serde_json::from_str(&metadata).expect("metadata must be JSON");
     assert_eq!(parsed["source"], "cron");
+}
+
+/// Scenario: `body_markdown` se anexa a `metadata`.
+///
+/// El `body_markdown` del envelope de OpenObserve se persiste dentro de
+/// `metadata` bajo su propia clave, sin borrar las claves ya presentes.
+#[tokio::test]
+async fn ingest_body_markdown_goes_to_metadata() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({
+            "message": "hola",
+            "body_markdown": "## Detalle\n\n- cpu alta",
+            "metadata": { "source": "openobserve" }
+        }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = resp.json::<Value>().await["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let (_, _, _, _, metadata) = stored_row(&app, &id).await;
+    let metadata = metadata.expect("metadata must be stored");
+    let parsed: Value = serde_json::from_str(&metadata).expect("metadata must be JSON");
+    assert_eq!(
+        parsed["body_markdown"], "## Detalle\n\n- cpu alta",
+        "the body_markdown must be stored inside metadata"
+    );
+    assert_eq!(parsed["source"], "openobserve", "other keys are kept");
+}
+
+/// Una `metadata` que ya traía `body_markdown` no se pisa.
+#[tokio::test]
+async fn ingest_body_markdown_does_not_overwrite_existing_key() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({
+            "message": "hola",
+            "body_markdown": "nuevo",
+            "metadata": { "body_markdown": "original" }
+        }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = resp.json::<Value>().await["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+
+    let (_, _, _, _, metadata) = stored_row(&app, &id).await;
+    let parsed: Value =
+        serde_json::from_str(&metadata.expect("metadata must be stored")).expect("JSON");
+    assert_eq!(
+        parsed["body_markdown"], "original",
+        "an existing body_markdown key must not be overwritten"
+    );
+}
+
+/// Un `body_markdown` vacío o solo espacios no añade la clave.
+#[tokio::test]
+async fn ingest_blank_body_markdown_is_not_added() {
+    let (app, token) = app_with_key("monitor").await;
+
+    // Con `metadata` presente: se conserva tal cual, sin la clave nueva.
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({
+            "message": "hola",
+            "body_markdown": "   ",
+            "metadata": { "source": "cron" }
+        }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = resp.json::<Value>().await["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let (_, _, _, _, metadata) = stored_row(&app, &id).await;
+    let parsed: Value =
+        serde_json::from_str(&metadata.expect("metadata must be stored")).expect("JSON");
+    assert_eq!(
+        parsed,
+        json!({ "source": "cron" }),
+        "a blank body_markdown must not add a key"
+    );
+
+    // Sin `metadata`: la columna sigue siendo NULL.
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({ "message": "hola", "body_markdown": "" }))
+        .send()
+        .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = resp.json::<Value>().await["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let (_, _, _, _, metadata) = stored_row(&app, &id).await;
+    assert!(
+        metadata.is_none(),
+        "an empty body_markdown must not create metadata: {metadata:?}"
+    );
+}
+
+/// Un `metadata` que no es objeto se rechaza aunque venga con `body_markdown`:
+/// la ruta valida que `metadata` sea objeto **antes** de fusionar nada.
+#[tokio::test]
+async fn ingest_body_markdown_with_non_object_metadata_returns_400() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({
+            "message": "hola",
+            "body_markdown": "## Detalle",
+            "metadata": [1, 2, 3]
+        }))
+        .send()
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "a non-object metadata must be rejected even with a body_markdown"
+    );
+    let body = resp.json::<Value>().await;
+    assert!(body["error"].is_string(), "the body must carry an error");
+
+    assert_eq!(count_notifications(&app).await, 0);
+}
+
+/// El `body_markdown` cuenta para el límite de 8192 bytes de `metadata`, tras
+/// la fusión.
+#[tokio::test]
+async fn ingest_rejects_body_markdown_over_the_metadata_limit() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let big = "b".repeat(9000);
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({ "message": "hola", "body_markdown": big }))
+        .send()
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "the merged metadata must respect the 8192-byte limit"
+    );
+
+    assert_eq!(count_notifications(&app).await, 0);
+}
+
+/// Borde exacto del límite de `metadata` tras la fusión: 8192 bytes pasan,
+/// 8193 se rechazan.
+///
+/// El sobrecoste de la clave (`{"body_markdown":""}`) se mide serializando en
+/// vez de cablear un número, para que el test no se vuelva frágil si cambia el
+/// formato de la serialización.
+#[tokio::test]
+async fn ingest_metadata_size_boundary_after_merge() {
+    let (app, token) = app_with_key("monitor").await;
+
+    let overhead = serde_json::to_string(&json!({ "body_markdown": "" }))
+        .expect("the probe must serialize")
+        .len();
+    assert!(overhead < 8192, "the probe must leave room for a value");
+
+    // Exactamente 8192 bytes tras la fusión → 201.
+    let filler = "x".repeat(8192 - overhead);
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({ "message": "hola", "body_markdown": filler }))
+        .send()
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "the merged metadata must accept exactly 8192 bytes"
+    );
+    let id = resp.json::<Value>().await["id"]
+        .as_str()
+        .expect("id")
+        .to_string();
+    let (_, _, _, _, metadata) = stored_row(&app, &id).await;
+    let metadata = metadata.expect("metadata must be stored");
+    assert_eq!(
+        metadata.len(),
+        8192,
+        "the stored metadata must measure exactly the limit"
+    );
+
+    // Un byte más → 400.
+    let filler = "x".repeat(8193 - overhead);
+    let resp = app
+        .post(NOTIFICATIONS)
+        .header("authorization", &format!("Bearer {token}"))
+        .json(&json!({ "message": "hola", "body_markdown": filler }))
+        .send()
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "the merged metadata must reject 8193 bytes"
+    );
+
+    assert_eq!(count_notifications(&app).await, 1);
 }
 
 /// Scenario: se rechazan los cuerpos que exceden los límites (mensaje > 4096 y
