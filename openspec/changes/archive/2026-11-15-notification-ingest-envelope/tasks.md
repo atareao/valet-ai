@@ -29,4 +29,4 @@ Fichero: `src/routes/notifications.rs` (`IngestRequest`, `validate`). Campos nue
 
 - [x] 4.1 Actualizar `docs/api-notifications.md`: documentar `title` (fallback de `message`), `severity` (fallback de `level`, tolerante) y `body_markdown` (a `metadata`), con el ejemplo de envelope de OpenObserve.
 - [x] 4.2 `just fmt`, `just clippy`, `just test` en verde; `openspec validate --all` en verde.
-- [ ] 4.3 PR a `development` con CI verde; `openspec archive notification-ingest-envelope`; renombrar `plans/PLAN-031.md` a `-ARCHIVED` y cerrar el issue #374.
+- [x] 4.3 PR a `development` con CI verde; `openspec archive notification-ingest-envelope`; renombrar `plans/PLAN-031.md` a `-ARCHIVED` y cerrar el issue #374.
