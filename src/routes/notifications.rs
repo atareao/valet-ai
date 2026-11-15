@@ -33,11 +33,15 @@ const MAX_ORIGIN_BYTES: usize = 64;
 /// Longitud máxima de `author` en bytes.
 const MAX_AUTHOR_BYTES: usize = 128;
 
-/// Longitud máxima de `metadata` serializado, en bytes.
+/// Longitud máxima de `metadata` serializado, en bytes (tras fusionar
+/// `body_markdown`).
 const MAX_METADATA_BYTES: usize = 8192;
 
 /// Límite del cuerpo HTTP de `POST /api/notifications`, en bytes (64 KiB).
 const MAX_BODY_BYTES: usize = 64 * 1024;
+
+/// Clave de `metadata` donde se anexa el `body_markdown` del envelope.
+const BODY_MARKDOWN_KEY: &str = "body_markdown";
 
 /// `limit` por defecto de `GET /api/notifications/unread`.
 const DEFAULT_UNREAD_LIMIT: i64 = 50;
@@ -71,14 +75,23 @@ pub fn routes(state: AppState) -> Router<AppState> {
 /// Cuerpo de `POST /api/notifications`.
 #[derive(Debug, Deserialize)]
 pub struct IngestRequest {
-    /// Texto de la notificación. Obligatorio tras `trim`.
+    /// Texto de la notificación. Opcional si `title` aporta el texto.
     pub message: Option<String>,
+    /// Título del aviso. Sirve de mensaje cuando `message` falta o queda en
+    /// blanco (envelope de webhooks, p. ej. OpenObserve).
+    pub title: Option<String>,
     /// Origen del aviso. Opcional: por defecto, el nombre de la clave.
     pub origin: Option<String>,
     /// Autor del aviso. Opcional: por defecto, el nombre de la clave.
     pub author: Option<String>,
     /// Nivel del aviso (`info`, `warning`, `critical`). Por defecto, `info`.
     pub level: Option<String>,
+    /// Severidad del envelope de webhooks (`critical`, `warning`, `info`).
+    /// Solo se consulta cuando falta `level`; cualquier otro valor cae a `info`.
+    pub severity: Option<String>,
+    /// Cuerpo en Markdown del aviso (envelope de webhooks). Si trae texto, se
+    /// anexa a `metadata` bajo la clave `body_markdown` sin pisarla.
+    pub body_markdown: Option<String>,
     /// Metadatos libres. Si está presente, debe ser un objeto JSON.
     pub metadata: Option<Value>,
 }
@@ -130,14 +143,13 @@ async fn ingest(
 
 /// Valida y normaliza el cuerpo de ingesta.
 ///
-/// `origin` y `author` ausentes o en blanco caen al nombre de la clave. Los
-/// límites son en bytes, tras recortar los espacios de `message` y de los
-/// campos opcionales.
+/// `message` es opcional si `title` aporta texto: el mensaje se deriva de
+/// `message` y, si falta o queda en blanco, de `title`. `origin` y `author`
+/// ausentes o en blanco caen al nombre de la clave. Los límites son en bytes,
+/// tras recortar los espacios de `message` y de los campos opcionales.
 fn validate(key_name: &str, payload: IngestRequest) -> Result<ValidatedIngest, AppError> {
-    let message = payload
-        .message
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let message = non_blank(payload.message)
+        .or_else(|| non_blank(payload.title))
         .ok_or_else(|| AppError::BadRequest("message is required".to_string()))?;
     if message.len() > MAX_MESSAGE_BYTES {
         return Err(AppError::BadRequest(format!(
@@ -148,21 +160,22 @@ fn validate(key_name: &str, payload: IngestRequest) -> Result<ValidatedIngest, A
     let origin = normalize_optional(payload.origin, key_name, MAX_ORIGIN_BYTES, "origin")?;
     let author = normalize_optional(payload.author, key_name, MAX_AUTHOR_BYTES, "author")?;
 
-    let level = payload.level.unwrap_or_else(|| "info".to_string());
-    if !matches!(level.as_str(), "info" | "warning" | "critical") {
-        return Err(AppError::BadRequest(
-            "level must be one of info, warning or critical".to_string(),
-        ));
-    }
-
-    let metadata = match payload.metadata {
-        None => None,
-        Some(value) => {
-            if !value.is_object() {
+    let level = match payload.level {
+        Some(level) => {
+            if !matches!(level.as_str(), "info" | "warning" | "critical") {
                 return Err(AppError::BadRequest(
-                    "metadata must be a JSON object".to_string(),
+                    "level must be one of info, warning or critical".to_string(),
                 ));
             }
+            level
+        }
+        None => severity_level(payload.severity.as_deref()),
+    };
+
+    let metadata = merge_body_markdown(payload.metadata, payload.body_markdown)?;
+    let metadata = match metadata {
+        None => None,
+        Some(value) => {
             let serialized = serde_json::to_string(&value)
                 .map_err(|error| AppError::BadRequest(format!("invalid metadata: {error}")))?;
             if serialized.len() > MAX_METADATA_BYTES {
@@ -191,16 +204,67 @@ fn normalize_optional(
     max_bytes: usize,
     field: &str,
 ) -> Result<String, AppError> {
-    let value = value
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| fallback.to_string());
+    let value = non_blank(value).unwrap_or_else(|| fallback.to_string());
     if value.len() > max_bytes {
         return Err(AppError::BadRequest(format!(
             "{field} must be at most {max_bytes} bytes"
         )));
     }
     Ok(value)
+}
+
+/// Recorta un texto opcional y trata el resultado en blanco como ausente.
+fn non_blank(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+/// Nivel derivado de `severity`: normaliza a minúsculas y mapea a la lista
+/// blanca, cayendo a `info` ante cualquier otro valor (nunca rechaza).
+fn severity_level(severity: Option<&str>) -> String {
+    match severity.map(str::to_lowercase).as_deref() {
+        Some("critical") => "critical",
+        Some("warning") => "warning",
+        _ => "info",
+    }
+    .to_string()
+}
+
+/// Valida `metadata` y le anexa `body_markdown` bajo su propia clave.
+///
+/// Un `body_markdown` en blanco tras `trim` no añade nada, y una clave
+/// `body_markdown` ya presente **no** se pisa. Sin `metadata` ni `body_markdown`
+/// el resultado es `None` (columna NULL). El tamaño se comprueba después, sobre
+/// el objeto ya fusionado, en [`validate`].
+fn merge_body_markdown(
+    metadata: Option<Value>,
+    body_markdown: Option<String>,
+) -> Result<Option<Value>, AppError> {
+    let body_markdown = non_blank(body_markdown);
+
+    let mut value = match metadata {
+        Some(value) if !value.is_object() => {
+            return Err(AppError::BadRequest(
+                "metadata must be a JSON object".to_string(),
+            ))
+        }
+        Some(value) => value,
+        None => match body_markdown {
+            None => return Ok(None),
+            Some(_) => Value::Object(serde_json::Map::new()),
+        },
+    };
+
+    if let Some(body) = body_markdown {
+        if let Some(object) = value.as_object_mut() {
+            object
+                .entry(BODY_MARKDOWN_KEY)
+                .or_insert(Value::String(body));
+        }
+    }
+
+    Ok(Some(value))
 }
 
 /// Despacha el aviso WebPush en segundo plano, *best-effort*.
