@@ -77,16 +77,37 @@ requires `Content-Type: application/json`.
 
 | Field | Type | Required | Limit | Default |
 |-------|------|----------|-------|---------|
-| `message` | string | Yes | `≤ 4096` bytes after `trim`; must not be blank | — |
+| `message` | string | No¹ | `≤ 4096` bytes after `trim`; must not be blank | — |
+| `title` | string | No | `≤ 4096` bytes after `trim` when it becomes the message | — |
 | `origin` | string | No | `≤ 64` bytes after `trim` | The name of the authenticating key |
 | `author` | string | No | `≤ 128` bytes after `trim` | The name of the authenticating key |
 | `level` | string | No | One of `info`, `warning`, `critical` | `info` |
-| `metadata` | object | No | Serialized form `≤ 8192` bytes; must be a JSON **object** | absent |
+| `severity` | string | No | `critical`, `warning`, `info` (case-insensitive); anything else | `info` |
+| `metadata` | object | No | Serialized form `≤ 8192` bytes, **after** merging `body_markdown`; must be a JSON **object** | absent |
+| `body_markdown` | string | No | Counts towards the `metadata` 8192-byte limit | absent |
+
+¹ `message` is required **unless `title` carries text**.
 
 A field that is missing, or blank after `trim`, falls back to its default
 (`origin` and `author` to the key name, `level` to `info`). `level` is matched
 exactly against the whitelist — it is **not** trimmed, so `" info "` is
 rejected.
+
+Three fields exist so that webhook envelopes —OpenObserve's among them— can be
+posted almost verbatim:
+
+- **`title` is the fallback for `message`.** The stored message is `message`
+  when it has text after `trim`; otherwise it is the trimmed `title`. When
+  neither carries text the request answers `400`.
+- **`severity` is the fallback for `level`.** It is only read when `level` is
+  absent; it is lower-cased and mapped to `critical`, `warning` or `info`, and
+  any other value silently becomes `info`. A `level` that *is* present is still
+  validated strictly against the whitelist (`"debug"` → `400`).
+- **`body_markdown` is merged into `metadata`** under the key
+  `body_markdown`, and only when that key is not already present: an explicit
+  `metadata.body_markdown` wins. The value is trimmed before being stored, a
+  blank `body_markdown` adds nothing, and the merged object is what must stay
+  within 8192 bytes.
 
 ### Example request
 
@@ -102,6 +123,31 @@ curl -i -X POST http://localhost:3000/api/notifications \
         "metadata": { "warnings": 3, "duration_s": 812 }
       }'
 ```
+
+### Example request: an OpenObserve alert envelope
+
+OpenObserve webhook alerts post an envelope with `title`, `body_markdown` and
+`severity` instead of `message`/`level`. It can be forwarded as-is: `title`
+becomes the message, `severity` becomes the level (`critical` → `critical`,
+`warning` → `warning`, `error`/anything else → `info`), and `body_markdown` is
+merged into `metadata`.
+
+```bash
+curl -i -X POST http://localhost:3000/api/notifications \
+  -H "Authorization: Bearer <your-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "title": "CPU usage above 90% on web-01",
+        "body_markdown": "## Alert\n\nCPU stayed above 90% for 5 minutes.\n",
+        "severity": "critical",
+        "metadata": { "alert_name": "high_cpu", "stream": "metrics" }
+      }'
+```
+
+The row above is stored with `message = "CPU usage above 90% on web-01"`,
+`level = "critical"` and
+`metadata = { "alert_name": "high_cpu", "stream": "metrics", "body_markdown": "## Alert\n\nCPU stayed above 90% for 5 minutes.\n" }`.
+
 
 ### Example response (`201 Created`)
 
@@ -119,13 +165,13 @@ does not change the response you already received.
 
 | Status | When | Body |
 |--------|------|------|
-| `400` | `message` missing or blank after `trim` | `{"error": "message is required"}` |
-| `400` | `message` exceeds 4096 bytes | `{"error": "message must be at most 4096 bytes"}` |
+| `400` | `message` missing or blank after `trim`, and no usable `title` | `{"error": "message is required"}` |
+| `400` | `message` (or the derived `title`) exceeds 4096 bytes | `{"error": "message must be at most 4096 bytes"}` |
 | `400` | `origin` exceeds 64 bytes | `{"error": "origin must be at most 64 bytes"}` |
 | `400` | `author` exceeds 128 bytes | `{"error": "author must be at most 128 bytes"}` |
 | `400` | `level` not in the whitelist | `{"error": "level must be one of info, warning or critical"}` |
 | `400` | `metadata` present but not an object | `{"error": "metadata must be a JSON object"}` |
-| `400` | `metadata` serializes to more than 8192 bytes | `{"error": "metadata must serialize to at most 8192 bytes"}` |
+| `400` | `metadata` (merged with `body_markdown`) serializes to more than 8192 bytes | `{"error": "metadata must serialize to at most 8192 bytes"}` |
 | `401` | Header absent, malformed, or token unknown/revoked | `{"error": "unauthorized"}` |
 | `413` | HTTP body larger than 64 KiB | (empty body; enforced by the body limit) |
 | `415` | `Content-Type` missing or not `application/json` | (body produced by the JSON extractor) |

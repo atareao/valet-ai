@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-13
+skip_specs: true
+goal: "Landear los cinco bumps de Dependabot que caben en el presupuesto (uuid, react-router-dom, vitest, eslint, jsdom 31) y cerrar vite 8.3.7 con el motivo medido: deja el grafo inicial en 70.01 kB sobre un umbral de 70.00 kB que no se sube"
