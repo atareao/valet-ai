@@ -37,8 +37,8 @@ Issue: [#361](https://github.com/atareao/valet-ai/issues/361)
 - [x] 3.3 `openspec validate --all --strict` limpio.
 
 ## 4. CIERRE
-- [ ] 4.1 Actualizar `docs/oximeal-integration.md`.
-- [ ] 4.2 Auditoría `@rust-reviewer` sin bloqueantes.
-- [ ] 4.3 PR a `development` (gitmoji) y release a `main`.
-- [ ] 4.4 Despliegue en `co1` y E2E: planificar el menú con una búsqueda de varias palabras.
-- [ ] 4.5 `openspec archive`, índice de `plans/`, issue #361 cerrado.
+- [x] 4.1 Actualizar `docs/oximeal-integration.md`.
+- [x] 4.2 Auditoría `@rust-reviewer` sin bloqueantes.
+- [x] 4.3 PR a `development` (gitmoji) y release a `main`.
+- [x] 4.4 Despliegue en `co1` y E2E: planificar el menú con una búsqueda de varias palabras.
+- [x] 4.5 `openspec archive`, índice de `plans/`, issue #361 cerrado.
