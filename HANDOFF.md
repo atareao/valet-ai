@@ -4,16 +4,18 @@
 
 ## Estado
 
-Feature de Mastodon implementada y verificada en la rama `feature/mastodon-mentions`, con `plans/PLAN-032.md` y el change `mastodon-mentions` archivados. Commit `b9763da` subido en `feature/mastodon-mentions`; PR **#390** abierta a `development` (CI en curso). Sin despliegue.
+**COMPLETADO.** Integración de Mastodon implantada, liberada como **v0.39.0** y desplegada en `co1`. PR **#390** (feature → `development`) y PR **#391** (release → `main`) mergeadas; tag **v0.39.0** publicado; issue **#389** cerrado. `development` y `main` apuntan a `4efb38a`.
 
 ## Verificación
 
-- Rust: 2327 tests pasan, 0 fallan, 1 ignorado; `cargo check`, `cargo fmt --check` y `cargo clippy -- -D warnings` limpios.
-- Frontend: 753 tests pasan; `npx tsc --noEmit` y `npm run lint` limpios; bundle 68.23/70.00 kB con el Node por defecto.
+- CI de #390 y #391 en verde (Backend y Frontend).
+- `just check-all`: Rust 2327 passed / 0 failed / 1 ignored; Vitest 753 passed; lint y `tsc` limpios; bundle inicial 68.23/70.00 kB.
+- Imagen `ghcr.io/atareao/valet-ai:v0.39.0` publicada por `image.yml`; stack de Dockge recreado en `co1`.
+- `https://valet.territoriolinux.es/api/health` → `{"db":"connected","status":"ok","version":"0.39.0"}`; `/api/events` y `/api/mastodon/status` → 401 sin sesión.
 - Auditorías `@rust-reviewer` y `@react-reviewer`: sin bloqueantes.
 
 ## Pendiente
 
-1. Esperar CI y merge de PR #390; después preparar release y despliegue.
-2. Configurar el token OAuth real en Ajustes → Integraciones → Mastodon y hacer la E2E.
-3. Follow-up aparte: filtrar `SENSITIVE_KEYS` en `GET /api/chat/init`.
+1. E2E real: configurar el token OAuth de Mastodon en Ajustes → Integraciones → Mastodon y probar `list_mentions` + `reply` en el chat.
+2. Follow-up aparte: filtrar `SENSITIVE_KEYS` en `GET /api/chat/init` (expone tokens sensibles al frontend).
+3. Follow-ups menores documentados en `docs/mastodon.md`: crecimiento de `mastodon_seen` y test dedicado del wrapper `LazyApp`.
