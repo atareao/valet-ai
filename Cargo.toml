@@ -257,3 +257,11 @@ path = "tests/api/github.rs"
 [[test]]
 name = "github-migration"
 path = "tests/db/github_migration.rs"
+
+[[test]]
+name = "mastodon-api"
+path = "tests/api/mastodon.rs"
+
+[[test]]
+name = "mastodon-migration"
+path = "tests/db/mastodon_migration.rs"

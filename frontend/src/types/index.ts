@@ -504,6 +504,26 @@ export interface GithubCheckResult {
   detail: string;
 }
 
+/**
+ * Estado de la configuración de Mastodon (`GET /api/mastodon/status`). Espejo
+ * del contrato del backend: **nunca** incluye el token, solo si hay uno
+ * resuelto (`configured`) y la URL base efectiva.
+ */
+export interface MastodonStatus {
+  configured: boolean;
+  base_url: string;
+}
+
+/**
+ * Resultado del sondeo activo (`GET /api/mastodon/check`). La ruta responde
+ * siempre `200`: `ok` indica si Mastodon atendió la petición y `detail` lleva
+ * el motivo legible en español. Nunca incluye el token.
+ */
+export interface MastodonCheckResult {
+  ok: boolean;
+  detail: string;
+}
+
 /** Respuesta de `GET /api/push/vapid-key`: la clave pública VAPID en base64url. */
 export interface VapidKeyResponse {
   public_key: string;

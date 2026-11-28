@@ -177,7 +177,7 @@ async fn test_list_tools_includes_the_timeline_tools() {
 async fn test_list_skills_returns_the_catalog_and_core_tools() {
     // Given the closed thirteen-domain skills catalog lives in code
     // When GET /api/skills is called
-    // Then it returns the fourteen skills (with their prompt fragment key and
+    // Then it returns the fifteen skills (with their prompt fragment key and
     //      tools) and the non-routable core set, sourced from the catalog.
     let app = TestApp::new().await;
 
@@ -188,7 +188,7 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
     let skills = body["skills"]
         .as_array()
         .expect("GET /api/skills must return a `skills` array");
-    assert_eq!(skills.len(), 14, "the closed catalog has fourteen skills");
+    assert_eq!(skills.len(), 15, "the closed catalog has fifteen skills");
 
     let ids: Vec<&str> = skills.iter().filter_map(|s| s["id"].as_str()).collect();
     for expected in [
@@ -206,6 +206,7 @@ async fn test_list_skills_returns_the_catalog_and_core_tools() {
         "zennotes",
         "menus",
         "github",
+        "mastodon",
     ] {
         assert!(
             ids.contains(&expected),
