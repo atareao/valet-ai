@@ -20,6 +20,7 @@ pub const SENSITIVE_KEYS: &[&str] = &[
     "oximeal_client_secret",
     "blog_app_password",
     "github_token",
+    "mastodon_token",
 ];
 
 /// `true` si `key` es sensible y por tanto debe omitirse en las respuestas y

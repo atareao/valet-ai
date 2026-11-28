@@ -8,6 +8,7 @@ pub mod geo_utils;
 pub mod github;
 pub mod google_places;
 pub mod journal;
+pub mod mastodon;
 pub mod notes;
 pub mod notifications;
 pub mod oximeal;

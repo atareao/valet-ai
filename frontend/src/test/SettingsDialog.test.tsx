@@ -77,6 +77,13 @@ const mockCheckBlog = vi.fn();
 const mockGetGithubStatus = vi.fn();
 const mockPutGithubToken = vi.fn();
 const mockCheckGithub = vi.fn();
+// Spies sobre los endpoints dedicados de Mastodon: misma pauta que GitHub
+// (change `mastodon-mentions`). `useMastodon` es real, así que se enruta al spy
+// para que el indicador de la duodécima sub-pestaña sea determinista y ningún
+// test abra una petición real.
+const mockGetMastodonStatus = vi.fn();
+const mockPutMastodonToken = vi.fn();
+const mockCheckMastodon = vi.fn();
 
 // Fixture de settings devuelta por el hook mockeado (equivale a lo que
 // responde `GET /settings`). Es mutable para que cada test pueda simular
@@ -367,6 +374,15 @@ vi.mock("../api/github", () => ({
   checkGithub: (...args: unknown[]) => mockCheckGithub(...args),
 }));
 
+// Los tres endpoints de Mastodon viven en su propio módulo (`api/mastodon.ts`),
+// importado solo por `useMastodon`. El factory se hoisted; solo toca los spies
+// cuando el hook los invoca.
+vi.mock("../api/mastodon", () => ({
+  getMastodonStatus: (...args: unknown[]) => mockGetMastodonStatus(...args),
+  putMastodonToken: (...args: unknown[]) => mockPutMastodonToken(...args),
+  checkMastodon: (...args: unknown[]) => mockCheckMastodon(...args),
+}));
+
 import { SettingsDialog } from "../components/SettingsDialog";
 import { RouterControl } from "../components/RouterControl";
 import { ProfileProvider } from "../contexts/ProfileProvider";
@@ -471,6 +487,17 @@ describe("SettingsDialog", () => {
     });
     mockPutGithubToken.mockResolvedValue(undefined);
     mockCheckGithub.mockResolvedValue({
+      ok: true,
+      detail: "conexión correcta",
+    });
+    // Por defecto Mastodon no está configurado; los tests que lo necesiten
+    // fijan `configured: true` con `mockResolvedValue`.
+    mockGetMastodonStatus.mockResolvedValue({
+      configured: false,
+      base_url: "",
+    });
+    mockPutMastodonToken.mockResolvedValue(undefined);
+    mockCheckMastodon.mockResolvedValue({
       ok: true,
       detail: "conexión correcta",
     });
@@ -2749,7 +2776,8 @@ describe("SettingsDialog", () => {
   // Orden cerrado de las sub-pestañas de «Integraciones» (spec aprobada). La
   // novena, «OxiMeal», la añade el change `oximeal-integration`; la décima,
   // «Blog», el change `wordpress-credentials-settings`; la undécima, «GitHub»,
-  // el change `github-integration`.
+  // el change `github-integration`; y la duodécima, «Mastodon», el change
+  // `mastodon-mentions`.
   const INTEGRATION_SUBTABS = [
     "Strava",
     "OpenWeatherMap",
@@ -2762,6 +2790,7 @@ describe("SettingsDialog", () => {
     "OxiMeal",
     "Blog",
     "GitHub",
+    "Mastodon",
   ] as const;
 
   // Etiquetas de los campos de credencial que, tras el change, viven SOLO en
@@ -2789,16 +2818,17 @@ describe("SettingsDialog", () => {
   };
 
   // change `settings-tabs-vertical`: pestañas verticales
-  it("organiza «Integraciones» en once sub-pestañas verticales en el orden acordado", async () => {
+  it("organiza «Integraciones» en doce sub-pestañas verticales en el orden acordado", async () => {
     const user = userEvent.setup();
     renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
 
     await user.click(screen.getByRole("tab", { name: "Integraciones" }));
 
-    // Once sub-pestañas, con «GitHub» como undécima al final del orden cerrado.
-    expect(INTEGRATION_SUBTABS).toHaveLength(11);
+    // Doce sub-pestañas, con «Mastodon» como duodécima al final del orden cerrado.
+    expect(INTEGRATION_SUBTABS).toHaveLength(12);
     expect(INTEGRATION_SUBTABS[9]).toBe("Blog");
     expect(INTEGRATION_SUBTABS[10]).toBe("GitHub");
+    expect(INTEGRATION_SUBTABS[11]).toBe("Mastodon");
 
     const subTabs = INTEGRATION_SUBTABS.map((name) =>
       screen.getByRole("tab", {
@@ -4058,6 +4088,97 @@ describe("SettingsDialog", () => {
     expect(await within(region).findByText("token rechazado")).toBeInTheDocument();
     // El sondeo no toca `GET /api/github/status`.
     expect(mockGetGithubStatus.mock.calls.length).toBe(statusReadsBeforeCheck);
+  });
+
+  // ════════════════════════════════════════════════════════════════
+  // Duodécima sub-pestaña «Mastodon» de «Integraciones» (change
+  // `mastodon-mentions`): URL base por `PUT /api/settings`; token por su
+  // endpoint dedicado; indicador de `GET /api/mastodon/status` y sondeo real
+  // por `GET /api/mastodon/check`.
+  // ════════════════════════════════════════════════════════════════
+
+  it("el indicador de Mastodon sale de su endpoint y es visible sin abrir la sub-pestaña", async () => {
+    const user = userEvent.setup();
+    mockGetMastodonStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://mastodon.social",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+
+    expect(
+      await screen.findByRole("tab", {
+        name: /^Mastodon(?![a-zA-Z])[\s\S]*Configurado/,
+      }),
+    ).toBeInTheDocument();
+    expect(mockGetMastodonStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it("guarda mastodon_base_url por PUT /api/settings y el token por su endpoint dedicado", async () => {
+    const user = userEvent.setup();
+    mockGetMastodonStatus.mockResolvedValue({
+      configured: true,
+      base_url: "https://mastodon.social",
+    });
+    mockUpdateSettings.mockResolvedValue(undefined);
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "Mastodon");
+
+    const region = await screen.findByRole("region", { name: "Mastodon" });
+    const token = within(region).getByLabelText("Mastodon · Token");
+    expect(token).toHaveAttribute("type", "password");
+    expect((token as HTMLInputElement).value).toBe("");
+
+    await user.clear(within(region).getByLabelText("Mastodon · URL base"));
+    await user.type(
+      within(region).getByLabelText("Mastodon · URL base"),
+      "https://mastodon.social",
+    );
+    await user.type(token, "mastodon-token-nuevo");
+    await user.click(within(region).getByRole("button", { name: "Guardar token" }));
+
+    await waitFor(() => {
+      expect(mockPutMastodonToken).toHaveBeenCalledWith("mastodon-token-nuevo");
+    });
+
+    await user.click(within(region).getByRole("button", { name: "Guardar" }));
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ mastodon_base_url: "https://mastodon.social" }),
+      );
+    });
+    // El token NO viaja en el guardado de ajustes: la aserción va DESPUÉS del
+    // submit y de su `waitFor`, para comprobar la llamada real a
+    // `PUT /api/settings`, no un estado previo en el que aún no pudo ocurrir.
+    expect(mockUpdateSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({ mastodon_token: expect.anything() }),
+    );
+  });
+
+  it("«Probar conexión» de Mastodon usa GET /api/mastodon/check y muestra su detail", async () => {
+    const user = userEvent.setup();
+    mockCheckMastodon.mockResolvedValue({
+      ok: false,
+      detail: "el token fue rechazado",
+    });
+    renderDialog(<ProfileProvider><SettingsDialog visible={true} onClose={vi.fn()} /></ProfileProvider>);
+
+    await user.click(screen.getByRole("tab", { name: "Integraciones" }));
+    await openIntegrationSubTab(user, "Mastodon");
+
+    const region = await screen.findByRole("region", { name: "Mastodon" });
+    await waitFor(() => expect(mockGetMastodonStatus).toHaveBeenCalledTimes(1));
+    const statusReadsBeforeCheck = mockGetMastodonStatus.mock.calls.length;
+
+    await user.click(within(region).getByRole("button", { name: "Probar conexión" }));
+
+    expect(await within(region).findByText("el token fue rechazado")).toBeInTheDocument();
+    await waitFor(() => expect(mockCheckMastodon).toHaveBeenCalledTimes(1));
+    // El sondeo no relee el estado local.
+    expect(mockGetMastodonStatus.mock.calls.length).toBe(statusReadsBeforeCheck);
   });
 
   // El botón refleja el sondeo **en curso**, no solo su resultado: con la

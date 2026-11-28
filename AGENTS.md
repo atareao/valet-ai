@@ -326,6 +326,16 @@ Lo que no se reabre sin orden explícita:
 - **`skip_specs: true`:** el requirement ya existía en la spec y no cambia; lo que faltaba era su test.
 - **Pendiente (sin tarea):** `@ant-design/icons` admite un salto de major (su aserción es `≥ 6.0.0`), y `minVersion` exige `major.minor.patch` (un rango como `19.x` lanzaría excepción en vez de afirmar, aunque falla en cerrado). Detalle en `docs/dependency-stack-guard.md`.
 
+**28. La integración con Mastodon lee menciones y contesta desde el chat; implementada en la rama `feature/mastodon-mentions`, pendiente de PR, despliegue y E2E real.** Decidido y ejecutado el 2026-11-28 al cerrar el change `mastodon-mentions` (issue #389, plan `PLAN-032`). Lo que no se reabre sin orden explícita:
+
+- Una herramienta `mastodon` con `list_mentions` (NoConfirm) y `reply` (ExplicitApproval). Catálogo 15 skills / 36 tools; skill `mastodon` con `SKILL_MASTODON_PROMPT` sembrado solo en migración con guarda byte a byte.
+- Token de app OAuth con scopes `read:notifications` y `write:statuses`. `mastodon_base_url` no tiene valor por defecto y `mastodon_token` es sensible: `PUT /api/mastodon/token` es la única puerta y `GET /api/mastodon/check` es la sonda real (siempre 200 con `{ok, detail}`).
+- Las menciones entran también en la bandeja de avisos con `origin="mastodon"`; la tabla `mastodon_seen` deduplica por `notification_id`, de modo que repetir `list_mentions` no duplica avisos.
+- `reply` envía `Idempotency-Key` UUID v4 fresco y fuerza visibilidad `direct` si el status original era `direct`. Sin token, la herramienta falla sin tocar la red.
+- Verificación: `cargo test` 2327 passed / 0 failed / 1 ignored, `cargo clippy -- -D warnings` y `cargo fmt --check` limpios; `npx vitest run` 753 passed, `npx tsc --noEmit` y lint limpios; bundle inicial 68.23/70.00 kB con el Node por defecto (v24.22.3), tras mover el guard de sesión detrás de `React.lazy` en `LazyApp.tsx`; no se subió el umbral ni se tocó `check-initial-bundle.mjs`.
+- **Follow-ups:** E2E con token real; crecimiento sin límite de `mastodon_seen`; y el hallazgo heredado de `GET /api/chat/init`, que no filtra `SENSITIVE_KEYS` y por tanto expone los tokens sensibles al frontend (corregir en change aparte, no en este).
+- El nuevo `LazyApp.tsx` tiene cobertura indirecta (loader, ErrorBoundary y guard), pero no un test dedicado del wrapper `ErrorBoundary → Suspense → lazy(App)`.
+
 ## VI. GESTIÓN DE PLANES (`plans/`)
 
 Todos los planes del proyecto viven en `plans/`. Ninguno se queda suelto en la raíz.
@@ -384,6 +394,7 @@ La nomenclatura de planes es la de la regla global (§IX): al cerrar un plan se 
 | `plans/PLAN-029-ARCHIVED.md` | La cola de Dependabot de nov-2026 entra salvo `vite` 8.3.7, que no cabe en el presupuesto de bundle (change `deps-queue-2026-11`; issue #367, PR #369) | ✅ Completado |
 | `plans/PLAN-030-ARCHIVED.md` | La guarda de versiones del frontend cubre por fin la etapa B del stack de UI (change `dependency-stack-etapa-b`; issue #368, PR #371) | ✅ Completado |
 | `plans/PLAN-031-ARCHIVED.md` | Ingesta de notificaciones: aceptar webhooks genéricos (change `notification-ingest-envelope`; issue #374, PR #375) | ✅ Archivado (E2E pendiente de despliegue) |
+| `plans/PLAN-032-ARCHIVED.md` | Integración con Mastodon: leer menciones, llevarlas a la bandeja y contestar con aprobación (change `mastodon-mentions`; issue #389) | ✅ Archivado (E2E pendiente) |
 
 > Los planes archivados conservan notas que pueden haber quedado desactualizadas (p. ej. si
 > un fichero estaba «sin trackear»). Se dejan tal cual, como registro histórico.
