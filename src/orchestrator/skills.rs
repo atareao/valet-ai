@@ -28,6 +28,7 @@ pub enum Skill {
     Zennotes,
     Menus,
     Github,
+    Mastodon,
 }
 
 /// Especificación cerrada de una skill.
@@ -62,7 +63,7 @@ pub const CORE_TOOLS: &[&str] = &["get_current_time", "get_current_location"];
 
 /// Catálogo cerrado de skills, en el orden canónico que sigue el resto del
 /// módulo (orden del catálogo).
-static CATALOG: [SkillSpec; 14] = [
+static CATALOG: [SkillSpec; 15] = [
     SkillSpec {
         skill: Skill::Agenda,
         id: "agenda",
@@ -244,6 +245,17 @@ static CATALOG: [SkillSpec; 14] = [
         prompt_key: "SKILL_GITHUB_PROMPT",
         prompt_heading: "# SKILL ACTIVA: GITHUB",
     },
+    SkillSpec {
+        skill: Skill::Mastodon,
+        id: "mastodon",
+        instructions: "¿La respuesta requiere leer menciones de Mastodon o contestar a una mención?",
+        criteria_true: "El mensaje pide mirar, listar o resumir las menciones de Mastodon, o contestar a una mención o a un status de Mastodon. Cuenta también un aviso entrante de Mastodon que haya llegado a la bandeja.",
+        criteria_false: "El mensaje no se refiere a Mastodon ni a menciones suyas. En particular, no es esta skill escribir en el vault de ZenNotes, crear un issue en GitHub, apuntar una nota suelta ni gestionar tareas pendientes.",
+        threshold: 0.10,
+        tools: &["mastodon"],
+        prompt_key: "SKILL_MASTODON_PROMPT",
+        prompt_heading: "# SKILL ACTIVA: MASTODON",
+    },
 ];
 
 /// Catálogo cerrado de skills, en el orden canónico del sistema.
@@ -285,9 +297,9 @@ pub fn skill_of_tool(tool: &str) -> Option<Skill> {
 mod tests {
     use super::*;
 
-    /// Las catorce variantes del enum, para exigir que el catálogo las cubra
+    /// Las quince variantes del enum, para exigir que el catálogo las cubra
     /// todas exactamente una vez.
-    const ALL_SKILLS: [Skill; 14] = [
+    const ALL_SKILLS: [Skill; 15] = [
         Skill::Agenda,
         Skill::Pendientes,
         Skill::Recuerdos,
@@ -302,6 +314,7 @@ mod tests {
         Skill::Zennotes,
         Skill::Menus,
         Skill::Github,
+        Skill::Mastodon,
     ];
 
     /// Nombres de las herramientas del registry de producción.
@@ -516,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_declares_exactly_the_fourteen_wide_domain_ids() {
+    fn catalog_declares_exactly_the_fifteen_wide_domain_ids() {
         let ids: Vec<&str> = catalog().iter().map(|spec| spec.id).collect();
 
         for id in [
@@ -534,6 +547,7 @@ mod tests {
             "zennotes",
             "menus",
             "github",
+            "mastodon",
         ] {
             assert!(
                 ids.contains(&id),
@@ -542,8 +556,8 @@ mod tests {
         }
         assert_eq!(
             ids.len(),
-            14,
-            "el catálogo debe tener exactamente catorce skills; tiene {ids:?}"
+            15,
+            "el catálogo debe tener exactamente quince skills; tiene {ids:?}"
         );
     }
 
@@ -715,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_plus_core_covers_all_thirty_five_tools_without_orphans() {
+    fn catalog_plus_core_covers_all_thirty_six_tools_without_orphans() {
         let mut covered: Vec<String> = CORE_TOOLS.iter().map(|s| s.to_string()).collect();
         for spec in catalog() {
             for tool in spec.tools {
@@ -727,8 +741,8 @@ mod tests {
 
         assert_eq!(
             covered.len(),
-            35,
-            "el core más las catorce skills deben cubrir las treinta y cinco herramientas: {covered:?}"
+            36,
+            "el core más las quince skills deben cubrir las treinta y seis herramientas: {covered:?}"
         );
         assert!(
             covered.iter().any(|t| t == "blog_comment_reply"),
@@ -756,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_keys_are_the_fourteen_canonical_keys() {
+    fn prompt_keys_are_the_fifteen_canonical_keys() {
         let keys: Vec<&str> = catalog().iter().map(|spec| spec.prompt_key).collect();
 
         for key in [
@@ -774,6 +788,7 @@ mod tests {
             "SKILL_ZENNOTES_PROMPT",
             "SKILL_MENUS_PROMPT",
             "SKILL_GITHUB_PROMPT",
+            "SKILL_MASTODON_PROMPT",
         ] {
             assert!(
                 keys.contains(&key),
@@ -782,8 +797,8 @@ mod tests {
         }
         assert_eq!(
             keys.len(),
-            14,
-            "el catálogo debe declarar exactamente catorce claves de fragmento; tiene {keys:?}"
+            15,
+            "el catálogo debe declarar exactamente quince claves de fragmento; tiene {keys:?}"
         );
         let mut unique = keys.clone();
         unique.sort_unstable();

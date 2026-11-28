@@ -1,6 +1,6 @@
 [package]
 name = "valet"
-version = "0.38.0"
+version = "0.39.0"
 edition = "2021"
 autobins = false
 
@@ -257,3 +257,11 @@ path = "tests/api/github.rs"
 [[test]]
 name = "github-migration"
 path = "tests/db/github_migration.rs"
+
+[[test]]
+name = "mastodon-api"
+path = "tests/api/mastodon.rs"
+
+[[test]]
+name = "mastodon-migration"
+path = "tests/db/mastodon_migration.rs"

@@ -197,6 +197,9 @@ pub fn build_tool_registry(pool: &SqlitePool) -> ToolRegistry {
     registry.register(Box::new(crate::tools::github::GithubTool::new(
         pool.clone(),
     )));
+    registry.register(Box::new(crate::tools::mastodon::MastodonTool::new(
+        pool.clone(),
+    )));
     registry
 }
 
@@ -604,6 +607,8 @@ pub fn app_with_state(state: AppState) -> Router {
         .merge(routes::blog::routes())
         // GitHub integration (config status, connection check + token endpoint)
         .merge(routes::github::routes())
+        // Mastodon integration (config status, connection check + token endpoint)
+        .merge(routes::mastodon::routes())
         // WebPush (VAPID public key, subscribe, unsubscribe)
         .merge(routes::push::routes())
         // Notifications inbox: ingest (ingest-token authenticated) + session reads

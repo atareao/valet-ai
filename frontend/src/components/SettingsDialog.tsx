@@ -117,6 +117,7 @@ export interface SettingsFormValues {
   blog_service_user: string;
   github_default_repo: string;
   github_default_labels: string;
+  mastodon_base_url: string;
   MEMORY_HALF_LIFE_DAYS: number;
   SIMILARITY_THRESHOLD: number;
   RAG_BUDGET_TOKENS: number;
@@ -206,6 +207,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         blog_service_user: settings.blog_service_user || "",
         github_default_repo: settings.github_default_repo || "",
         github_default_labels: settings.github_default_labels || "",
+        mastodon_base_url: settings.mastodon_base_url || "",
         MEMORY_HALF_LIFE_DAYS: parseFloat(
           settings.MEMORY_HALF_LIFE_DAYS || "90",
         ),
@@ -348,6 +350,8 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
           values.github_default_repo ?? settings?.github_default_repo ?? "",
         github_default_labels:
           values.github_default_labels ?? settings?.github_default_labels ?? "",
+        mastodon_base_url:
+          values.mastodon_base_url ?? settings?.mastodon_base_url ?? "",
         MEMORY_HALF_LIFE_DAYS: (
           values.MEMORY_HALF_LIFE_DAYS ??
           parseFloat(settings?.MEMORY_HALF_LIFE_DAYS || "90")
@@ -469,6 +473,7 @@ export const SettingsDialog: React.FC<SettingsDialogProps> = ({
         oximeal_resource: "",
         oximeal_issuer_url: "",
         oximeal_client_id: "",
+        mastodon_base_url: "",
       });
       messageApi.success("Valores por defecto restaurados");
     } catch {
