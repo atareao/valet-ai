@@ -4,7 +4,7 @@
 
 ## Estado
 
-Feature de Mastodon implementada y verificada en la rama `feature/mastodon-mentions`, con `plans/PLAN-032.md` y el change `mastodon-mentions` archivados. Sin commit, PR ni despliegue.
+Feature de Mastodon implementada y verificada en la rama `feature/mastodon-mentions`, con `plans/PLAN-032.md` y el change `mastodon-mentions` archivados. Commit `b9763da` subido en `feature/mastodon-mentions`; PR **#390** abierta a `development` (CI en curso). Sin despliegue.
 
 ## Verificación
 
@@ -14,6 +14,6 @@ Feature de Mastodon implementada y verificada en la rama `feature/mastodon-menti
 
 ## Pendiente
 
-1. PR de `feature/mastodon-mentions` a `development` y release posterior.
+1. Esperar CI y merge de PR #390; después preparar release y despliegue.
 2. Configurar el token OAuth real en Ajustes → Integraciones → Mastodon y hacer la E2E.
 3. Follow-up aparte: filtrar `SENSITIVE_KEYS` en `GET /api/chat/init`.
